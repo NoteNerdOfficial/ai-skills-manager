@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PROTOTYPE — Skillspace navigation variants</title>
+
+<!--
+  PROTOTYPE, throwaway. Never referenced by manifest.json / esbuild — Obsidian never loads it.
+
+  Plan: three structurally different takes on "select a skill, open a file, go back" —
+  switchable via ?variant=A|B|C and the floating bottom bar — as a standalone route (sub-shape B,
+  since Skillspace has no in-app router to host variants on the real view). Styled with the real
+  ../../styles.css so it isn't a vacuum; a small :root shim below fills in the Obsidian CSS
+  variables that stylesheet expects (--background-primary etc.) since there's no Obsidian shell
+  here to provide them.
+
+    A — breadcrumb master-detail: library grid pinned left, fixed detail rail right, full
+        breadcrumb trail so any level is one click away.
+    B — full-screen overlay with a persistent file rail: selecting a skill takes over the
+        screen; the file list never disappears while the overlay is open, so switching files
+        needs no "back" step, and one Close always returns to the grid.
+    C — inline accordion: cards expand in place inside the grid, files shown as chips inside the
+        expanded card. No navigation stack at all — collapsing is always one click, same for
+        every item.
+-->
+
+<!-- Shim for the Obsidian CSS variables styles.css depends on (approximate dark theme defaults) -->
+<style>
+  :root {
+    --background-primary: #1e1e1e;
+    --background-secondary: #181818;
+    --background-modifier-border: #2a2a2a;
+    --background-modifier-hover: rgba(255, 255, 255, 0.075);
+    --text-normal: #dcddde;
+    --text-muted: #999999;
+    --text-faint: #666666;
+    --text-accent: #a990ff;
+    --text-on-accent: #ffffff;
+    --interactive-accent: #7f6df2;
+    --interactive-accent-hover: #8875ff;
+    --font-ui-medium: 15px;
+    --font-ui-small: 13px;
+    --font-ui-smaller: 12px;
+    --font-interface: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-text: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-text-size: 16px;
+    --font-monospace: "SF Mono", "JetBrains Mono", monospace;
+    --line-height-normal: 1.5;
+    --code-background: #1e1e1e;
+    --color-red: #e93147; --color-red-rgb: 233, 49, 71;
+    --color-orange: #ec7500; --color-orange-rgb: 236, 117, 0;
+    --color-yellow: #e0ac00; --color-yellow-rgb: 224, 172, 0;
+    --color-green: #08b94e; --color-green-rgb: 8, 185, 78;
+    --color-cyan: #00bfbc; --color-cyan-rgb: 0, 191, 188;
+    --color-blue: #086ddd; --color-blue-rgb: 8, 109, 221;
+    --color-purple: #7852ee; --color-purple-rgb: 120, 82, 238;
+    --color-pink: #e56aaa; --color-pink-rgb: 229, 106, 170;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    font-family: var(--font-interface);
+  }
+  #app { height: 100vh; overflow: hidden; position: relative; }
+</style>
+
+<!-- The real plugin stylesheet — same classes the live view uses -->
+<link rel="stylesheet" href="../../styles.css" />
+
+<!-- Prototype-only additive CSS: the switcher bar, plus each variant's own novel structure
+     (breadcrumb rail / overlay / accordion) that doesn't exist in the real plugin yet. -->
+<style>
+  .proto-banner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 500;
+    background: #2a2140; border-bottom: 1px solid #4a3d7a;
+    color: #d8ccff; font-size: 12px; padding: 6px 16px;
+    display: flex; gap: 8px; align-items: center;
+  }
+  .proto-banner b { color: #fff; }
+  #variant-root { position: absolute; inset: 28px 0 0 0; }
+
+  /* ---- floating switcher ---- */
+  .switcher {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    z-index: 1000;
+    display: flex; align-items: center; gap: 10px;
+    background: #16121f; border: 1px solid #4a3d7a;
+    border-radius: 999px; padding: 6px 8px 6px 8px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+  }
+  .switcher button.arrow {
+    width: 30px; height: 30px; border-radius: 50%;
+    border: none; background: #2a2140; color: #d8ccff;
+    font-size: 15px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  .switcher button.arrow:hover { background: #382a5e; }
+  .switcher .label { font-size: 13px; color: #fff; padding: 0 4px; white-space: nowrap; }
+  .switcher .label .key { color: #a990ff; font-weight: 700; }
+
+  /* ---- Variant A: breadcrumb master-detail ---- */
+  .va-shell { display: flex; height: 100%; }
+  .va-grid {
+    width: 380px; flex-shrink: 0; overflow-y: auto; padding: 16px;
+    border-right: 1px solid var(--background-modifier-border);
+    display: grid; gap: 10px; align-content: start;
+  }
+  .va-detail { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .va-crumbs {
+    display: flex; align-items: center; gap: 6px; padding: 14px 20px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    font-size: var(--font-ui-small); flex-shrink: 0;
+  }
+  .va-crumb {
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    padding: 3px 6px; border-radius: 4px; font-size: var(--font-ui-small);
+  }
+  .va-crumb:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+  .va-crumb.current { color: var(--text-normal); font-weight: 600; cursor: default; }
+  .va-crumb.current:hover { background: none; }
+  .va-crumb-sep { color: var(--text-faint); }
+  .va-body { flex: 1; overflow-y: auto; padding: 20px; }
+  .va-filelist { display: flex; flex-direction: column; gap: 2px; }
+  .va-filerow {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px;
+    cursor: pointer; font-size: var(--font-ui-small);
+  }
+  .va-filerow:hover { background: var(--background-modifier-hover); }
+  .va-filerow .depth { display: inline-block; }
+  .va-empty-hint { color: var(--text-faint); font-size: var(--font-ui-small); padding: 40px 0; text-align: center; }
+
+  /* ---- Variant B: full-screen overlay ---- */
+  .vb-grid {
+    height: 100%; overflow-y: auto; padding: 20px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px;
+    align-content: start;
+  }
+  .vb-overlay {
+    position: absolute; inset: 0; background: var(--background-primary);
+    display: flex; z-index: 50;
+  }
+  .vb-rail {
+    width: 220px; flex-shrink: 0; border-right: 1px solid var(--background-modifier-border);
+    padding: 16px 10px; overflow-y: auto;
+  }
+  .vb-rail-title { padding: 4px 10px 12px; font-weight: 700; font-size: var(--font-ui-medium); }
+  .vb-rail-file {
+    padding: 7px 10px; border-radius: 6px; font-size: var(--font-ui-small); cursor: pointer;
+    color: var(--text-muted);
+  }
+  .vb-rail-file:hover { background: var(--background-modifier-hover); }
+  .vb-rail-file.is-active { background: rgba(127,109,242,0.18); color: var(--text-normal); font-weight: 600; }
+  .vb-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .vb-topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px; border-bottom: 1px solid var(--background-modifier-border); flex-shrink: 0;
+  }
+  .vb-close {
+    background: none; border: 1px solid var(--background-modifier-border); color: var(--text-muted);
+    border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: var(--font-ui-small);
+  }
+  .vb-close:hover { color: var(--text-normal); border-color: var(--text-muted); }
+  .vb-content { flex: 1; overflow-y: auto; padding: 24px 28px; }
+
+  /* ---- Variant C: inline accordion ---- */
+  .vc-grid {
+    height: 100%; overflow-y: auto; padding: 20px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px;
+    align-content: start;
+  }
+  .vc-card.is-expanded { grid-column: 1 / -1; }
+  .vc-expand-body { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--background-modifier-border); }
+  .vc-chiprow { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .vc-chip {
+    background: var(--background-secondary); border: 1px solid var(--background-modifier-border);
+    color: var(--text-muted); border-radius: 999px; padding: 4px 12px; font-size: var(--font-ui-smaller);
+    cursor: pointer;
+  }
+  .vc-chip:hover { color: var(--text-normal); }
+  .vc-chip.is-active { background: rgba(127,109,242,0.18); border-color: var(--interactive-accent); color: var(--text-normal); }
+  .vc-collapse-hint { font-size: var(--font-ui-smaller); color: var(--text-faint); margin-top: 10px; }
+
+  /* ---- shared content typography (approximates markdown-preview-view without full parsing) ---- */
+  .proto-doc { font-size: var(--font-text-size); line-height: var(--line-height-normal); }
+  .proto-doc h1 { font-size: 1.3em; margin: 0 0 10px; }
+  .proto-doc p { margin: 0 0 10px; color: var(--text-normal); }
+  .proto-doc .path { font-family: var(--font-monospace); font-size: var(--font-ui-smaller); color: var(--text-faint); margin-bottom: 14px; }
+</style>
+</head>
+<body>
+
+<div class="proto-banner">
+  <span>PROTOTYPE</span>
+  <span>·</span>
+  <span>Three variants of select-skill → open-file → back, styled with the real <code>styles.css</code>.</span>
+  <span>·</span>
+  <b id="banner-variant-name"></b>
+</div>
+
+<div id="app">
+  <div id="variant-root"></div>
+</div>
+
+<div class="switcher">
+  <button class="arrow" id="sw-prev" aria-label="Previous variant">←</button>
+  <div class="label" id="sw-label"></div>
+  <button class="arrow" id="sw-next" aria-label="Next variant">→</button>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Sample data — shaped like the real ItemMetadata / file tree, enough to make
+// every variant's structure legible without wiring up real vault scanning.
+// ---------------------------------------------------------------------------
+
+const ITEMS = [
+  {
+    id: "changelog-writer", name: "changelog-writer", type: "command",
+    description: "Writes a changelog entry from a diff.", tags: ["git", "docs"],
+    enabled: true, favorite: false,
+    files: [{ path: "changelog-writer.md", label: "changelog-writer.md",
+      content: "Writes a single changelog entry from the current diff, in the project's existing changelog voice and format." }],
+  },
+  {
+    id: "pr-reviewer", name: "pr-reviewer", type: "agent",
+    description: "Reviews a pull request for standards and spec.", tags: ["review"],
+    enabled: true, favorite: true,
+    files: [{ path: "pr-reviewer.md", label: "pr-reviewer.md",
+      content: "Reviews the diff against the repo's documented coding standards and the originating issue, side by side." }],
+  },
+  {
+    id: "domain-modeling", name: "domain-modeling", type: "skill",
+    description: "Build and sharpen a project's domain model.", tags: ["modeling", "docs"],
+    enabled: true, favorite: false,
+    files: [
+      { path: "SKILL.md", label: "SKILL.md", content: "Entry point for domain modeling: when to write a CONTEXT.md, when to record an ADR." },
+      { path: "reference/CONTEXT.md", label: "reference/CONTEXT.md", content: "Template and guidance for a project's CONTEXT.md — shared vocabulary and domain terms." },
+      { path: "reference/ADR-template.md", label: "reference/ADR-template.md", content: "Template for recording an architecture decision record." },
+    ],
+  },
+  {
+    id: "wizard", name: "wizard", type: "skill",
+    description: "Generate an interactive bash wizard for setup steps.", tags: ["infra"],
+    enabled: false, favorite: false,
+    files: [
+      { path: "SKILL.md", label: "SKILL.md", content: "Generates a bash wizard for steps only a human can do — provisioning, credentials, dashboards." },
+      { path: "generate.sh", label: "generate.sh", content: "#!/usr/bin/env bash\n# scaffolds the wizard script skeleton" },
+    ],
+  },
+  {
+    id: "code-review", name: "code-review", type: "skill",
+    description: "Review changes against standards and spec, in parallel.", tags: ["review", "git"],
+    enabled: true, favorite: true,
+    files: [
+      { path: "SKILL.md", label: "SKILL.md", content: "Runs a Standards review and a Spec review as parallel sub-agents, reports side by side." },
+      { path: "reference/standards-checklist.md", label: "reference/standards-checklist.md", content: "Checklist the Standards sub-agent walks through." },
+      { path: "reference/spec-checklist.md", label: "reference/spec-checklist.md", content: "Checklist the Spec sub-agent walks through." },
+    ],
+  },
+];
+
+const TYPE_LABELS = { skill: "Skill", agent: "Agent", command: "Command", rule: "Rule" };
+
+function hasTree(item) { return item.files.length > 1; }
+
+// ---------------------------------------------------------------------------
+// Tiny DOM builder, shared by all three variants.
+// ---------------------------------------------------------------------------
+
+function el(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "text") node.textContent = v;
+    else if (k === "cls") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const c of [].concat(children)) if (c) node.appendChild(c);
+  return node;
+}
+
+/** Shared card look (same classes the real grid uses) — every variant reuses this. */
+function renderCard(item, { selected = false, onClick }) {
+  const card = el("div", { cls: "skillspace-card" + (selected ? " is-selected" : "") + (!item.enabled ? " is-off" : "") });
+  const head = el("div", { cls: "skillspace-card-head" });
+  head.appendChild(el("span", { cls: "skillspace-dot" + (item.enabled ? " is-on" : "") }));
+  head.appendChild(el("span", { cls: "skillspace-card-name", text: item.name }));
+  if (item.favorite) head.appendChild(el("span", { cls: "skillspace-card-star", text: "★" }));
+  card.appendChild(head);
+  if (item.description) card.appendChild(el("div", { cls: "skillspace-card-desc", text: item.description }));
+  if (item.tags.length) {
+    const tags = el("div", { cls: "skillspace-card-tags" });
+    item.tags.forEach((t) => tags.appendChild(el("span", { cls: "skillspace-chip", text: t })));
+    card.appendChild(tags);
+  }
+  const footer = el("div", { cls: "skillspace-card-footer" });
+  footer.appendChild(el("span", { cls: "skillspace-card-type", text: TYPE_LABELS[item.type] }));
+  card.appendChild(footer);
+  card.addEventListener("click", onClick);
+  return card;
+}
+
+function renderDoc(file) {
+  const doc = el("div", { cls: "proto-doc" });
+  doc.appendChild(el("h1", { text: file.label }));
+  doc.appendChild(el("div", { cls: "path", text: file.path }));
+  doc.appendChild(el("p", { text: file.content }));
+  return doc;
+}
+
+// ---------------------------------------------------------------------------
+// Variant A — breadcrumb master-detail. Grid is pinned and never resizes;
+// the whole path (Library / Skill / File) is always visible, so any level
+// is a single click away rather than a linear "back" chain.
+// ---------------------------------------------------------------------------
+
+function mountVariantA(root) {
+  let selectedId = null;
+  let selectedFile = null;
+
+  function render() {
+    root.innerHTML = "";
+    const shell = el("div", { cls: "va-shell" });
+
+    const grid = el("div", { cls: "va-grid" });
+    ITEMS.forEach((item) => {
+      grid.appendChild(renderCard(item, {
+        selected: item.id === selectedId,
+        onClick: () => { selectedId = item.id; selectedFile = hasTree(item) ? null : item.files[0]; render(); },
+      }));
+    });
+    shell.appendChild(grid);
+
+    const detail = el("div", { cls: "va-detail" });
+    const crumbs = el("div", { cls: "va-crumbs" });
+    crumbs.appendChild(el("button", { cls: "va-crumb", text: "Library", onclick: () => { selectedId = null; selectedFile = null; render(); } }));
+
+    const item = ITEMS.find((i) => i.id === selectedId);
+    const body = el("div", { cls: "va-body" });
+
+    if (!item) {
+      body.appendChild(el("div", { cls: "va-empty-hint", text: "Select a skill from the library to preview it here." }));
+    } else {
+      crumbs.appendChild(el("span", { cls: "va-crumb-sep", text: "/" }));
+      const isLeaf = !hasTree(item) || selectedFile;
+      crumbs.appendChild(el("button", {
+        cls: "va-crumb" + (!selectedFile || !hasTree(item) ? " current" : ""),
+        text: item.name,
+        onclick: () => { selectedFile = null; render(); },
+      }));
+      if (hasTree(item) && selectedFile) {
+        crumbs.appendChild(el("span", { cls: "va-crumb-sep", text: "/" }));
+        crumbs.appendChild(el("button", { cls: "va-crumb current", text: selectedFile.label }));
+      }
+
+      if (hasTree(item) && !selectedFile) {
+        const list = el("div", { cls: "va-filelist" });
+        item.files.forEach((f) => {
+          list.appendChild(el("div", {
+            cls: "va-filerow", text: f.label,
+            onclick: () => { selectedFile = f; render(); },
+          }));
+        });
+        body.appendChild(list);
+      } else {
+        body.appendChild(renderDoc(selectedFile || item.files[0]));
+      }
+    }
+
+    detail.appendChild(crumbs);
+    detail.appendChild(body);
+    shell.appendChild(detail);
+    root.appendChild(shell);
+  }
+
+  render();
+  return () => {};
+}
+
+// ---------------------------------------------------------------------------
+// Variant B — full-screen overlay with a persistent file rail. Opening a
+// skill takes the whole screen; the file rail never disappears while open,
+// so switching files needs no separate "back to tree" step. One Close
+// (or Esc) always returns to the grid, regardless of depth.
+// ---------------------------------------------------------------------------
+
+function mountVariantB(root) {
+  let openId = null;
+  let selectedFile = null;
+
+  function close() { openId = null; selectedFile = null; render(); }
+
+  function onKey(e) {
+    if (e.key === "Escape" && openId) close();
+  }
+
+  function render() {
+    root.innerHTML = "";
+    const grid = el("div", { cls: "vb-grid" });
+    ITEMS.forEach((item) => {
+      grid.appendChild(renderCard(item, {
+        onClick: () => { openId = item.id; selectedFile = item.files[0]; render(); },
+      }));
+    });
+    root.appendChild(grid);
+
+    const item = ITEMS.find((i) => i.id === openId);
+    if (!item) return;
+
+    const overlay = el("div", { cls: "vb-overlay" });
+
+    if (hasTree(item)) {
+      const rail = el("div", { cls: "vb-rail" });
+      rail.appendChild(el("div", { cls: "vb-rail-title", text: item.name }));
+      item.files.forEach((f) => {
+        rail.appendChild(el("div", {
+          cls: "vb-rail-file" + (f === selectedFile ? " is-active" : ""),
+          text: f.label,
+          onclick: () => { selectedFile = f; render(); },
+        }));
+      });
+      overlay.appendChild(rail);
+    }
+
+    const main = el("div", { cls: "vb-main" });
+    const topbar = el("div", { cls: "vb-topbar" });
+    topbar.appendChild(el("div", { text: hasTree(item) ? "" : item.name, cls: "" }));
+    topbar.appendChild(el("button", { cls: "vb-close", text: "✕ Close", onclick: close }));
+    main.appendChild(topbar);
+    const content = el("div", { cls: "vb-content" }, [renderDoc(selectedFile)]);
+    main.appendChild(content);
+    overlay.appendChild(main);
+
+    root.appendChild(overlay);
+  }
+
+  render();
+  document.addEventListener("keydown", onKey);
+  return () => document.removeEventListener("keydown", onKey);
+}
+
+// ---------------------------------------------------------------------------
+// Variant C — inline accordion. Cards expand in place inside the grid; a
+// tree item shows its files as chips inside the expanded card. No
+// navigation stack at all — collapsing is always exactly one click,
+// identical for a single-file item and a five-file skill alike.
+// ---------------------------------------------------------------------------
+
+function mountVariantC(root) {
+  let expandedId = null;
+  let activeFile = {};
+
+  function render() {
+    root.innerHTML = "";
+    const grid = el("div", { cls: "vc-grid" });
+    ITEMS.forEach((item) => {
+      const expanded = item.id === expandedId;
+      const card = renderCard(item, {
+        selected: expanded,
+        onClick: () => { expandedId = expanded ? null : item.id; render(); },
+      });
+      if (expanded) card.classList.add("is-expanded");
+
+      if (expanded) {
+        const body = el("div", { cls: "vc-expand-body" });
+        if (hasTree(item)) {
+          const chiprow = el("div", { cls: "vc-chiprow" });
+          const active = activeFile[item.id] || item.files[0];
+          item.files.forEach((f) => {
+            chiprow.appendChild(el("button", {
+              cls: "vc-chip" + (f === active ? " is-active" : ""), text: f.label,
+              onclick: (e) => { e.stopPropagation(); activeFile[item.id] = f; render(); },
+            }));
+          });
+          body.appendChild(chiprow);
+          body.appendChild(renderDoc(active));
+        } else {
+          body.appendChild(renderDoc(item.files[0]));
+        }
+        body.appendChild(el("div", { cls: "vc-collapse-hint", text: "Click the card header again to collapse." }));
+        card.appendChild(body);
+      }
+      grid.appendChild(card);
+    });
+    root.appendChild(grid);
+  }
+
+  render();
+  return () => {};
+}
+
+// ---------------------------------------------------------------------------
+// Switcher shell — ?variant= param, floating bottom bar, left/right + arrow keys.
+// ---------------------------------------------------------------------------
+
+const VARIANTS = [
+  { key: "A", name: "Breadcrumb master-detail", mount: mountVariantA },
+  { key: "B", name: "Full-screen overlay + persistent rail", mount: mountVariantB },
+  { key: "C", name: "Inline accordion, no nav stack", mount: mountVariantC },
+];
+
+let current = 0;
+let unmount = () => {};
+
+function paramVariant() {
+  try {
+    const v = new URLSearchParams(location.search).get("variant");
+    const idx = VARIANTS.findIndex((x) => x.key === (v || "").toUpperCase());
+    return idx === -1 ? 0 : idx;
+  } catch { return 0; }
+}
+
+function setVariant(idx) {
+  current = (idx + VARIANTS.length) % VARIANTS.length;
+  const v = VARIANTS[current];
+  try { history.replaceState(null, "", "?variant=" + v.key); } catch {}
+  document.getElementById("banner-variant-name").textContent = `Variant ${v.key} — ${v.name}`;
+  document.getElementById("sw-label").innerHTML = `<span class="key">${v.key}</span> ${v.name}`;
+  unmount();
+  const root = document.getElementById("variant-root");
+  root.innerHTML = "";
+  unmount = v.mount(root) || (() => {});
+}
+
+document.getElementById("sw-prev").addEventListener("click", () => setVariant(current - 1));
+document.getElementById("sw-next").addEventListener("click", () => setVariant(current + 1));
+document.addEventListener("keydown", (e) => {
+  const activeTag = (document.activeElement && document.activeElement.tagName) || "";
+  if (["INPUT", "TEXTAREA"].includes(activeTag) || document.activeElement?.isContentEditable) return;
+  if (e.key === "ArrowLeft") setVariant(current - 1);
+  if (e.key === "ArrowRight") setVariant(current + 1);
+});
+
+setVariant(paramVariant());
+</script>
+</body>
+</html>

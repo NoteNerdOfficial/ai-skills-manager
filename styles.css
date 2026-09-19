@@ -1,0 +1,1703 @@
+/* ---------- shell ---------- */
+
+.skillspace-view {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+  background: var(--background-secondary);
+}
+
+.skillspace-sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px;
+  overflow-y: auto;
+  background: var(--background-primary);
+  border-right: 1px solid var(--background-modifier-border);
+}
+
+.skillspace-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---------- sidebar ---------- */
+
+.skillspace-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 14px;
+}
+
+.skillspace-brand-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skillspace-brand-icon {
+  display: flex;
+  color: var(--interactive-accent);
+}
+
+.skillspace-brand-name {
+  font-size: var(--font-ui-medium);
+  font-weight: 700;
+}
+
+/* Overrides .skillspace-icon-btn's forced-transparent background — this is the one icon button
+   meant to stand out (installing is the main way new content enters the library) rather than
+   blend in like the rest of the chrome. */
+.skillspace-icon-btn.skillspace-install-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--interactive-accent) !important;
+  color: var(--text-on-accent);
+}
+
+.skillspace-icon-btn.skillspace-install-btn:hover,
+.skillspace-icon-btn.skillspace-install-btn:focus {
+  background: var(--interactive-accent-hover) !important;
+  color: var(--text-on-accent);
+}
+
+.skillspace-sidebar-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 16px 8px 6px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+.skillspace-sidebar-heading-collapsible .skillspace-sidebar-heading-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: grab;
+  /* Without this, Chromium can silently refuse to start a native drag on a text-containing,
+     non-selectable element — draggable="true" alone isn't always enough. */
+  -webkit-user-drag: element;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.skillspace-sidebar-heading-collapsible .skillspace-sidebar-heading-left:active {
+  cursor: grabbing;
+}
+
+.skillspace-sidebar-heading-collapsible.is-drop-target {
+  outline: 2px dashed var(--interactive-accent);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+.skillspace-chevron {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.skillspace-chevron .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.skillspace-sidebar-heading-action {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.skillspace-sidebar-empty {
+  padding: 2px 10px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.skillspace-sidebar-footer {
+  margin-top: auto;
+  padding-top: 12px;
+}
+
+.skillspace-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.skillspace-nav-item:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.skillspace-nav-item.is-active {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+.skillspace-nav-icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.skillspace-nav-icon .svg-icon,
+.skillspace-nav-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.skillspace-nav-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillspace-nav-count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.skillspace-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ---------- content header + toolbar ---------- */
+
+.skillspace-content-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 18px 20px 0;
+}
+
+.skillspace-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.skillspace-title {
+  margin: 0;
+  font-size: 1.5em;
+  font-weight: 500;
+}
+
+.skillspace-subtitle {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.skillspace-count-pill {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.skillspace-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px 0;
+  flex-wrap: wrap;
+}
+
+/* Shared control height for the toolbar row — the search field and the segmented filter need to
+   match exactly, not just look close, so both are pinned to this and use border-box sizing. */
+.skillspace-search-wrap,
+.skillspace-segmented {
+  height: 32px;
+  box-sizing: border-box;
+}
+
+.skillspace-search-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 180px;
+}
+
+.skillspace-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  pointer-events: none;
+  /* Obsidian's own icon styling otherwise wins this fight by specificity and leaves the icon at
+     zero opacity until something (hover/focus on a nearby element) happens to override it — same
+     class of problem .skillspace-icon-btn already has to force its way past below. */
+  opacity: 1 !important;
+}
+
+.skillspace-search-icon .svg-icon {
+  width: 16px;
+  height: 16px;
+  opacity: 1 !important;
+}
+
+input.skillspace-search {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding-left: 32px;
+  padding-right: 28px;
+  background: var(--code-background, var(--background-secondary));
+  border-radius: 4px;
+}
+
+.skillspace-search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.skillspace-segmented {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--background-modifier-hover);
+}
+
+.skillspace-segment {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 0 14px;
+  border: none;
+  box-shadow: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+.skillspace-segment.is-active {
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+/* Same treatment as the sort button — rests transparent, so the plain hover tint is already a
+   clear, visible step up. Excludes the active segment, which already has its own solid
+   background/shadow; layering a translucent hover tint on top of that would just look muddy. */
+.skillspace-segment:not(.is-active):hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.skillspace-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.skillspace-icon-btn:hover,
+.skillspace-icon-btn:focus,
+.skillspace-icon-btn:active {
+  color: var(--text-normal);
+  background: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.skillspace-icon-btn .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+
+/* ---------- tag chips ---------- */
+
+.skillspace-tagbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 20px;
+}
+
+.skillspace-sort-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border: none;
+  box-shadow: none;
+  border-radius: 7px;
+  background: var(--background-primary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+/* --background-modifier-hover is the variable actually meant for this — a translucent
+   highlight layer, reliably distinct in every theme. It was sitting on the resting state above
+   instead (leaving nothing distinct left for hover to shift to, since the fallback tried here
+   before — --background-modifier-border — is a subtle line color, not built to read as a fill,
+   so in practice it barely differed from the resting color). */
+.skillspace-sort-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.skillspace-sort-btn-icon,
+.skillspace-sort-btn-chevron {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.skillspace-sort-btn-icon .svg-icon,
+.skillspace-sort-btn-chevron .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.skillspace-sort-btn-label {
+  white-space: nowrap;
+}
+
+/* Sits right after the sort button (also margin-left: auto) rather than pushing itself further
+   right independently — the sort button's own auto margin already did the work of clearing the
+   search field's space. */
+.skillspace-discover-refresh-all-btn {
+  margin-left: 0;
+}
+
+.skillspace-discover-refresh-all-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.skillspace-chip {
+  padding: 3px 10px;
+  border: none;
+  box-shadow: none;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.skillspace-chip.is-active {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+/* Scoped to the tagbar (the real library's tag filter row, and Discover's type filter row —
+   both use this same container) rather than .skillspace-chip generally, since a display-only
+   chip elsewhere (a card's own tags, its project badges) isn't clickable and shouldn't look like
+   it might be. Resting grey stays the shared base rule's --background-modifier-hover — that's
+   already "used up" as the resting color, so hover needs the next tier up
+   (--background-modifier-active-hover, the variable Obsidian themes define specifically for
+   "hovering something that already has a hover-style background") rather than the same token,
+   which would be indistinguishable from rest. */
+.skillspace-tagbar .skillspace-chip:hover {
+  background: var(--background-modifier-active-hover);
+  color: var(--text-normal);
+}
+
+.skillspace-chip-untagged {
+  border: 1px dashed var(--background-modifier-border);
+  background: transparent;
+}
+
+.skillspace-tag-c0 { background: rgba(var(--color-blue-rgb), 0.15); color: var(--color-blue); }
+.skillspace-tag-c1 { background: rgba(var(--color-green-rgb), 0.15); color: var(--color-green); }
+.skillspace-tag-c2 { background: rgba(var(--color-purple-rgb), 0.15); color: var(--color-purple); }
+.skillspace-tag-c3 { background: rgba(var(--color-pink-rgb), 0.15); color: var(--color-pink); }
+.skillspace-tag-c4 { background: rgba(var(--color-red-rgb), 0.15); color: var(--color-red); }
+.skillspace-tag-c5 { background: rgba(var(--color-orange-rgb), 0.15); color: var(--color-orange); }
+.skillspace-tag-c6 { background: rgba(var(--color-cyan-rgb), 0.15); color: var(--color-cyan); }
+.skillspace-tag-c7 { background: rgba(var(--color-yellow-rgb), 0.18); color: var(--color-yellow); }
+
+/* ---------- body: primary (grid or tree) plus an optional docked file panel ---------- */
+
+.skillspace-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The grid shrinks to a fixed rail as soon as anything's selected, and stays exactly that width
+   for as long as the selection lasts — browsing a multi-file skill's file list, then opening one
+   of its files, never resizes or replaces it. The detail rail beside it is what changes with
+   depth (see .skillspace-crumbs). The shrink itself animates (see the `transition` on
+   .skillspace-items below) instead of snapping instantly, so docking/undocking and the rail's
+   fade-in read as one coordinated motion rather than two unrelated ones. */
+.skillspace-items.is-docked {
+  flex: 0 0 400px;
+  border-right: 1px solid var(--background-modifier-border);
+  grid-template-columns: 1fr;
+}
+
+/* Forward (deeper into the library) slides in from the right; back retraces the same distance
+   from the left, so the two directions read as distinct instead of every swap looking identical
+   regardless of which way navigation is actually going. Timed to match the grid's own dock
+   transition below so both read as one motion. */
+@keyframes skillspace-panel-in-forward {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes skillspace-panel-in-back {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.skillspace-panel-enter-forward {
+  animation: skillspace-panel-in-forward 200ms ease-out;
+}
+
+.skillspace-panel-enter-back {
+  animation: skillspace-panel-in-back 200ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skillspace-panel-enter-forward,
+  .skillspace-panel-enter-back {
+    animation: none;
+  }
+}
+
+/* ---------- item grid ---------- */
+
+.skillspace-items {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 16px 20px 24px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  align-content: start;
+  /* Animates the dock/undock width change itself (see .is-docked above) instead of snapping
+     instantly, timed to match the rail's own enter animation. Transitioning the whole `flex`
+     shorthand (not just flex-basis) matters here — grow and shrink also change between the
+     undocked (1 1 0%) and docked (0 0 400px) states, and leaving those un-transitioned means the
+     width still jumps the instant the class toggles instead of easing. */
+  transition: flex 200ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skillspace-items {
+    transition: none;
+  }
+}
+
+/* Discover's "Source (grouped)" sort — full-width stacked sections instead of grid cells, each
+   section holding its own mini-grid of cards (see .skillspace-discover-source-group-grid). */
+/* No gap between sections and no top padding on the scroll container — either one leaves a
+   transparent strip that a sticky header doesn't cover, so scrolling cards are briefly visible
+   sliding past above/between headers instead of being cleanly occluded. Sections butt flush
+   against each other; the header's own (opaque) padding is what supplies breathing room now. */
+.skillspace-items.is-grouped {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-top: 0;
+}
+
+/* Sticky within its own section only — position: sticky constrains to the containing block, so
+   each header un-sticks and scrolls away with its own cards right as the next section's header
+   reaches the top and takes over. No JS needed for the handoff, just plain stacked sticky boxes. */
+.skillspace-discover-source-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--background-primary);
+  /* At fractional scroll offsets Chromium can round the sticky box a hair off `top: 0`, leaving a
+     hairline of the scrolling cards visible above the header even though it's flush in layout.
+     A box-shadow isn't subject to that rounding, so paint an extra 1px of the same opaque
+     background above the box to cover the seam without affecting layout. */
+  box-shadow: 0 -1px 0 0 var(--background-primary);
+  cursor: pointer;
+}
+
+.skillspace-discover-source-group-header .skillspace-card-discover-repo {
+  flex: 1;
+  min-width: 0;
+}
+
+.skillspace-discover-source-group-header .skillspace-card-discover-repo img {
+  width: 20px;
+  height: 20px;
+}
+
+.skillspace-discover-source-group-grid {
+  display: grid;
+  /* Same breakpoint as .skillspace-items (Library, and Discover's own flat sort modes) — cards
+     should be the same width at the same viewport width regardless of which grid they're in. */
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.skillspace-empty {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.skillspace-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  background: var(--background-primary);
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.skillspace-card:hover {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
+}
+
+.skillspace-card.is-off {
+  opacity: 0.68;
+}
+
+.skillspace-card.is-selected {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.skillspace-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.skillspace-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--background-modifier-border);
+}
+
+.skillspace-dot.is-on {
+  background: var(--color-green);
+}
+
+.skillspace-card-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.skillspace-card-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border: none;
+  border-radius: 999px;
+  font-size: var(--font-ui-smaller);
+  font-family: inherit;
+  line-height: 1.5;
+  cursor: default;
+}
+
+.skillspace-card-badge .svg-icon {
+  width: 11px;
+  height: 11px;
+}
+
+.skillspace-card-badge-local {
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+}
+
+/* Per-instance link/unlink icon button — same slot and icon as the global card's "manage
+   project links" button, green while linked, red on hover to preview that a click unlinks. */
+.skillspace-icon-btn.skillspace-card-link-btn {
+  color: var(--color-green);
+}
+
+/* Any "check for updates" trigger (the card header shortcut, or the source row's button below)
+   spins its icon while the on-demand ls-remote check is in flight. */
+.is-syncing .svg-icon {
+  animation: skillspace-spin 0.8s linear infinite;
+}
+
+@keyframes skillspace-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.skillspace-icon-btn.skillspace-card-link-btn:hover,
+.skillspace-icon-btn.skillspace-card-link-btn:focus {
+  color: var(--color-red);
+}
+
+.skillspace-card-projects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.skillspace-card-projects .skillspace-chip {
+  cursor: default;
+  padding: 2px 8px;
+}
+
+.skillspace-card-star {
+  display: flex;
+  color: var(--color-yellow);
+}
+
+.skillspace-card-star .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.skillspace-card-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-width: 0;
+  overflow-wrap: break-word;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.45;
+}
+
+.skillspace-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.skillspace-card-tags .skillspace-chip {
+  cursor: default;
+}
+
+.skillspace-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  /* Pins the footer to the card's bottom edge regardless of how much content sits above it —
+     matters because cards in the same grid row stretch to match their tallest sibling, and
+     without this a short card leaves the footer floating with dead space below it. */
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.skillspace-card-source {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.skillspace-card-source-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillspace-card-source-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.skillspace-card-source-icon .svg-icon,
+.skillspace-card-source-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.skillspace-card-type {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+}
+
+.skillspace-card-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.skillspace-icon-btn.is-present {
+  color: var(--color-green);
+}
+
+/* ---------- Discover card (a not-yet-installed catalog entry) ---------- */
+
+.skillspace-card-discover-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.skillspace-card-discover-repo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.skillspace-card-discover-repo img {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.skillspace-card-discover-repo-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Nested inside .skillspace-card-discover-repo, right after the owner/repo name, so the star
+   count reads as "belonging to" that repo rather than floating as its own unrelated footer item. */
+.skillspace-card-discover-stars {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  color: var(--color-yellow);
+}
+
+.skillspace-card-discover-stars .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+/* ---------- Discover rail (renderDiscoverRail) — deliberately reuses the real detail rail's
+   classes/typography so it reads as "the same kind of thing," but a left accent stripe plus the
+   accent-colored pill below keep it visibly distinct from a real installed item's preview. */
+.skillspace-discover-pill {
+  background: rgba(var(--color-purple-rgb), 0.16) !important;
+  color: var(--interactive-accent) !important;
+}
+
+.skillspace-discover-rail-tags {
+  margin-bottom: 14px;
+}
+
+.skillspace-discover-rail .skillspace-card-discover-repo {
+  margin-bottom: 10px;
+}
+
+.skillspace-discover-rail .skillspace-card-discover-repo img {
+  width: 20px;
+  height: 20px;
+}
+
+/* ---------- toggle switch ---------- */
+
+.skillspace-toggle {
+  position: relative;
+  flex-shrink: 0;
+  width: 38px;
+  height: 21px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--background-modifier-border);
+  box-shadow: none;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.skillspace-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 120ms ease;
+}
+
+.skillspace-toggle.is-on {
+  background: var(--color-green);
+}
+
+.skillspace-toggle.is-on::after {
+  transform: translateX(17px);
+}
+
+.skillspace-toggle-sm {
+  width: 28px;
+  height: 16px;
+}
+
+.skillspace-toggle-sm::after {
+  width: 12px;
+  height: 12px;
+}
+
+.skillspace-toggle-sm.is-on::after {
+  transform: translateX(12px);
+}
+
+/* ---------- detail panel (inline, docked beside the grid) ---------- */
+
+.skillspace-detail {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 18px 24px 32px;
+}
+
+/* Persistent breadcrumb trail at the top of the rail — Library is always one click away, and
+   the skill segment becomes clickable (back to its file list) only once a file from a tree is
+   open. Plain text, no button chrome, so it reads as a location trail rather than another row
+   of controls; the leading icon is the only affordance, a plain "step up one level". */
+.skillspace-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+  min-width: 0;
+}
+
+.skillspace-crumb {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  font-size: var(--font-ui-smaller);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillspace-crumb:hover,
+.skillspace-crumb:focus,
+.skillspace-crumb:active {
+  color: var(--text-normal);
+  text-decoration: underline;
+  background: transparent !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.skillspace-crumb.is-current {
+  color: var(--text-normal);
+  font-weight: 600;
+  cursor: default;
+}
+
+.skillspace-crumb.is-current:hover {
+  text-decoration: none;
+}
+
+.skillspace-crumb-sep {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.skillspace-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+
+.skillspace-detail-title {
+  margin: 0;
+  font-size: 1.55em;
+  line-height: 1.2;
+  font-weight: 500;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillspace-detail-tool-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.skillspace-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+}
+
+/* Two-column strip below the header, shown only once a file is open (see renderIdentityBand):
+   identity (tags/description/path/extra frontmatter) on the left, file stats + source status on
+   the right. align-items: stretch (the default, stated explicitly here) makes both columns match
+   the taller one's height, so the right column's divider always reaches down to wherever the
+   left column actually ends — including the "N more fields" toggle — rather than stopping short
+   at the right column's own, usually shorter, content. */
+.skillspace-detail-band {
+  display: flex;
+  gap: 20px;
+  align-items: stretch;
+  margin-bottom: 14px;
+}
+
+.skillspace-detail-band-left {
+  flex: 1;
+  min-width: 0;
+}
+
+.skillspace-detail-band-right {
+  flex: 0 0 230px;
+  border-left: 1px solid var(--background-modifier-border);
+  padding-left: 16px;
+}
+
+.skillspace-detail-desc {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: var(--line-height-normal);
+  margin: 0 0 8px;
+}
+
+.skillspace-detail-path {
+  margin-bottom: 8px;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillspace-detail-path-target {
+  color: var(--text-accent);
+}
+
+.skillspace-fm-toggle {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--text-accent);
+  font-size: var(--font-ui-smaller);
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.skillspace-detail-frontmatter {
+  display: grid;
+  /* max-content sizes the key column to the widest key across ALL rows (e.g.
+     "disable-model-invocation"), so every value still lines up rather than each
+     row aligning to its own label width. */
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 8px;
+  row-gap: 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--code-background, var(--background-secondary));
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  margin-top: 6px;
+}
+
+.skillspace-fm-row {
+  /* Dissolves the row's own box so its label/value children become direct
+     items of the parent grid and share its columns. */
+  display: contents;
+}
+
+.skillspace-fm-label {
+  white-space: nowrap;
+}
+
+.skillspace-fm-key {
+  color: var(--text-accent);
+}
+
+.skillspace-fm-colon {
+  color: var(--text-faint);
+}
+
+.skillspace-fm-value {
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+/* Tag chips at the top of the band's left column — each with its own remove button, plus a
+   "+ tag" affordance that swaps itself for an inline input while adding. */
+.skillspace-detail-tags-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.skillspace-tag-chip {
+  box-sizing: border-box;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 0 6px 0 10px;
+  font-size: var(--font-ui-smaller);
+}
+
+.skillspace-tag-chip-remove {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 0 3px;
+  line-height: 1;
+  font-size: 1.1em;
+}
+
+.skillspace-tag-chip-remove:hover {
+  color: var(--text-normal);
+}
+
+.skillspace-tag-add-btn {
+  box-sizing: border-box;
+  height: 22px;
+  border: 1px dashed var(--background-modifier-border) !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--text-faint);
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.skillspace-tag-add-btn:hover {
+  color: var(--text-normal);
+  border-color: var(--text-muted) !important;
+}
+
+/* Obsidian's own text-input styling otherwise wins on height (a fixed --input-height taller than
+   this pill-sized chip row) — box-sizing + an explicit height matching .skillspace-tag-add-btn's
+   is what actually keeps the "+ tag" button and the input it swaps for the same size. */
+input.skillspace-tag-add-input {
+  box-sizing: border-box;
+  width: 110px;
+  height: 22px;
+  background: var(--code-background, var(--background-secondary));
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: var(--font-ui-smaller);
+}
+
+/* ---- right column: file stats + compact source status ---- */
+
+.skillspace-detail-stats {
+  margin-bottom: 10px;
+}
+
+.skillspace-detail-stat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+  font-size: var(--font-ui-smaller);
+  font-family: var(--font-monospace);
+}
+
+.skillspace-detail-stat-label {
+  color: var(--text-faint);
+}
+
+.skillspace-detail-stat-value {
+  color: var(--text-muted);
+}
+
+/* Right-column variant: sits below the stats rows in the two-column band, once a file is open. */
+.skillspace-detail-source {
+  padding-top: 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.skillspace-detail-source .skillspace-detail-source-repo {
+  margin-bottom: 4px;
+}
+
+/* Inline variant: a full-width row directly under the header, used whenever there's no open
+   file to pair source status with in a two-column band (browsing a tree, or mid-review). */
+.skillspace-detail-source-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 4px;
+}
+
+.skillspace-detail-source-inline .skillspace-detail-source-repo {
+  flex: 1;
+  min-width: 0;
+}
+
+.skillspace-detail-source-inline .skillspace-detail-source-actions {
+  flex-shrink: 0;
+}
+
+.skillspace-detail-source-repo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.skillspace-detail-source-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* The link itself carries the truncation now — the row is a flex container, not a single text
+   node, so overflow/ellipsis has to live on the one child that's actually allowed to shrink. */
+.skillspace-detail-source-repo a {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  text-decoration: none;
+}
+
+.skillspace-detail-source-repo a:hover {
+  color: var(--text-normal);
+  text-decoration: underline;
+}
+
+/* Check for updates + Restore installed side by side, wrapping to a second line only if the
+   column's too narrow to fit both (e.g. a long tool pill pushed the rail itself narrower). */
+.skillspace-detail-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+}
+
+.skillspace-detail-source-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-ui-smaller);
+  padding: 3px 6px;
+  height: auto;
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.skillspace-detail-source-btn:hover,
+.skillspace-detail-source-btn:focus {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover) !important;
+}
+
+.skillspace-detail-source-btn-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.skillspace-detail-source-btn-icon .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.skillspace-detail-body {
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 16px;
+}
+
+/* The body renders through the same markdown-preview-view/-sizer classes Obsidian's own
+   reading view uses, so the active theme's note styling (headings, code fences, callouts,
+   tables) applies verbatim. These overrides neutralize the full-pane sizing (height, scroll,
+   outer margins) that doesn't make sense once that view is embedded inside our own
+   scrollable, already-padded panel, and drop the readable-line-width cap so content spans
+   the full width of this (usually much narrower than a real pane) panel instead of wrapping
+   early. */
+.skillspace-detail-body .skillspace-markdown-preview.markdown-preview-view {
+  height: auto;
+  overflow: visible;
+  padding: 0;
+  contain: none;
+}
+
+.skillspace-detail-body .skillspace-markdown-preview .markdown-preview-sizer {
+  max-width: none;
+  margin: 0;
+  width: auto;
+  padding-bottom: 0;
+}
+
+
+.skillspace-detail-save-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* ---------- file tree (docked panel for a multi-file skill) ---------- */
+
+.skillspace-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.skillspace-tree-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 8px 5px calc(8px + var(--skillspace-tree-depth, 0) * 16px);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.skillspace-tree-item:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.skillspace-tree-item.is-dir {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+/* Which file is currently open beside the tree — otherwise nothing distinguishes it once the
+   tree is docked next to an open file. */
+.skillspace-tree-item.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.skillspace-tree-item.is-active:hover {
+  background: var(--interactive-accent-hover);
+  color: var(--text-on-accent);
+}
+
+.skillspace-tree-chevron,
+.skillspace-tree-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.skillspace-tree-chevron {
+  width: 12px;
+}
+
+.skillspace-tree-chevron .svg-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.skillspace-tree-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.skillspace-tree-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillspace-tree-hint {
+  margin-top: 10px;
+  padding: 0 8px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  font-style: italic;
+}
+
+/* ---------- modals ---------- */
+
+.skillspace-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.skillspace-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skillspace-modal-meta {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  word-break: break-all;
+}
+
+.skillspace-modal-body {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+/* Obsidian's own source-mode editor has no box around it — it's just text sitting directly
+   on the note background, set in the note font (not monospace) at the note's own size and
+   line-height. We match that instead of leaving this looking like a plain form field. */
+.skillspace-edit-wrap {
+  min-height: 40vh;
+}
+
+.skillspace-edit-textarea {
+  display: block;
+  width: 100%;
+  min-height: 40vh;
+  padding: 0;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  resize: none;
+  overflow: hidden;
+  font-family: var(--font-text, var(--font-interface));
+  font-size: var(--font-text-size, 1em);
+  line-height: var(--line-height-normal, 1.5);
+  color: var(--text-normal);
+  caret-color: var(--text-accent);
+}
+
+.skillspace-edit-textarea:focus,
+.skillspace-edit-textarea:focus-visible {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.skillspace-collection-picker {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.skillspace-collection-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+/* ---------- settings: collapsible tool sections ---------- */
+
+.skillspace-tool-details {
+  margin-bottom: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.skillspace-tool-details[open] {
+  padding-bottom: 6px;
+}
+
+.skillspace-tool-summary {
+  padding: 10px 14px;
+  font-size: var(--font-ui-medium);
+  font-weight: 600;
+  cursor: pointer;
+  list-style: revert;
+}
+
+.skillspace-tool-summary:hover {
+  background: var(--background-modifier-hover);
+}
+
+.skillspace-tool-details .setting-item {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+.skillspace-path-status {
+  margin-left: 8px;
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.skillspace-path-status.is-found {
+  color: var(--color-green);
+}
+
+.skillspace-path-status.is-missing {
+  color: var(--text-faint);
+}
+
+/* ---------- diff (update review) ---------- */
+/* Ported from the sibling plugin Terminus's src/diff/renderDiff.ts styling — same gutter +
+   minimap layout, renamed to the skillspace- prefix and switched to this plugin's own
+   --color-green/--color-red theme variables instead of introducing a new pair. */
+
+.skillspace-diff-gutter-body {
+  padding-right: 16px;
+  max-height: 50vh;
+  overflow-y: auto;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.skillspace-diff-body-wrapper {
+  position: relative;
+}
+
+.skillspace-diff-minimap {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  pointer-events: none;
+}
+
+.skillspace-diff-minimap-tick {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.skillspace-diff-minimap-tick-add {
+  background-color: var(--color-green);
+}
+
+.skillspace-diff-minimap-tick-remove {
+  background-color: var(--color-red);
+}
+
+.skillspace-diff-minimap-viewport {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-radius: 2px;
+  background-color: var(--background-modifier-border);
+}
+
+.skillspace-diff-line {
+  display: flex;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.skillspace-diff-gutter-num {
+  flex: 0 0 auto;
+  min-width: 2.5em;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--text-faint);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.skillspace-diff-marker {
+  flex: 0 0 auto;
+  width: 1em;
+  text-align: center;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.skillspace-diff-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.skillspace-diff-line-add {
+  background-color: rgba(var(--color-green-rgb), 0.06);
+}
+
+.skillspace-diff-line-remove {
+  background-color: rgba(var(--color-red-rgb), 0.1);
+}
+
+.skillspace-diff-add {
+  background-color: rgba(var(--color-green-rgb), 0.35);
+  border-radius: 2px;
+}
+
+.skillspace-diff-remove {
+  background-color: rgba(var(--color-red-rgb), 0.45);
+  text-decoration: line-through;
+  border-radius: 2px;
+}
+
+.skillspace-diff-stat-add {
+  color: var(--color-green);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.skillspace-diff-stat-remove {
+  color: var(--color-red);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.skillspace-diff-companion-list {
+  margin-top: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 8px;
+}
+
+.skillspace-diff-companion-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: var(--font-ui-smaller);
+}
+
+.skillspace-diff-companion-badge {
+  flex: 0 0 auto;
+  font-size: var(--font-ui-smaller);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.skillspace-diff-companion-badge.is-added {
+  background: rgba(var(--color-green-rgb), 0.15);
+  color: var(--color-green);
+}
+
+.skillspace-diff-companion-badge.is-removed {
+  background: rgba(var(--color-red-rgb), 0.15);
+  color: var(--color-red);
+}
+
+.skillspace-diff-companion-badge.is-modified {
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+/* Cancel/Update/Restore row at the bottom of an inline diff review — pushed down from the
+   companion list (or the diff itself, when there are no companions) and right-aligned so the
+   primary action lands under the reader's eye after scanning down the diff, not floating at the
+   left edge. */
+.skillspace-diff-review-actions {
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+/* ---------- source / install ----------
+   Source status (truncated repo + Check for updates/Restore installed) lives right after the
+   identity band — see .skillspace-detail-source* above, next to .skillspace-detail-band. */

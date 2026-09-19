@@ -1,0 +1,11 @@
+{
+  "id": "ai-skills-manager",
+  "name": "AI Skills Manager",
+  "version": "0.1.0",
+  "minAppVersion": "1.7.2",
+  "description": "Browse, tag, and organize AI skills, agents, and commands across coding tools — from inside Obsidian.",
+  "author": "notenerd",
+  "authorUrl": "",
+  "fundingUrl": "",
+  "isDesktopOnly": true
+}
