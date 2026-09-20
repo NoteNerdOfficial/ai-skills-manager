@@ -1,9 +1,9 @@
 export type ItemType = "skill" | "agent" | "command" | "rule";
 
 /** Referenced anywhere an icon *id* is required — the ribbon icon, the library view's tab icon,
- *  and the sidebar brand mark. Obsidian's built-in Lucide set already has a "brain" icon, so no
- *  custom SVG/addIcon registration is needed. */
-export const PLUGIN_ICON_ID = "brain";
+ *  and the sidebar brand mark. This is a custom mark (not part of Obsidian's built-in Lucide
+ *  set), so it's registered with `addIcon()` in `main.ts` before anything reads this id. */
+export const PLUGIN_ICON_ID = "skillspace-shapes";
 
 export type EnabledFilter = "all" | "enabled" | "disabled";
 export type SortOrder = "name-asc" | "name-desc" | "modified-desc" | "modified-asc";
@@ -46,6 +46,25 @@ export interface ToolConfig {
   unconfirmedPaths?: Partial<Record<ItemType, string>>;
   /** Path to this tool's installed-plugins registry JSON, if it has one (e.g. Claude Code). */
   pluginsRegistry?: string;
+  /** Subfolder name(s), if any, where this tool stores its own shipped-in-the-box
+   *  skills/agents/commands/rules — e.g. Claude Code's "synced/" cache, Codex's ".system/". An
+   *  item found nested under one of these (at any depth within the tool's scanned path) is
+   *  "Built-in" rather than "Local" (see scanners.ts's isBuiltInItem). Best-effort and observed
+   *  empirically, not documented by the vendor — unlike `paths`, there's no confirmation
+   *  mechanism for this, so it can silently stop matching if a tool renames its own convention. */
+  builtInDirnames?: string[];
+  /** Skips this tool during scan/rescan and hides its items from the library grid entirely —
+   *  set from the "All tools" page (LibraryView.renderToolsPageContent), not Settings. Its
+   *  shadow-note metadata (tags/favourites/collections) is deliberately preserved while
+   *  disabled — see rescan.ts's performRescan, which still scans a disabled tool so its store
+   *  entries survive a disable/re-enable round trip; only the returned item list is filtered. */
+  disabled?: boolean;
+  /** True for a tool the user added themselves via "Add tool" (the "All tools" page), as
+   *  opposed to one of the built-in DEFAULT_TOOLS — controls whether it can be deleted outright
+   *  (a custom tool can; a built-in one can only have its paths cleared) and counts toward the
+   *  page's "Custom" stat. Also what main.ts's settings-load merge checks to know a saved tool
+   *  entry isn't one of DEFAULT_TOOLS and should be kept rather than dropped. */
+  custom?: boolean;
 }
 
 /** A folder on disk (a coding project, or the current vault) that may have its own
@@ -213,6 +232,10 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
       agent: "~/.claude/agents",
     },
     pluginsRegistry: "~/.claude/plugins/installed_plugins.json",
+    // ~/.claude/skills/synced/<workspace>_<user>/ is a vendor-managed cache of Claude Code's own
+    // default skill catalog (confirmed on-disk: a manifest.json + .bucket-<id> marker sit
+    // alongside the skill folders) — not something the user installed or wrote.
+    builtInDirnames: ["synced"],
   },
   {
     id: "cursor",
@@ -299,6 +322,9 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
       command: "~/.codex/prompts",
       agent: "~/.codex/agents",
     },
+    // ~/.codex/skills/.system/ is Codex's own bundled default skill set (e.g. review-agent) —
+    // not something the user installed or wrote.
+    builtInDirnames: [".system"],
   },
   {
     id: "windsurf",
@@ -477,7 +503,11 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
     // equivalent — project folders symlink INTO this directory instead of having their own copy.
     id: "global",
     name: "Shared",
-    icon: "globe",
+    // Not "globe" — that icon is already spoken for by originLabel's "Global" scope indicator
+    // (sourceLabel.ts), which is a different concept (an item's scope) from this tool's own
+    // identity (a cross-tool shared skills directory). Reusing it would make the two look like
+    // the same fact wherever both appear on a card (tool caption vs. footer origin).
+    icon: "share-2",
     paths: {
       skill: "~/.agents/skills",
     },

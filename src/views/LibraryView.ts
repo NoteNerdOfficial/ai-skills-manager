@@ -1,6 +1,6 @@
-import { Component, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon } from "obsidian";
 import { cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
-import { basename, join } from "path";
+import { basename, dirname, join, sep } from "path";
 import {
   Collection,
   DiscoverEntry,
@@ -11,10 +11,11 @@ import {
   PluginSource,
   SkillSpacePluginSettings,
   SortOrder,
+  ToolConfig,
   TYPE_LABEL_SINGULAR,
   TYPE_LABELS,
 } from "../types";
-import { parseFrontmatter, parseSourceMeta, FrontmatterField } from "../scanners";
+import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, expandHome, toProjectRelative } from "../scanners";
 import { addToProject, removeFromProject } from "../projectLink";
 import { deleteItem, toggleItemEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
@@ -26,7 +27,9 @@ import { ProjectPresenceModal } from "../modals/ProjectPresenceModal";
 import { InstallFromGitHubModal } from "../modals/InstallFromGitHubModal";
 import { AddDiscoverSourceModal } from "../modals/AddDiscoverSourceModal";
 import { ConfirmModal } from "../modals/ConfirmModal";
+import { AddToolModal } from "../modals/AddToolModal";
 import {
+  addDiscoverSource,
   dedupeDiscoverCatalog,
   discoverGitSkills,
   discoverSourceId,
@@ -38,8 +41,8 @@ import {
 import { errorMessage } from "../errors";
 import { formatBytes, formatDate, formatTokens, stripFrontmatter } from "../format";
 import { buildFileTree, countFiles, isFolderItem, TreeNode } from "../fileTree";
-import { getAllProjects as computeAllProjects, performRescan, RescanResult, VAULT_PROJECT_ID } from "../rescan";
-import { sourceLabel as resolveSourceLabel } from "../sourceLabel";
+import { getAllProjects as computeAllProjects, performRescan, projectIcon, RescanResult, VAULT_PROJECT_ID } from "../rescan";
+import { originLabel as resolveOriginLabel, sourceLabel as resolveSourceLabel, toolLabel as resolveToolLabel } from "../sourceLabel";
 import { ClonedRepo, remoteHeadCommit, shallowCloneAtCommit, shallowCloneRepo } from "../git";
 import { renderDiffBody } from "../diff/renderDiff";
 import { computeCompanionChanges, CompanionRow } from "../diff/companions";
@@ -93,6 +96,29 @@ const TYPE_ICONS: Record<ItemType, string> = {
   rule: "scroll-text",
 };
 
+/** One-click suggestions for Discover's empty state — real, verified repos (checked against the
+ *  GitHub API while building this, not guessed) known to hold SKILL.md-convention content, so a
+ *  brand-new user has something to click besides a blank "+ Add source" form. Clicking one runs
+ *  the exact same addDiscoverSource() flow the modal uses, just without the form. */
+const STARTER_DISCOVER_SOURCES: { name: string; description: string; repoUrl: string }[] = [
+  { name: "Matt Pocock Skills", description: "Matt Pocock's public Agent Skills", repoUrl: "https://github.com/mattpocock/skills.git" },
+  {
+    name: "Claude Code Plugins",
+    description: "Anthropic-managed directory of Claude Code plugins",
+    repoUrl: "https://github.com/anthropics/claude-plugins-official.git",
+  },
+  {
+    name: "Awesome Copilot",
+    description: "Community skills/agents for GitHub Copilot",
+    repoUrl: "https://github.com/github/awesome-copilot.git",
+  },
+  {
+    name: "Superpowers",
+    description: "Agentic skills framework & dev methodology",
+    repoUrl: "https://github.com/obra/superpowers.git",
+  },
+];
+
 const TAG_COLORS = 8;
 
 function tagColorIndex(tag: string): number {
@@ -114,13 +140,26 @@ export class LibraryView extends ItemView {
   private projectFilter: string | null = null;
   private pluginFilter: string | null = null;
   private favoritesOnly = false;
+  /** Not one of the scope filters below (isScoped/clearScopeFilters) — like tagFilter, it's a
+   *  compounding filter that stays put across sidebar navigation and ANDs with whatever scope
+   *  you're already in, rather than being a scope of its own. Lives in the tagbar row (see
+   *  renderSourceButton), not the sidebar. */
+  private sourceFilter: "github" | "builtin" | "local" | null = null;
+  /** Per-session only (see silentUpdateItem/bulkCheckForUpdates) — whether a sourceRepo item was
+   *  last confirmed current or behind. Absent (including for anything with no sourceRepo at all)
+   *  reads as "unknown," the same muted dot as "not tracked from GitHub," until an explicit check
+   *  proves otherwise — there's no way to know staleness without asking GitHub, so nothing here
+   *  is ever assumed or persisted across sessions. */
+  private syncStatus = new Map<string, "current" | "stale">();
+  private bulkCheckInProgress = false;
+  private bulkUpdateInProgress = false;
   /** True while the sidebar's "Discover" row is active — swaps the whole content pane for the
    *  catalog grid (see renderContent/renderDiscoverContent) instead of the normal filtered
    *  library grid. Not one of the scope filters below since it isn't a way of narrowing
    *  this.items — Discover browses settings.discoverCatalog instead. */
   private discoverMode = false;
   private discoverSearch = "";
-  private discoverSortOrder: DiscoverSortOrder = "recent-desc";
+  private discoverSortOrder: DiscoverSortOrder = "source";
   private discoverTypeFilter: ItemType | null = null;
   /** The catalog entry currently open in the Discover rail (see renderDiscoverRail) — mirrors
    *  selectedItem's role for the real library, but stays entirely separate: a DiscoverEntry has
@@ -128,6 +167,13 @@ export class LibraryView extends ItemView {
   private selectedDiscoverEntry: DiscoverEntry | null = null;
   private refreshingAllDiscover = false;
   private rescanningManually = false;
+  /** True while the sidebar's "All tools" row is active — same swap-the-content-pane idea as
+   *  discoverMode, for the tool-configuration page (see renderContent/renderToolsPageContent).
+   *  Not a scope filter either, for the same reason: it isn't a way of narrowing this.items. */
+  private toolsMode = false;
+  /** The tool currently open in the docked rail (see renderToolDetailRail) — mirrors
+   *  selectedItem's role, kept entirely separate since a ToolConfig has no tree/file/edit state. */
+  private selectedTool: ToolConfig | null = null;
   private tagFilter: string | null = null;
   private untaggedOnly = false;
   private collapsedSections = new Set<string>();
@@ -157,6 +203,11 @@ export class LibraryView extends ItemView {
   // where it landed in the narrower column layout).
   private dockedScrollTop = 0;
   private wasDocked = false;
+  // Same idea again, for the tagbar's horizontal tag scroller — selecting a tag re-renders the
+  // whole view, so without tracking/restoring this the scroll region would snap back to the
+  // start on every click instead of staying where the user left it. Only the "All" chip resets
+  // it to 0 explicitly.
+  private tagbarScrollLeft = 0;
   // Same pair, for the Discover grid's own docked/undocked toggle (see renderDiscoverContent) —
   // kept separate since the two grids are different DOM subtrees with independent scroll state.
   private dockedDiscoverScrollTop = 0;
@@ -229,7 +280,30 @@ export class LibraryView extends ItemView {
     this.discoveredPlugins = result.plugins;
     this.items = result.items;
     if (this.selectedItem) {
-      this.selectedItem = this.items.find((i) => i.entryId === this.selectedItem?.entryId) ?? null;
+      const previousSourcePath = this.selectedItem.sourcePath;
+      const updated = this.items.find((i) => i.entryId === this.selectedItem?.entryId) ?? null;
+      // A toggle (or any other action that moves the underlying file/folder, e.g. into or out of
+      // .skillspace-disabled) changes sourcePath out from under the currently-open file. Without
+      // remapping it here, selectedFilePath keeps pointing at the old, now-nonexistent location,
+      // and the detail rail renders blank (loadFileContent's readFileSync throws and is swallowed
+      // into an empty string).
+      if (updated && this.selectedFilePath && previousSourcePath !== updated.sourcePath) {
+        if (this.selectedFilePath === previousSourcePath) {
+          this.selectedFilePath = updated.sourcePath;
+        } else {
+          // A multi-file skill's sourcePath is its SKILL.md, but sibling files in its tree live
+          // under the containing folder (see fileTree.ts's skillFolder) — one level up from
+          // sourcePath itself. Matching against sourcePath here (rather than its dirname) missed
+          // every sibling file, leaving the preview stuck on a since-moved path.
+          const previousDir = dirname(previousSourcePath);
+          if (this.selectedFilePath.startsWith(previousDir + sep)) {
+            const updatedDir = dirname(updated.sourcePath);
+            this.selectedFilePath = updatedDir + this.selectedFilePath.slice(previousDir.length);
+          }
+        }
+      }
+      this.selectedItem = updated;
+      if (!updated) this.selectedFilePath = null;
     }
     // Whatever file is open in the rail may have just changed on disk out from under it (a
     // restore/update, an external edit) — invalidate the cached preview so renderFileContent
@@ -355,8 +429,19 @@ export class LibraryView extends ItemView {
     ).open();
   }
 
-  private openInstallFromGitHub() {
-    new InstallFromGitHubModal(this.app, this.getSettings(), this.getAllProjects(), this.store, () => this.rescan()).open();
+  private openInstallFromGitHub(preferredToolId?: string) {
+    new InstallFromGitHubModal(
+      this.app,
+      this.getSettings(),
+      this.getAllProjects(),
+      this.store,
+      () => this.rescan(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      preferredToolId
+    ).open();
   }
 
   private openAddDiscoverSource() {
@@ -376,6 +461,61 @@ export class LibraryView extends ItemView {
     return this.items.some((item) => item.sourceRepo === repoUrl && item.sourceSubpath === subpath);
   }
 
+  /** Discover's true empty state (no sources added at all yet, not just "no search matches") —
+   *  a real heading/description instead of one line of muted text, plus one-click "starter"
+   *  suggestions (STARTER_DISCOVER_SOURCES) so there's something to click besides opening the
+   *  blank "+ Add source" form cold. */
+  private renderDiscoverEmptyState(container: HTMLElement) {
+    const empty = container.createDiv({ cls: "skillspace-empty-state" });
+    const icon = empty.createDiv({ cls: "skillspace-empty-state-icon" });
+    setIcon(icon, "compass");
+    empty.createEl("h3", { text: "Nothing here yet", cls: "skillspace-empty-state-title" });
+    empty.createEl("p", {
+      cls: "skillspace-empty-state-desc",
+      text: "Add a GitHub repo to find the skills, agents, commands, and rules inside it.",
+    });
+
+    const addBtn = empty.createEl("button", { text: "Add your own repo", cls: "mod-cta" });
+    addBtn.addEventListener("click", () => this.openAddDiscoverSource());
+
+    empty.createEl("p", { cls: "skillspace-discover-starters-label", text: "Or add one of these" });
+
+    const starters = empty.createDiv({ cls: "skillspace-discover-starters" });
+    for (const source of STARTER_DISCOVER_SOURCES) {
+      const pill = starters.createEl("button", { cls: "skillspace-discover-starter" });
+      setIcon(pill.createSpan({ cls: "skillspace-discover-starter-icon" }), "github");
+      const text = pill.createDiv({ cls: "skillspace-discover-starter-text" });
+      text.createSpan({ text: source.name, cls: "skillspace-discover-starter-name" });
+      text.createSpan({ text: source.description, cls: "skillspace-discover-starter-desc" });
+      pill.addEventListener("click", () => void this.addStarterDiscoverSource(source, pill));
+    }
+  }
+
+  private async addStarterDiscoverSource(source: { name: string; repoUrl: string }, pill: HTMLButtonElement) {
+    if (pill.disabled) return;
+    pill.disabled = true;
+    pill.addClass("is-loading");
+    const nameEl = pill.querySelector<HTMLElement>(".skillspace-discover-starter-name");
+    const originalText = nameEl?.textContent ?? source.name;
+    if (nameEl) nameEl.textContent = "Adding…";
+    try {
+      const { foundCount, skippedCount } = await addDiscoverSource(this.getSettings(), source.repoUrl, "", "", (repoUrl, subpath) =>
+        this.isDiscoverEntryInstalled(repoUrl, subpath)
+      );
+      await this.saveSettings();
+      new Notice(
+        `Found ${foundCount} item${foundCount === 1 ? "" : "s"} in ${source.name}.` +
+          (skippedCount > 0 ? ` (${skippedCount} already installed, not shown.)` : "")
+      );
+      this.render();
+    } catch (e) {
+      new Notice(`Couldn't add "${source.name}": ` + errorMessage(e));
+      pill.disabled = false;
+      pill.removeClass("is-loading");
+      if (nameEl) nameEl.textContent = originalText;
+    }
+  }
+
   /** The one choke point every sidebar nav row calls before setting its own filter (see
    *  renderSidebar/renderTypesSection/renderToolsSection/renderProjectsSection/
    *  renderPluginsSection/renderCollectionsSection) — so jumping to a different scope from the
@@ -391,6 +531,8 @@ export class LibraryView extends ItemView {
     this.favoritesOnly = false;
     this.discoverMode = false;
     this.selectedDiscoverEntry = null;
+    this.toolsMode = false;
+    this.selectedTool = null;
     this.cleanupReview();
     this.selectedItem = null;
     this.selectedFilePath = null;
@@ -407,13 +549,20 @@ export class LibraryView extends ItemView {
       this.projectFilter ||
       this.pluginFilter ||
       this.favoritesOnly ||
-      this.discoverMode
+      this.discoverMode ||
+      this.toolsMode
     );
   }
 
   private filteredItems(): ItemMetadata[] {
     const query = this.search.trim().toLowerCase();
     const filtered = this.items.filter((item) => {
+      // Baseline, not a togglable filter (unlike everything below) — a disabled tool's items
+      // never show in the main grid, same spirit as enabledFilter already being separate from
+      // the scope-filter group. this.items itself stays the full set (rescan.ts deliberately
+      // doesn't drop them, to keep their shadow-note metadata alive across a disable/re-enable),
+      // so the "All tools" page can still read true per-tool counts straight off this.items.
+      if (this.isToolDisabled(item.tool)) return false;
       if (this.enabledFilter === "enabled" && !item.enabled) return false;
       if (this.enabledFilter === "disabled" && item.enabled) return false;
       if (this.favoritesOnly && !item.favorite) return false;
@@ -422,6 +571,9 @@ export class LibraryView extends ItemView {
       if (this.collectionFilter && !item.collections.includes(this.collectionFilter)) return false;
       if (this.projectFilter && item.projectId !== this.projectFilter) return false;
       if (this.pluginFilter && item.pluginId !== this.pluginFilter) return false;
+      if (this.sourceFilter === "github" && !item.sourceRepo) return false;
+      if (this.sourceFilter === "builtin" && !this.isBuiltIn(item)) return false;
+      if (this.sourceFilter === "local" && (item.sourceRepo || this.isBuiltIn(item))) return false;
       if (this.untaggedOnly && item.tags.length > 0) return false;
       if (this.tagFilter && !item.tags.includes(this.tagFilter)) return false;
       if (query) {
@@ -476,7 +628,7 @@ export class LibraryView extends ItemView {
       return this.discoveredPlugins.find((p) => p.id === this.pluginFilter)?.name ?? "Plugin";
     }
     if (this.favoritesOnly) return "Favourites";
-    return "All skills";
+    return "All";
   }
 
   private scopeDescription(): string {
@@ -508,7 +660,7 @@ export class LibraryView extends ItemView {
       return "Bundled with this installed plugin — its own package, separate from your tool's global directories.";
     }
     if (this.favoritesOnly) return "Items you've starred for quick access.";
-    return "Every skill, agent, and command across your configured tools and projects.";
+    return "Every skill, agent, command, and rule across your configured tools and projects.";
   }
 
   private render() {
@@ -538,7 +690,7 @@ export class LibraryView extends ItemView {
 
     // Library — always first, not reorderable.
     sidebar.createDiv({ cls: "skillspace-sidebar-heading", text: "Library" });
-    this.renderNavRow(sidebar, "library", "All skills", this.items.length, !this.isScoped(), () => {
+    this.renderNavRow(sidebar, "library", "All", this.items.length, !this.isScoped(), () => {
       this.clearScopeFilters();
       this.render();
     });
@@ -639,7 +791,13 @@ export class LibraryView extends ItemView {
 
   private renderToolsSection(sidebar: HTMLElement) {
     if (!this.renderCollapsibleHeading(sidebar, "tools", "Global workspace")) return;
-    const showEmpty = this.getSettings().showEmptySidebarRows;
+    const settings = this.getSettings();
+    this.renderNavRow(sidebar, "layout-grid", "All tools", settings.tools.length, this.toolsMode, () => {
+      this.clearScopeFilters();
+      this.toolsMode = true;
+      this.render();
+    });
+    const showEmpty = settings.showEmptySidebarRows;
     for (const tool of this.getSettings().tools) {
       const count = this.items.filter((i) => i.tool === tool.id).length;
       if (!showEmpty && count === 0) continue;
@@ -666,8 +824,7 @@ export class LibraryView extends ItemView {
     for (const project of projects) {
       const count = this.items.filter((i) => i.projectId === project.id).length;
       if (!showEmpty && count === 0) continue;
-      const icon = project.id === VAULT_PROJECT_ID ? "book-marked" : "folder-git-2";
-      this.renderNavRow(sidebar, icon, project.name, count, this.projectFilter === project.id, () => {
+      this.renderNavRow(sidebar, projectIcon(project.id), project.name, count, this.projectFilter === project.id, () => {
         this.clearScopeFilters();
         this.projectFilter = this.projectFilter === project.id ? null : project.id;
         this.render();
@@ -680,8 +837,13 @@ export class LibraryView extends ItemView {
 
   private renderPluginsSection(sidebar: HTMLElement) {
     if (!this.renderCollapsibleHeading(sidebar, "plugins", "Plugins")) return;
+    const showEmpty = this.getSettings().showEmptySidebarRows;
     for (const plugin of this.discoveredPlugins) {
       const count = this.items.filter((i) => i.pluginId === plugin.id).length;
+      // Some plugins (e.g. a language-server integration) contribute no skill/agent/command/rule
+      // content at all, not just "none scanned yet" — same "don't pad the sidebar with rows that
+      // always read 0" reasoning Tools/Projects already apply, just missing here until now.
+      if (!showEmpty && count === 0) continue;
       this.renderNavRow(sidebar, "package", plugin.name, count, this.pluginFilter === plugin.id, () => {
         this.clearScopeFilters();
         this.pluginFilter = this.pluginFilter === plugin.id ? null : plugin.id;
@@ -834,6 +996,28 @@ export class LibraryView extends ItemView {
     return resolveSourceLabel(item, this.getSettings(), this.getAllProjects(), this.discoveredPlugins);
   }
 
+  private toolLabel(item: ItemMetadata) {
+    return resolveToolLabel(item, this.getSettings(), this.discoveredPlugins);
+  }
+
+  private originLabel(item: ItemMetadata) {
+    return resolveOriginLabel(item, this.getAllProjects());
+  }
+
+  private isBuiltIn(item: ItemMetadata): boolean {
+    const tool = this.getSettings().tools.find((t) => t.id === item.tool);
+    return isBuiltInPath(item.sourcePath, tool);
+  }
+
+  private isToolDisabled(toolId: string): boolean {
+    return !!this.getSettings().tools.find((t) => t.id === toolId)?.disabled;
+  }
+
+  private syncStatusFor(item: ItemMetadata): "current" | "stale" | "unknown" {
+    if (!item.sourceRepo) return "unknown";
+    return this.syncStatus.get(item.entryId) ?? "unknown";
+  }
+
   private async toggleCollection(collectionId: string) {
     const collection = this.getSettings().collections.find((c) => c.id === collectionId);
     if (!collection) return;
@@ -875,6 +1059,10 @@ export class LibraryView extends ItemView {
   private renderContent(content: HTMLElement) {
     if (this.discoverMode) {
       this.renderDiscoverContent(content);
+      return;
+    }
+    if (this.toolsMode) {
+      this.renderToolsPageContent(content);
       return;
     }
 
@@ -919,6 +1107,31 @@ export class LibraryView extends ItemView {
       this.enabledFilter = "disabled";
       this.render();
     });
+
+    // Bulk sync actions only make sense against the whole library, so only the true unscoped
+    // "All" page offers them — a filtered/scoped view (a type, a tool, a project, …) doesn't.
+    if (!this.isScoped()) {
+      const syncActions = toolbar.createDiv({ cls: "skillspace-toolbar-actions" });
+      const checkBtn = syncActions.createEl("button", { text: "Check for updates" });
+      checkBtn.addEventListener("click", () => void this.bulkCheckForUpdates(checkBtn));
+
+      const staleCount = [...this.syncStatus.values()].filter((s) => s === "stale").length;
+      if (staleCount > 0) {
+        const updateAllBtn = syncActions.createEl("button", { text: `Update all (${staleCount})`, cls: "mod-cta" });
+        updateAllBtn.addEventListener("click", () => void this.bulkUpdateAll(updateAllBtn));
+      }
+    }
+
+    // Same idea as Discover's own "+ Add source" — a one-click install that already knows which
+    // tool you're looking at, instead of landing on a blank modal and having to pick it manually.
+    if (this.toolFilter) {
+      const tool = this.getSettings().tools.find((t) => t.id === this.toolFilter);
+      if (tool) {
+        const installActions = toolbar.createDiv({ cls: "skillspace-toolbar-actions" });
+        const installBtn = installActions.createEl("button", { cls: "mod-cta", text: `Install into ${tool.name}` });
+        installBtn.addEventListener("click", () => this.openInstallFromGitHub(tool.id));
+      }
+    }
 
     this.renderTagBar(content.createDiv({ cls: "skillspace-tagbar" }));
 
@@ -1086,10 +1299,11 @@ export class LibraryView extends ItemView {
       grid.empty();
       const entries = this.filteredDiscoverEntries();
       if (entries.length === 0) {
-        grid.createDiv({
-          cls: "skillspace-empty",
-          text: totalCount === 0 ? "Nothing here yet. Add a GitHub repo to find what's in it." : "Nothing discovered matches your search.",
-        });
+        if (totalCount === 0) {
+          this.renderDiscoverEmptyState(grid);
+        } else {
+          grid.createDiv({ cls: "skillspace-empty", text: "Nothing discovered matches your search." });
+        }
         return;
       }
       if (grouped) {
@@ -1545,8 +1759,7 @@ export class LibraryView extends ItemView {
     const linkBtn = actions.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Open on GitHub" } });
     setIcon(linkBtn, "external-link");
     linkBtn.addEventListener("click", () => window.open(this.discoverEntryUrl(entry), "_blank"));
-    const installBtn = actions.createEl("button", { cls: "skillspace-icon-btn skillspace-install-btn", attr: { "aria-label": "Install" } });
-    setIcon(installBtn, "plus");
+    const installBtn = actions.createEl("button", { cls: "mod-cta skillspace-discover-rail-install-btn", text: "+ Install" });
     installBtn.addEventListener("click", () => this.installDiscoverEntry(entry));
 
     this.renderDiscoverRepoLine(panel, entry);
@@ -1568,21 +1781,274 @@ export class LibraryView extends ItemView {
     void MarkdownRenderer.render(this.app, stripFrontmatter(entry.manifestText), sizer, entry.name, this.markdownComponent);
   }
 
+  // ---------- "All tools" page ----------
+
+  private renderToolsPageContent(content: HTMLElement) {
+    const settings = this.getSettings();
+    const tools = this.sortedToolsForPage();
+
+    const header = content.createDiv({ cls: "skillspace-content-header" });
+    const titleRow = header.createDiv({ cls: "skillspace-title-row" });
+    titleRow.createEl("h2", { text: "All tools", cls: "skillspace-title" });
+    header.createDiv({
+      text: "Every configured tool — enable or disable one, edit its scanned paths, or add your own.",
+      cls: "skillspace-subtitle",
+    });
+
+    const stats = header.createDiv({ cls: "skillspace-tool-stats" });
+    const statValues: [string, number][] = [
+      ["Detected", tools.filter((t) => this.toolIsDetected(t)).length],
+      ["Enabled", tools.filter((t) => !t.disabled).length],
+      ["Custom", tools.filter((t) => t.custom).length],
+    ];
+    for (const [label, value] of statValues) {
+      const stat = stats.createDiv({ cls: "skillspace-tool-stat" });
+      stat.createSpan({ text: String(value), cls: "skillspace-tool-stat-value" });
+      stat.createSpan({ text: label, cls: "skillspace-tool-stat-label" });
+    }
+    const addBtn = stats.createEl("button", { cls: "mod-cta skillspace-add-tool-btn", text: "+ Add tool" });
+    addBtn.addEventListener("click", () => {
+      new AddToolModal(this.app, settings, this.saveSettings, () => this.rescan()).open();
+    });
+
+    const body = content.createDiv({ cls: "skillspace-body" });
+    const grid = body.createDiv({ cls: `skillspace-items${this.selectedTool ? " is-docked" : ""}` });
+    for (const tool of tools) this.renderToolCard(grid, tool);
+
+    if (this.selectedTool) {
+      const rail = body.createDiv({ cls: "skillspace-detail" });
+      this.renderToolDetailRail(rail, this.selectedTool);
+    }
+  }
+
+  /** "Detected" means at least one of this tool's configured global paths actually resolves to a
+   *  real directory on disk right now — independent of enabled state or item count, since a
+   *  correctly-configured tool with zero skills yet is still "detected." */
+  private toolIsDetected(tool: ToolConfig): boolean {
+    return Object.values(tool.paths).some((p) => p && existsSync(expandHome(p)));
+  }
+
+  /** Enabled-with-content first, then enabled-and-detected-but-empty, then enabled-but-not-even-
+   *  detected, then disabled last regardless of anything else — so the tools actually worth
+   *  looking at float to the top and a pile of unused/misconfigured/disabled ones sink down
+   *  instead of being interleaved alphabetically with the ones that matter. Alphabetical within
+   *  each tier for stability. */
+  private sortedToolsForPage(): ToolConfig[] {
+    const tier = (tool: ToolConfig): number => {
+      if (tool.disabled) return 3;
+      if (this.items.some((i) => i.tool === tool.id)) return 0;
+      if (this.toolIsDetected(tool)) return 1;
+      return 2;
+    };
+    return [...this.getSettings().tools].sort((a, b) => tier(a) - tier(b) || a.name.localeCompare(b.name));
+  }
+
+  private async toggleToolDisabled(tool: ToolConfig) {
+    tool.disabled = !tool.disabled;
+    await this.saveSettings();
+    await this.rescan();
+  }
+
+  private renderToolCard(container: HTMLElement, tool: ToolConfig) {
+    const card = container.createDiv({ cls: "skillspace-card skillspace-tool-card" });
+    if (tool.disabled) card.addClass("is-off");
+    if (this.selectedTool?.id === tool.id) card.addClass("is-selected");
+
+    const head = card.createDiv({ cls: "skillspace-card-head" });
+    const detected = this.toolIsDetected(tool);
+    head.createSpan({
+      cls: `skillspace-card-dot${detected ? " is-detected" : ""}`,
+      attr: { "aria-label": detected ? "Detected on disk" : "Not detected — check its paths" },
+    });
+    const icon = head.createSpan({ cls: "skillspace-tool-card-icon" });
+    this.renderIcon(icon, tool.icon, tool.svgIcon);
+    head.createSpan({ text: tool.name, cls: "skillspace-card-name" });
+    if (tool.custom) {
+      head.createSpan({ text: "Custom", cls: "skillspace-card-type skillspace-card-type-sm" });
+    }
+
+    const toggle = head.createEl("button", {
+      cls: `skillspace-toggle${!tool.disabled ? " is-on" : ""}`,
+      attr: { "aria-label": tool.disabled ? "Enable" : "Disable" },
+    });
+    toggle.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      void this.toggleToolDisabled(tool);
+    });
+
+    const count = this.items.filter((i) => i.tool === tool.id).length;
+    card.createDiv({
+      cls: "skillspace-card-desc",
+      text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " — disabled" : ""}`,
+    });
+
+    card.addEventListener("click", () => {
+      this.selectedTool = tool;
+      this.pendingDetailAnimation = "forward";
+      this.render();
+    });
+  }
+
+  /** One labeled path input with live found/not-found status, in this view's own raw-DOM style
+   *  (this file never uses Obsidian's Setting class, unlike every modal) — the in-app replacement
+   *  for what used to be Settings' attachPathStatus-driven accordion. `resolve` turns the raw
+   *  typed value into the absolute path to check; return null to skip checking. Fires on blur
+   *  (the "change" event), not per keystroke — a rescan() follows every edit, and that's real
+   *  filesystem work, not something to trigger on every character typed. */
+  private renderToolPathField(
+    container: HTMLElement,
+    label: string,
+    value: string,
+    placeholder: string,
+    resolve: (raw: string) => string | null,
+    onChange: (value: string) => void
+  ) {
+    const row = container.createDiv({ cls: "skillspace-toolpath-row" });
+    row.createSpan({ text: label, cls: "skillspace-toolpath-label" });
+    const input = row.createEl("input", { type: "text", cls: "skillspace-toolpath-input", attr: { placeholder } });
+    input.value = value;
+    const status = row.createSpan({ cls: "skillspace-path-status" });
+    const updateStatus = (raw: string) => {
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        status.setText("");
+        status.title = "";
+        status.className = "skillspace-path-status";
+        return;
+      }
+      const resolved = resolve(trimmed);
+      const found = resolved !== null && existsSync(resolved);
+      status.setText(found ? "found" : "not found");
+      status.title = resolved ?? "";
+      status.className = `skillspace-path-status ${found ? "is-found" : "is-missing"}`;
+    };
+    updateStatus(value);
+    input.addEventListener("change", () => {
+      onChange(input.value);
+      updateStatus(input.value);
+    });
+  }
+
+  private vaultPath(): string | null {
+    const adapter = this.app.vault.adapter;
+    return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
+  }
+
+  private renderToolDetailRail(panel: HTMLElement, tool: ToolConfig) {
+    const crumbs = panel.createDiv({ cls: "skillspace-crumbs" });
+    const backBtn = crumbs.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Back" } });
+    setIcon(backBtn, "arrow-left");
+    const back = () => {
+      this.selectedTool = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    backBtn.addEventListener("click", back);
+    const toolsCrumb = crumbs.createEl("button", { cls: "skillspace-crumb", text: "All tools" });
+    toolsCrumb.addEventListener("click", back);
+    crumbs.createSpan({ cls: "skillspace-crumb-sep", text: "/" });
+    crumbs.createEl("button", { cls: "skillspace-crumb is-current", text: tool.name });
+
+    const header = panel.createDiv({ cls: "skillspace-detail-header" });
+    const headerIcon = header.createSpan({ cls: "skillspace-tool-card-icon" });
+    this.renderIcon(headerIcon, tool.icon, tool.svgIcon);
+    header.createEl("h3", { text: tool.name, cls: "skillspace-detail-title" });
+    if (tool.custom) {
+      const removeBtn = header.createDiv({ cls: "skillspace-detail-actions" }).createEl("button", {
+        cls: "skillspace-icon-btn",
+        attr: { "aria-label": "Remove tool" },
+      });
+      setIcon(removeBtn, "trash-2");
+      removeBtn.addEventListener("click", () => void this.removeCustomTool(tool));
+    }
+
+    const body = panel.createDiv({ cls: "skillspace-detail-body" });
+
+    body.createDiv({ cls: "skillspace-sidebar-heading", text: "Global paths" });
+    for (const type of Object.keys(TYPE_LABELS) as ItemType[]) {
+      this.renderToolPathField(
+        body,
+        TYPE_LABELS[type],
+        tool.paths[type] ?? "",
+        tool.unconfirmedPaths?.[type] ?? "~/.example/path",
+        (raw) => expandHome(raw),
+        (value) => {
+          if (value.trim()) {
+            tool.paths[type] = value.trim();
+          } else {
+            delete tool.paths[type];
+          }
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
+
+    body.createDiv({ cls: "skillspace-sidebar-heading", text: "Project-scoped paths" });
+    body.createDiv({
+      cls: "setting-item-description",
+      text: "Optional override for this tool's layout inside a project folder. Leave blank to use the global path above with the home directory stripped.",
+    });
+    const vaultPath = this.vaultPath();
+    for (const type of Object.keys(TYPE_LABELS) as ItemType[]) {
+      const globalPath = tool.paths[type];
+      this.renderToolPathField(
+        body,
+        TYPE_LABELS[type],
+        tool.projectPaths?.[type] ?? "",
+        globalPath ? toProjectRelative(globalPath) : "(not scanned globally)",
+        (raw) => (vaultPath ? join(vaultPath, raw) : null),
+        (value) => {
+          if (value.trim()) {
+            tool.projectPaths = tool.projectPaths ?? {};
+            tool.projectPaths[type] = value.trim();
+          } else if (tool.projectPaths) {
+            delete tool.projectPaths[type];
+            if (Object.keys(tool.projectPaths).length === 0) delete tool.projectPaths;
+          }
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
+  }
+
+  private async removeCustomTool(tool: ToolConfig) {
+    const settings = this.getSettings();
+    settings.tools = settings.tools.filter((t) => t.id !== tool.id);
+    this.selectedTool = null;
+    await this.saveSettings();
+    await this.rescan();
+  }
+
+
+  /** Three regions: the "All" chip pinned at the start (never scrolls — it's the anchor/clear,
+   *  not content), a horizontally-scrolling middle for Untagged + however many tags there are
+   *  (wrapping to multiple lines would push the whole toolbar taller as the tag list grows;
+   *  scrolling keeps this row a fixed height instead), and the sort/source controls pinned at
+   *  the end. Scroll position is tracked (tagbarScrollLeft) and restored after every re-render —
+   *  selecting a tag re-renders the whole view, and without this the scroll region would silently
+   *  snap back to the start on every click. Only the "All" chip explicitly resets it to 0. */
   private renderTagBar(tagbar: HTMLElement) {
     const allTags = Array.from(new Set(this.items.flatMap((item) => item.tags))).sort((a, b) => a.localeCompare(b));
 
     // Toggling the active chip back off works, but it's not a visible affordance — this is the
     // dedicated "clear" chip so getting out of a tag filter doesn't mean hunting for whichever
     // chip is currently selected.
-    const allChip = tagbar.createEl("button", { text: "All", cls: "skillspace-chip" });
+    const allChip = tagbar.createEl("button", { text: "All", cls: "skillspace-chip skillspace-tagbar-anchor" });
     if (!this.tagFilter && !this.untaggedOnly) allChip.addClass("is-active");
     allChip.addEventListener("click", () => {
       this.tagFilter = null;
       this.untaggedOnly = false;
+      this.tagbarScrollLeft = 0;
       this.render();
     });
 
-    const untagged = tagbar.createEl("button", { text: "Untagged", cls: "skillspace-chip skillspace-chip-untagged" });
+    const scroll = tagbar.createDiv({ cls: "skillspace-tagbar-scroll" });
+    scroll.scrollLeft = this.tagbarScrollLeft;
+    scroll.addEventListener("scroll", () => {
+      this.tagbarScrollLeft = scroll.scrollLeft;
+    });
+
+    const untagged = scroll.createEl("button", { text: "Untagged", cls: "skillspace-chip skillspace-chip-untagged" });
     if (this.untaggedOnly) untagged.addClass("is-active");
     untagged.addEventListener("click", () => {
       this.untaggedOnly = !this.untaggedOnly;
@@ -1591,7 +2057,7 @@ export class LibraryView extends ItemView {
     });
 
     for (const tag of allTags) {
-      const chip = tagbar.createEl("button", { text: tag, cls: `skillspace-chip skillspace-tag-c${tagColorIndex(tag)}` });
+      const chip = scroll.createEl("button", { text: tag, cls: `skillspace-chip skillspace-tag-c${tagColorIndex(tag)}` });
       if (this.tagFilter === tag) chip.addClass("is-active");
       chip.addEventListener("click", () => {
         this.tagFilter = this.tagFilter === tag ? null : tag;
@@ -1600,7 +2066,47 @@ export class LibraryView extends ItemView {
       });
     }
 
-    this.renderSortButton(tagbar);
+    const controls = tagbar.createDiv({ cls: "skillspace-tagbar-controls" });
+    this.renderSourceButton(controls);
+    this.renderSortButton(controls);
+  }
+
+  private renderSourceButton(container: HTMLElement) {
+    const labels: Record<"github" | "builtin" | "local", string> = {
+      github: "GitHub-tracked",
+      builtin: "Built-in",
+      local: "Local",
+    };
+    const btn = container.createEl("button", { cls: "skillspace-sort-btn", attr: { "aria-label": "Filter by source" } });
+    const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
+    setIcon(icon, "filter");
+    btn.createSpan({ text: this.sourceFilter ? labels[this.sourceFilter] : "All sources", cls: "skillspace-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillspace-sort-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new Menu();
+      menu.addItem((menuItem) =>
+        menuItem
+          .setTitle("All sources")
+          .setChecked(this.sourceFilter === null)
+          .onClick(() => {
+            this.sourceFilter = null;
+            this.render();
+          })
+      );
+      for (const key of Object.keys(labels) as (keyof typeof labels)[]) {
+        menu.addItem((menuItem) =>
+          menuItem
+            .setTitle(labels[key])
+            .setChecked(this.sourceFilter === key)
+            .onClick(() => {
+              this.sourceFilter = key;
+              this.render();
+            })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
   }
 
   private renderSortButton(tagbar: HTMLElement) {
@@ -1629,27 +2135,22 @@ export class LibraryView extends ItemView {
   }
 
   /** Collapses a skill's project-linked instances into its global card wherever both are
-   *  visible in the current scope, so linking a skill into 3 projects reads as one card with
-   *  3 project chips instead of 4 near-identical cards. Only applies outside a project filter —
-   *  filtered to one Project Workspace, every row is a distinct physical file/symlink and stays
-   *  its own card. A project instance whose global sibling isn't in view (search/type/tool
-   *  filtered it out, or it's genuinely project-native with no global counterpart) falls back to
-   *  its own standalone card rather than silently disappearing. */
-  private groupedRows(items: ItemMetadata[]): { item: ItemMetadata; projectIds: string[] }[] {
-    if (this.projectFilter) return items.map((item) => ({ item, projectIds: [] }));
+   *  visible in the current scope, so linking a skill into 3 projects reads as one card (its
+   *  link icon opens the full list) instead of 4 near-identical cards. Only applies outside a
+   *  project filter — filtered to one Project Workspace, every row is a distinct physical
+   *  file/symlink and stays its own card. A project instance whose global sibling isn't in view
+   *  (search/type/tool filtered it out, or it's genuinely project-native with no global
+   *  counterpart) falls back to its own standalone card rather than silently disappearing. */
+  private groupedRows(items: ItemMetadata[]): ItemMetadata[] {
+    if (this.projectFilter) return items;
 
-    const rows: { item: ItemMetadata; projectIds: string[] }[] = [];
+    const rows: ItemMetadata[] = [];
     for (const item of items) {
       if (item.projectId !== null) {
         const hasVisibleGlobalSibling = items.some((i) => i.projectId === null && i.realPath === item.realPath);
         if (hasVisibleGlobalSibling) continue;
-        rows.push({ item, projectIds: [] });
-        continue;
       }
-      const projectIds = Array.from(
-        new Set(this.items.filter((i) => i.projectId && i.realPath === item.realPath).map((i) => i.projectId as string))
-      );
-      rows.push({ item, projectIds });
+      rows.push(item);
     }
     return rows;
   }
@@ -1658,6 +2159,10 @@ export class LibraryView extends ItemView {
     container.empty();
 
     if (items.length === 0) {
+      if (this.favoritesOnly) {
+        this.renderFavoritesEmptyState(container, !!this.search.trim());
+        return;
+      }
       container.createDiv({
         cls: "skillspace-empty",
         text: "Nothing here yet. Rescan tools, or check the paths in plugin settings.",
@@ -1665,24 +2170,63 @@ export class LibraryView extends ItemView {
       return;
     }
 
-    for (const row of this.groupedRows(items)) {
-      this.renderCard(container, row.item, row.projectIds);
+    for (const item of this.groupedRows(items)) {
+      this.renderCard(container, item);
     }
   }
 
-  private renderCard(container: HTMLElement, item: ItemMetadata, projectIds: string[] = []) {
+  /** Favourites starts empty for every new user, so — unlike the generic "rescan tools" message,
+   *  which would be actively wrong advice here (rescanning finds nothing new; starring does) —
+   *  this gets its own explanation plus a one-click way back to the full library to go star
+   *  something. Searching within an already-empty Favourites is a different, narrower case (the
+   *  star icon's not the point, the search itself came up empty) so it gets plain text instead. */
+  private renderFavoritesEmptyState(container: HTMLElement, isSearchMiss: boolean) {
+    if (isSearchMiss) {
+      container.createDiv({ cls: "skillspace-empty", text: "No favourites match your search." });
+      return;
+    }
+    const empty = container.createDiv({ cls: "skillspace-empty-state" });
+    const icon = empty.createDiv({ cls: "skillspace-empty-state-icon" });
+    setIcon(icon, "star");
+    empty.createEl("h3", { text: "No favourites yet", cls: "skillspace-empty-state-title" });
+    empty.createEl("p", {
+      cls: "skillspace-empty-state-desc",
+      text: "Star the skills, agents, and commands you reach for most and they'll show up here for quick access.",
+    });
+    const browseBtn = empty.createEl("button", { text: "Browse library", cls: "mod-cta" });
+    browseBtn.addEventListener("click", () => {
+      this.clearScopeFilters();
+      this.render();
+    });
+  }
+
+  private renderCard(container: HTMLElement, item: ItemMetadata) {
     const card = container.createDiv({ cls: "skillspace-card" });
     if (!item.enabled) card.addClass("is-off");
     if (this.selectedItem?.entryId === item.entryId) card.addClass("is-selected");
 
     const head = card.createDiv({ cls: "skillspace-card-head" });
-    head.createSpan({ cls: `skillspace-dot${item.enabled ? " is-on" : ""}` });
+    const syncStatus = this.syncStatusFor(item);
+    const dotLabel =
+      syncStatus === "current"
+        ? `Up to date with ${item.sourceRepo}`
+        : syncStatus === "stale"
+          ? "Update available — click the sync icon to review"
+          : item.sourceRepo
+            ? 'Not checked yet this session — click "Check for updates"'
+            : "Not tracked from GitHub — install via Discover to enable update checks";
+    head.createSpan({
+      cls: `skillspace-card-dot${syncStatus === "current" ? " is-current" : syncStatus === "stale" ? " is-stale" : ""}`,
+      attr: { "aria-label": dotLabel },
+    });
     head.createSpan({ text: item.name, cls: "skillspace-card-name" });
+    head.createSpan({ text: TYPE_LABEL_SINGULAR[item.type], cls: "skillspace-card-type skillspace-card-type-sm" });
 
     // realPath !== sourcePath is exactly what fs.realpathSync resolving through a symlink looks
     // like (same check the detail pane already uses for "→ symlinked from ..."), so it doubles
-    // as "is this actually a symlink." Surfaced in the footer, next to the type pill — same slot
-    // as the link icon for a Linked card, so both states read from the same place on the card.
+    // as "is this actually a symlink." Surfaced in the footer-right as the link icon — same slot
+    // whether the card is global or a Linked project instance, so both states read from the same
+    // place on the card.
     const isLinked = item.projectId !== null && item.realPath !== item.sourcePath;
 
     if (item.sourceRepo) {
@@ -1706,6 +2250,16 @@ export class LibraryView extends ItemView {
       void this.toggleEnabled(item);
     });
 
+    // What this is for (tool, and the plugin it's bundled with, if any) — lives under the title,
+    // small and muted. Type moved up into the head row, next to the name (see above); where it's
+    // scoped (Global vs. this one project/vault) lives in the footer instead, next to the link
+    // icon that actually answers "where's it linked" on click. See the footer-left block below.
+    const toolInfo = this.toolLabel(item);
+    const toolCaption = card.createDiv({ cls: "skillspace-card-tool" });
+    const toolIcon = toolCaption.createSpan({ cls: "skillspace-card-tool-icon" });
+    this.renderIcon(toolIcon, toolInfo.icon, toolInfo.svgIcon);
+    toolCaption.createSpan({ text: toolInfo.text });
+
     if (item.description) {
       card.createDiv({ text: item.description, cls: "skillspace-card-desc" });
     }
@@ -1717,21 +2271,12 @@ export class LibraryView extends ItemView {
       }
     }
 
-    if (projectIds.length > 0) {
-      const allProjects = this.getAllProjects();
-      const projects = card.createDiv({ cls: "skillspace-card-projects" });
-      for (const projectId of projectIds) {
-        const project = allProjects.find((p) => p.id === projectId);
-        projects.createSpan({ text: project?.name ?? "Project", cls: "skillspace-chip" });
-      }
-    }
-
     const footer = card.createDiv({ cls: "skillspace-card-footer" });
-    const sourceLabel = this.sourceLabel(item);
-    const source = footer.createDiv({ cls: "skillspace-card-source" });
-    const sourceIcon = source.createSpan({ cls: "skillspace-card-source-icon" });
-    this.renderIcon(sourceIcon, sourceLabel.icon, sourceLabel.svgIcon);
-    source.createSpan({ text: sourceLabel.text, cls: "skillspace-card-source-text" });
+    const originInfo = this.originLabel(item);
+    const origin = footer.createDiv({ cls: "skillspace-card-source" });
+    const originIcon = origin.createSpan({ cls: "skillspace-card-source-icon" });
+    this.renderIcon(originIcon, originInfo.icon);
+    origin.createSpan({ text: originInfo.text, cls: "skillspace-card-source-text" });
 
     const rightGroup = footer.createDiv({ cls: "skillspace-card-footer-right" });
     if (item.projectId === null) {
@@ -1761,19 +2306,10 @@ export class LibraryView extends ItemView {
         });
       }
     }
-    if (item.projectId !== null && !isLinked) {
-      const badge = rightGroup.createSpan({
-        cls: "skillspace-card-badge skillspace-card-badge-local",
-        attr: { "aria-label": "A real file in this project, not linked from your library — nothing here to unlink." },
-      });
-      setIcon(badge, "file");
-      badge.createSpan({ text: "Local" });
-    }
     if (item.favorite) {
       const star = rightGroup.createSpan({ cls: "skillspace-card-star" });
       setIcon(star, "star");
     }
-    rightGroup.createSpan({ text: TYPE_LABEL_SINGULAR[item.type], cls: "skillspace-card-type" });
 
     const menuBtn = rightGroup.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "More actions" } });
     setIcon(menuBtn, "more-vertical");
@@ -1796,10 +2332,12 @@ export class LibraryView extends ItemView {
     try {
       const latest = remoteHeadCommit(item.sourceRepo as string, item.sourceRef || undefined);
       if (latest === item.sourceCommit) {
+        this.syncStatus.set(item.entryId, "current");
         new Notice(`"${item.name}" is up to date.`);
         btn.disabled = false;
         btn.removeClass("is-syncing");
       } else {
+        this.syncStatus.set(item.entryId, "stale");
         // startReview re-renders the whole view (including this card), so there's no button left
         // here to reset on the success path.
         await this.startReview(item, "update");
@@ -1827,6 +2365,14 @@ export class LibraryView extends ItemView {
         .setIcon("bookmark-plus")
         .onClick(() => this.openAddToCollection(item))
     );
+    if (item.sourceRepo) {
+      menu.addItem((menuItem) =>
+        menuItem
+          .setTitle("Add to another tool…")
+          .setIcon("copy-plus")
+          .onClick(() => this.addItemToAnotherTool(item))
+      );
+    }
     menu.addSeparator();
     menu.addItem((menuItem) =>
       menuItem
@@ -1836,6 +2382,29 @@ export class LibraryView extends ItemView {
         .onClick(() => this.confirmDelete(item, isLinked))
     );
     menu.showAtMouseEvent(evt);
+  }
+
+  /** Re-runs the same install pipeline InstallFromGitHubModal.install() already owns, prefilled
+   *  from this item's own recorded source, and always landing at the new tool's global scope
+   *  (lockToGlobal) — never a specific project. Only offered for a sourceRepo item (openCardMenu
+   *  already checks): a raw copy of something with no known origin can never be checked for
+   *  updates or reconciled with where it came from, so there's no safe fallback for that case —
+   *  see the plan notes for the reasoning. Landing at global (not a project) keeps the new copy
+   *  linkable afterward through the existing "Manage project links" picker, rather than creating
+   *  a project-scoped duplicate that can't later become a link. */
+  private addItemToAnotherTool(item: ItemMetadata) {
+    if (!item.sourceRepo) return;
+    new InstallFromGitHubModal(
+      this.app,
+      this.getSettings(),
+      this.getAllProjects(),
+      this.store,
+      () => this.rescan(),
+      { repoUrl: item.sourceRepo, ref: item.sourceRef ?? "", subpath: item.sourceSubpath ?? "", type: item.type },
+      undefined,
+      item.tool,
+      true
+    ).open();
   }
 
   private openAddToCollection(item: ItemMetadata) {
@@ -2008,7 +2577,7 @@ export class LibraryView extends ItemView {
           : item.name,
       cls: "skillspace-detail-title",
     });
-    header.createSpan({ text: this.sourceLabel(item).text, cls: "skillspace-detail-tool-pill" });
+    header.createSpan({ text: this.sourceLabel(item), cls: "skillspace-detail-tool-pill" });
     if (filePath && !isReviewing) {
       const actions = header.createDiv({ cls: "skillspace-detail-actions" });
       this.renderDetailActions(actions);
@@ -2170,12 +2739,14 @@ export class LibraryView extends ItemView {
     try {
       const latest = remoteHeadCommit(item.sourceRepo as string, item.sourceRef || undefined);
       if (latest === item.sourceCommit) {
+        this.syncStatus.set(item.entryId, "current");
         new Notice(`"${item.name}" is up to date.`);
         checkBtn.disabled = false;
         checkBtn.removeClass("is-syncing");
         this.setSourceBtnContent(checkBtn, "refresh-cw", "Check for updates");
         return;
       }
+      this.syncStatus.set(item.entryId, "stale");
       // Found something — startReview re-renders the whole rail (including this button), so
       // there's nothing left to reset here on the success path.
       await this.startReview(item, "update");
@@ -2299,6 +2870,7 @@ export class LibraryView extends ItemView {
         cpSync(newRoot, unitPath);
       }
       await this.store.update(entryId, { sourceCommit: newCommit });
+      if (mode === "update") this.syncStatus.set(entryId, "current");
       clone.cleanup();
       this.review = null;
       // rescan() re-reads the store and, crucially, invalidates the cached file preview so the
@@ -2308,6 +2880,97 @@ export class LibraryView extends ItemView {
     } catch (e) {
       new Notice(`${mode === "restore" ? "Restore" : "Update"} failed: ` + errorMessage(e));
     }
+  }
+
+  /** Silent counterpart to startReview("update") + applyReview() — fetches and overwrites, same
+   *  as those two, but with no diff computed and no this.review involvement at all. Kept
+   *  deliberately independent of the interactive review's state machine (rather than sharing
+   *  code with it) so a bulk run can never collide with a review the user has open elsewhere.
+   *  Used only by bulkUpdateAll; throws on failure so the caller can keep the batch going. */
+  private async silentUpdateItem(item: ItemMetadata): Promise<void> {
+    const sourceRepo = item.sourceRepo;
+    if (!sourceRepo) throw new Error("no source repo");
+    let clone: ClonedRepo | null = null;
+    try {
+      clone = shallowCloneRepo(sourceRepo, item.sourceRef || undefined);
+      rmSync(join(clone.dir, ".git"), { recursive: true, force: true });
+
+      const subpath = item.sourceSubpath ?? "";
+      const newRoot = subpath ? join(clone.dir, subpath) : clone.dir;
+      if (!existsSync(newRoot)) {
+        throw new Error(`"${subpath}" no longer exists in this repo.`);
+      }
+
+      const unit = linkableUnit(item.sourcePath);
+      if (unit.isDirectory) {
+        rmSync(unit.path, { recursive: true, force: true });
+        cpSync(newRoot, unit.path, { recursive: true });
+      } else {
+        cpSync(newRoot, unit.path);
+      }
+      await this.store.update(item.entryId, { sourceCommit: clone.commit });
+    } finally {
+      clone?.cleanup();
+    }
+  }
+
+  /** Bulk-checks every sourceRepo item in the whole library (not just what's currently filtered/
+   *  searched — matches what "the whole library" means on the unscoped "All" page these buttons
+   *  live on) against its remote. Sequential, same as every other git call in this codebase
+   *  (remoteHeadCommit/shallowCloneRepo are blocking execFileSync calls) — yields between calls
+   *  so the button's progress label actually paints. */
+  private async bulkCheckForUpdates(btn: HTMLButtonElement) {
+    if (this.bulkCheckInProgress) return;
+    this.bulkCheckInProgress = true;
+    btn.disabled = true;
+    const tracked = this.items.filter((i) => i.sourceRepo);
+    let errors = 0;
+    for (let i = 0; i < tracked.length; i++) {
+      const item = tracked[i];
+      btn.setText(`Checking ${i + 1}/${tracked.length}…`);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      try {
+        const latest = remoteHeadCommit(item.sourceRepo as string, item.sourceRef || undefined);
+        this.syncStatus.set(item.entryId, latest === item.sourceCommit ? "current" : "stale");
+      } catch {
+        errors++;
+      }
+    }
+    this.bulkCheckInProgress = false;
+    new Notice(
+      errors > 0
+        ? `Checked ${tracked.length} — ${errors} couldn't be reached.`
+        : `Checked ${tracked.length} skill${tracked.length === 1 ? "" : "s"}.`
+    );
+    this.render();
+  }
+
+  /** Silently applies every item bulkCheckForUpdates found stale. cleanupReview() first is
+   *  defensive — these buttons live on the always-visible "All" page toolbar, so a review could
+   *  in principle still be open when this runs. */
+  private async bulkUpdateAll(btn: HTMLButtonElement) {
+    if (this.bulkUpdateInProgress) return;
+    this.bulkUpdateInProgress = true;
+    btn.disabled = true;
+    this.cleanupReview();
+    const stale = this.items.filter((i) => this.syncStatus.get(i.entryId) === "stale");
+    let updated = 0;
+    let errors = 0;
+    for (let i = 0; i < stale.length; i++) {
+      const item = stale[i];
+      btn.setText(`Updating ${i + 1}/${stale.length}…`);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      try {
+        await this.silentUpdateItem(item);
+        this.syncStatus.set(item.entryId, "current");
+        updated++;
+      } catch {
+        errors++;
+      }
+    }
+    this.bulkUpdateInProgress = false;
+    await this.rescan();
+    new Notice(errors > 0 ? `Updated ${updated}, ${errors} failed.` : `Updated ${updated} skill${updated === 1 ? "" : "s"}.`);
   }
 
   private renderTreeNodes(container: HTMLElement, nodes: TreeNode[], depth: number) {

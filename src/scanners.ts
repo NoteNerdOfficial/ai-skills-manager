@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Stats } from "fs";
 import { homedir } from "os";
-import { basename, join } from "path";
+import { basename, join, sep } from "path";
 import { slug } from "./format";
 import { DISABLED_DIRNAME } from "./itemToggle";
 import { DiscoveredItem, ItemType, PluginSource, ProjectWorkspace, ToolConfig } from "./types";
@@ -203,6 +203,25 @@ export function resolveToolDir(tool: ToolConfig, type: ItemType, project: Projec
   }
   const relativePath = tool.projectPaths?.[type] ?? (tool.paths[type] ? toProjectRelative(tool.paths[type]) : undefined);
   return relativePath ? join(expandHome(project.path), relativePath) : null;
+}
+
+/** Whether sourcePath sits inside one of this tool's known "shipped in the box" subfolders (see
+ *  ToolConfig.builtInDirnames) — a plain path-segment check, so it matches regardless of how
+ *  deep the item is nested inside that folder. Used to tell a tool-provided default skill (e.g.
+ *  Claude Code's synced/ cache) apart from something the user actually installed or wrote. */
+export function isBuiltInPath(sourcePath: string, tool: ToolConfig | undefined): boolean {
+  if (!tool?.builtInDirnames?.length) return false;
+  const segments = sourcePath.split(sep);
+  return tool.builtInDirnames.some((name) => segments.includes(name));
+}
+
+/** Every type a tool has a configured path for, global or project-scoped, in the fixed display
+ *  order — the set of types an install flow can offer for this tool. Shared by
+ *  InstallFromGitHubModal (both the "install from GitHub" and "add to another tool" cases). */
+const CANDIDATE_TYPE_ORDER: ItemType[] = ["skill", "agent", "command", "rule"];
+export function candidateTypesForTool(tool: ToolConfig): ItemType[] {
+  const known = new Set([...Object.keys(tool.paths), ...Object.keys(tool.projectPaths ?? {})]);
+  return CANDIDATE_TYPE_ORDER.filter((type) => known.has(type));
 }
 
 export function scanTool(tool: ToolConfig): DiscoveredItem[] {

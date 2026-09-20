@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { SkillSpacePluginSettings } from "../types";
-import { dedupeDiscoverCatalog, discoverGitSkills, discoverSourceId, fetchGithubStars } from "../discover";
+import { addDiscoverSource } from "../discover";
 import { errorMessage } from "../errors";
 import { parseGitHubUrl } from "./InstallFromGitHubModal";
 
@@ -112,36 +112,12 @@ export class AddDiscoverSourceModal extends Modal {
     this.submitting = true;
     this.setStatus("Cloning repository…");
     try {
-      const allFound = await discoverGitSkills(repoUrl, ref, subpath);
-      const found = allFound.filter((entry) => !this.isInstalled(entry.repoUrl, entry.subpath));
-
-      this.setStatus("Fetching repo info…");
-      const starCount = await fetchGithubStars(repoUrl);
-      const starsFetchedAt = starCount !== null ? Date.now() : null;
-      for (const entry of found) {
-        entry.starCount = starCount;
-        entry.starsFetchedAt = starsFetchedAt;
-      }
-
-      // Re-adding the same repo/subpath updates existing entries in place (by id) instead of
-      // duplicating them; genuinely new skills found this time are appended.
-      const byId = new Map(this.settings.discoverCatalog.map((e) => [e.id, e]));
-      for (const entry of found) byId.set(entry.id, entry);
-      this.settings.discoverCatalog = dedupeDiscoverCatalog(Array.from(byId.values()));
-
-      // Tracked separately from the catalog entries themselves so "Refresh all" still knows
-      // this repo exists even after every item it found gets installed or removed.
-      const sourceId = discoverSourceId(repoUrl, ref, subpath);
-      if (!this.settings.discoverSources.some((s) => s.id === sourceId)) {
-        this.settings.discoverSources.push({ id: sourceId, repoUrl, ref, subpath, addedAt: Date.now() });
-      }
-
+      const { foundCount, skippedCount } = await addDiscoverSource(this.settings, repoUrl, ref, subpath, this.isInstalled);
       await this.saveSettings();
 
-      const skipped = allFound.length - found.length;
       new Notice(
-        `Found ${found.length} item${found.length === 1 ? "" : "s"} in this repo.` +
-          (skipped > 0 ? ` (${skipped} already installed, not shown.)` : "")
+        `Found ${foundCount} item${foundCount === 1 ? "" : "s"} in this repo.` +
+          (skippedCount > 0 ? ` (${skippedCount} already installed, not shown.)` : "")
       );
       this.onAdded();
       this.close();

@@ -6,7 +6,7 @@ import { shallowCloneRepo } from "./git";
 import { parseFrontmatter } from "./scanners";
 import { slug } from "./format";
 import { errorMessage } from "./errors";
-import { DiscoverEntry, ItemType } from "./types";
+import { DiscoverEntry, ItemType, SkillSpacePluginSettings } from "./types";
 
 /** slug() truncates to 80 chars — fine for makeEntryId's short tool/type/project/name tuple, but
  *  a repo URL alone can eat most of that budget, so hashing the full repoUrl+subpath+name through
@@ -174,6 +174,45 @@ export async function discoverGitSkills(repoUrl: string, ref: string, subpath: s
   } finally {
     clone.cleanup();
   }
+}
+
+/** Clones repoUrl, finds every skill/agent/command/rule under subpath (or the whole repo), and
+ *  merges them into the Discover catalog + registers the repo as a known source — the exact
+ *  logic AddDiscoverSourceModal's submit() used to own inline, extracted so a one-click "starter"
+ *  suggestion (see LibraryView's STARTER_DISCOVER_SOURCES) can trigger the same real flow without
+ *  going through the modal's form fields. Mutates `settings` in place (same contract the modal
+ *  already had); caller is responsible for `saveSettings()`. */
+export async function addDiscoverSource(
+  settings: SkillSpacePluginSettings,
+  repoUrl: string,
+  ref: string,
+  subpath: string,
+  isInstalled: (repoUrl: string, subpath: string) => boolean
+): Promise<{ foundCount: number; skippedCount: number }> {
+  const allFound = await discoverGitSkills(repoUrl, ref, subpath);
+  const found = allFound.filter((entry) => !isInstalled(entry.repoUrl, entry.subpath));
+
+  const starCount = await fetchGithubStars(repoUrl);
+  const starsFetchedAt = starCount !== null ? Date.now() : null;
+  for (const entry of found) {
+    entry.starCount = starCount;
+    entry.starsFetchedAt = starsFetchedAt;
+  }
+
+  // Re-adding the same repo/subpath updates existing entries in place (by id) instead of
+  // duplicating them; genuinely new skills found this time are appended.
+  const byId = new Map(settings.discoverCatalog.map((e) => [e.id, e]));
+  for (const entry of found) byId.set(entry.id, entry);
+  settings.discoverCatalog = dedupeDiscoverCatalog(Array.from(byId.values()));
+
+  // Tracked separately from the catalog entries themselves so "Refresh all" still knows this
+  // repo exists even after every item it found gets installed or removed.
+  const sourceId = discoverSourceId(repoUrl, ref, subpath);
+  if (!settings.discoverSources.some((s) => s.id === sourceId)) {
+    settings.discoverSources.push({ id: sourceId, repoUrl, ref, subpath, addedAt: Date.now() });
+  }
+
+  return { foundCount: found.length, skippedCount: allFound.length - found.length };
 }
 
 /** Re-fetches exactly one already-known catalog entry's manifest — used by a card's "Refresh"

@@ -75,7 +75,7 @@ AI Skills Manager is desktop-only: it reads and writes files directly on disk (a
 
 ## Getting started
 
-1. Open the library from the ribbon icon (brain) or the **Open library** command.
+1. Open the library from the ribbon icon (shapes) or the **Open library** command.
 2. It scans every configured tool's folders automatically, nothing to set up for the common case.
 3. Tag, favorite, or add items to a collection from the detail panel or right-click menu.
 4. Toggle an item on or off directly from its card.

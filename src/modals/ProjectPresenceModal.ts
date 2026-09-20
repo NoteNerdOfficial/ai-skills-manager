@@ -1,6 +1,7 @@
-import { App, Modal, Notice } from "obsidian";
+import { App, Modal, Notice, setIcon } from "obsidian";
 import { ProjectWorkspace } from "../types";
 import { errorMessage } from "../errors";
+import { projectIcon } from "../rescan";
 
 export class ProjectPresenceModal extends Modal {
   constructor(
@@ -44,6 +45,8 @@ export class ProjectPresenceModal extends Modal {
           }
         })();
       });
+      const iconEl = row.createSpan({ cls: "skillspace-collection-picker-icon" });
+      setIcon(iconEl, projectIcon(project.id));
       row.createSpan({ text: ` ${project.name}` });
     }
   }

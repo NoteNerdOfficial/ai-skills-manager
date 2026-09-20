@@ -69,6 +69,17 @@
   color: var(--text-on-accent);
 }
 
+/* Text variant of the install action, used on the Discover rail (renderDiscoverRail) where the
+   icon-only button reads as too small/unlabeled for the main action on the page. Sized close to
+   mod-cta's default (rather than shrunk to match the icon buttons next to it) and squared off a
+   bit more than Obsidian's default button-radius so it reads as a firmer, more deliberate CTA. */
+.skillspace-discover-rail-install-btn {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font-size: var(--font-ui-small);
+}
+
 .skillspace-sidebar-heading {
   display: flex;
   align-items: center;
@@ -225,6 +236,17 @@
   flex-wrap: wrap;
 }
 
+/* Generic right-aligned cluster of toolbar buttons — pushed to the far right of
+   .skillspace-toolbar's flex row via margin-left: auto. Reused for whatever action set is
+   contextually relevant (bulk sync on the unscoped "All" page, "Install into <tool>" on a
+   tool-filtered page, …), never more than one cluster shown at a time. */
+.skillspace-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 /* Shared control height for the toolbar row — the search field and the segmented filter need to
    match exactly, not just look close, so both are pinned to this and use border-box sizing. */
 .skillspace-search-wrap,
@@ -352,6 +374,49 @@ input.skillspace-search {
   align-items: center;
   gap: 6px;
   padding: 14px 20px;
+}
+
+/* The library's own tagbar (renderTagBar) splits into three regions inside the shared
+   .skillspace-tagbar row above (also reused, flat, by Discover's own type-filter bar — these
+   three classes are scoped to the library's structure only, so Discover's bar is untouched). */
+.skillspace-tagbar-anchor {
+  flex-shrink: 0;
+}
+
+.skillspace-tagbar-scroll {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  /* The active chip's outline (2px + 1px offset = 3px past its border box) would otherwise get
+     clipped top/bottom by this container's own overflow-y: hidden regardless of scroll position
+     — this padding gives it room. (Clipping at the left/right edges while actively scrolled to
+     one extreme is normal, expected scroll-container behavior, not a bug — every horizontally
+     scrolling chip row does this.) align-items: center on the parent row absorbs the slightly
+     taller box this adds, so nothing needs compensating. */
+  padding: 4px 3px;
+}
+
+.skillspace-tagbar-scroll .skillspace-chip {
+  flex-shrink: 0;
+}
+
+.skillspace-tagbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* .skillspace-sort-btn's own margin-left: auto (below) is for Discover's flat toolbar, which has
+   no wrapper to push against — inside this wrapper the scroll region's flex: 1 already does that
+   job, so the auto margin here would just be dead space. */
+.skillspace-tagbar-controls .skillspace-sort-btn {
+  margin-left: 0;
 }
 
 .skillspace-sort-btn {
@@ -598,6 +663,146 @@ input.skillspace-search {
   font-size: var(--font-ui-small);
 }
 
+/* Spans the full grid width (not just one 280px cell) so an icon + heading + description block
+   reads as a centered page state rather than a stray card. */
+.skillspace-empty-state {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 56px 24px;
+}
+
+.skillspace-empty-state-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 14px;
+  border-radius: 50%;
+  background: var(--background-modifier-hover);
+  color: var(--text-faint);
+}
+
+.skillspace-empty-state-icon .svg-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.skillspace-empty-state-title {
+  margin: 0 0 6px;
+  font-size: var(--font-ui-medium);
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.skillspace-empty-state-desc {
+  margin: 0;
+  max-width: 320px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+/* Scoped to a direct child (not `button` generally) so it doesn't also catch the starter pill
+   buttons nested inside .skillspace-discover-starters below — those manage their own spacing
+   via that container's gap. */
+.skillspace-empty-state > button {
+  margin-top: 16px;
+}
+
+/* One-click "starter" repo suggestions on Discover's true empty state (see
+   STARTER_DISCOVER_SOURCES) — sized and styled like the "All tools" cards (.skillspace-card)
+   rather than a plain chip, since each carries a name and a short description rather than a
+   single label. Set apart from the primary "Add your own repo" CTA above with generous top
+   margin. */
+.skillspace-discover-starters-label {
+  margin: 36px 0 10px;
+  max-width: 320px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.skillspace-discover-starters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  max-width: 600px;
+}
+
+/* Qualified as `.skillspace-discover-starters button.skillspace-discover-starter` (not just
+   `.skillspace-discover-starter`) to out-specificity Obsidian core's own
+   `button:not(.clickable-icon)` rule (element + pseudo-class = one class-equivalent + one
+   element), which otherwise wins over a bare single-class selector and stamps its grey
+   `var(--interactive-normal)` fill straight through ours. .skillspace-card's div-based cards
+   don't hit this since they were never <button> elements to begin with. */
+.skillspace-discover-starters button.skillspace-discover-starter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 260px;
+  min-width: 220px;
+  max-width: 280px;
+  padding: 14px 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  background: var(--background-primary);
+  box-shadow: none;
+  cursor: pointer;
+  text-align: left;
+  height: auto;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.skillspace-discover-starters button.skillspace-discover-starter:hover {
+  border-color: var(--interactive-accent);
+  background: var(--background-primary);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
+}
+
+.skillspace-discover-starter.is-loading {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.skillspace-discover-starter-icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.skillspace-discover-starter-icon .svg-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.skillspace-discover-starter-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.skillspace-discover-starter-name {
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.skillspace-discover-starter-desc {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
 .skillspace-card {
   display: flex;
   flex-direction: column;
@@ -632,7 +837,11 @@ input.skillspace-search {
   min-width: 0;
 }
 
-.skillspace-dot {
+/* GitHub-sync status, not enabled/disabled (the toggle already owns that) — green once confirmed
+   current, orange once confirmed behind, and the same muted/dark tone for both "no sourceRepo"
+   and "has one but not checked this session," since neither is distinguishable from the other
+   without an explicit check (see syncStatusFor). */
+.skillspace-card-dot {
   width: 8px;
   height: 8px;
   flex-shrink: 0;
@@ -640,7 +849,17 @@ input.skillspace-search {
   background: var(--background-modifier-border);
 }
 
-.skillspace-dot.is-on {
+.skillspace-card-dot.is-current {
+  background: var(--color-green);
+}
+
+.skillspace-card-dot.is-stale {
+  background: var(--color-orange);
+}
+
+/* Same dot, reused on the "All tools" page's cards — lit when a tool's path is actually found on
+   disk, the same muted/dark default otherwise (see toolIsDetected). */
+.skillspace-card-dot.is-detected {
   background: var(--color-green);
 }
 
@@ -653,28 +872,37 @@ input.skillspace-search {
   font-weight: 600;
 }
 
-.skillspace-card-badge {
-  flex-shrink: 0;
-  display: inline-flex;
+/* What this item is for — the tool, and the plugin it's bundled with if any (see
+   sourceLabel.ts's toolLabel) — sits right under the title, small and muted. Type lives up in
+   the head row instead (.skillspace-card-type-sm, next to the name); where it's scoped (Global
+   vs. one project/vault) lives in the footer, next to the link icon that actually answers
+   "where's it linked" on click. */
+.skillspace-card-tool {
+  display: flex;
   align-items: center;
-  gap: 3px;
-  padding: 1px 7px;
-  border: none;
-  border-radius: 999px;
+  gap: 5px;
+  margin-top: -4px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-faint);
   font-size: var(--font-ui-smaller);
-  font-family: inherit;
-  line-height: 1.5;
-  cursor: default;
 }
 
-.skillspace-card-badge .svg-icon {
+.skillspace-card-tool span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillspace-card-tool-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.skillspace-card-tool-icon .svg-icon,
+.skillspace-card-tool-icon svg {
   width: 11px;
   height: 11px;
-}
-
-.skillspace-card-badge-local {
-  background: var(--background-modifier-hover);
-  color: var(--text-muted);
 }
 
 /* Per-instance link/unlink icon button — same slot and icon as the global card's "manage
@@ -701,17 +929,6 @@ input.skillspace-search {
 .skillspace-icon-btn.skillspace-card-link-btn:hover,
 .skillspace-icon-btn.skillspace-card-link-btn:focus {
   color: var(--color-red);
-}
-
-.skillspace-card-projects {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.skillspace-card-projects .skillspace-chip {
-  cursor: default;
-  padding: 2px 8px;
 }
 
 .skillspace-card-star {
@@ -744,6 +961,9 @@ input.skillspace-search {
 
 .skillspace-card-tags .skillspace-chip {
   cursor: default;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  line-height: 1.5;
 }
 
 .skillspace-card-footer {
@@ -794,6 +1014,15 @@ input.skillspace-search {
   border-radius: 999px;
   background: var(--background-modifier-hover);
   color: var(--text-muted);
+}
+
+/* Compact variant for the head row, next to the name — smaller than the standalone pill used
+   elsewhere (e.g. Discover's type filter), so it reads as a quiet tag on the title rather than
+   its own UI element. */
+.skillspace-card-type-sm {
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 1.6;
 }
 
 .skillspace-card-footer-right {
@@ -1342,6 +1571,18 @@ input.skillspace-tag-add-input {
   padding-bottom: 0;
 }
 
+/* Some themes hardcode a blue heading color instead of deriving it from the vault's accent
+   setting. Force headings in this embedded preview to track --interactive-accent so they match
+   the rest of the plugin's UI (and the user's chosen accent) rather than a theme's fixed blue. */
+.skillspace-detail-body .skillspace-markdown-preview h1,
+.skillspace-detail-body .skillspace-markdown-preview h2,
+.skillspace-detail-body .skillspace-markdown-preview h3,
+.skillspace-detail-body .skillspace-markdown-preview h4,
+.skillspace-detail-body .skillspace-markdown-preview h5,
+.skillspace-detail-body .skillspace-markdown-preview h6 {
+  color: var(--interactive-accent);
+}
+
 
 .skillspace-detail-save-row {
   display: flex;
@@ -1455,6 +1696,33 @@ input.skillspace-tag-add-input {
   margin-bottom: 12px;
 }
 
+.skillspace-file-input-hidden {
+  display: none;
+}
+
+.skillspace-tool-logo-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+
+.skillspace-tool-logo-preview svg {
+  width: 100%;
+  height: 100%;
+  color: var(--text-muted);
+}
+
+.skillspace-tool-logo-textarea textarea {
+  width: 100%;
+  min-height: 70px;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
 /* Obsidian's own source-mode editor has no box around it — it's just text sitting directly
    on the note background, set in the note font (not monospace) at the note's own size and
    line-height. We match that instead of leaving this looking like a plain form field. */
@@ -1492,41 +1760,15 @@ input.skillspace-tag-add-input {
   overflow-y: auto;
 }
 
+.skillspace-modal .skillspace-search-wrap {
+  margin-bottom: 8px;
+}
+
 .skillspace-collection-picker-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 0;
-}
-
-/* ---------- settings: collapsible tool sections ---------- */
-
-.skillspace-tool-details {
-  margin-bottom: 8px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.skillspace-tool-details[open] {
-  padding-bottom: 6px;
-}
-
-.skillspace-tool-summary {
-  padding: 10px 14px;
-  font-size: var(--font-ui-medium);
-  font-weight: 600;
-  cursor: pointer;
-  list-style: revert;
-}
-
-.skillspace-tool-summary:hover {
-  background: var(--background-modifier-hover);
-}
-
-.skillspace-tool-details .setting-item {
-  padding-left: 14px;
-  padding-right: 14px;
 }
 
 .skillspace-path-status {
@@ -1701,3 +1943,67 @@ input.skillspace-tag-add-input {
 /* ---------- source / install ----------
    Source status (truncated repo + Check for updates/Restore installed) lives right after the
    identity band — see .skillspace-detail-source* above, next to .skillspace-detail-band. */
+
+/* ---------- "All agents" tools page ---------- */
+
+.skillspace-tool-stats {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  margin-top: 6px;
+}
+
+.skillspace-tool-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.skillspace-tool-stat-value {
+  font-size: var(--font-ui-medium);
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+.skillspace-tool-stat-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.skillspace-tool-card-icon {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.skillspace-tool-card-icon .svg-icon,
+.skillspace-tool-card-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.skillspace-add-tool-btn {
+  margin-left: auto;
+}
+
+.skillspace-toolpath-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.skillspace-toolpath-label {
+  flex-shrink: 0;
+  width: 90px;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.skillspace-toolpath-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.skillspace-toolpath-row .skillspace-path-status {
+  flex-shrink: 0;
+}

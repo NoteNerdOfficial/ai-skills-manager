@@ -1,9 +1,18 @@
-import { Plugin } from "obsidian";
+import { addIcon, Plugin } from "obsidian";
 import { DEFAULT_SECTION_ORDER, DEFAULT_SETTINGS, DEFAULT_TOOLS, PLUGIN_ICON_ID, SkillSpacePluginSettings } from "./types";
 import { SkillSpaceSettingTab } from "./settings";
 import { LIBRARY_VIEW_TYPE, LibraryView } from "./views/LibraryView";
 import { performRescan, RescanResult } from "./rescan";
 import { ShadowNoteStore } from "./store";
+
+/** Four outlined shapes (triangle, circle, hexagon, square) in a 2x2 grid — the plugin's mark.
+ *  Registered on a 100x100 viewBox, which is what `addIcon()` renders custom icons on. */
+const PLUGIN_ICON_SVG = `
+<polygon points="26,10 43,43 9,43" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="74" cy="26" r="18" fill="none" stroke="currentColor" stroke-width="7"/>
+<polygon points="45,74 35.5,90.5 16.5,90.5 7,74 16.5,57.5 35.5,57.5" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="57" y="57" width="34" height="34" fill="none" stroke="currentColor" stroke-width="7" stroke-linejoin="round"/>
+`;
 
 export default class SkillSpacePlugin extends Plugin {
   settings: SkillSpacePluginSettings;
@@ -11,6 +20,7 @@ export default class SkillSpacePlugin extends Plugin {
   private autoRescanIntervalId: number | null = null;
 
   async onload() {
+    addIcon(PLUGIN_ICON_ID, PLUGIN_ICON_SVG);
     await this.loadSettings();
     this.store = new ShadowNoteStore(this.app, this.settings.storageFolder);
 
@@ -79,7 +89,7 @@ export default class SkillSpacePlugin extends Plugin {
 
   async loadSettings() {
     const loaded = (await this.loadData()) as Partial<SkillSpacePluginSettings> | null;
-    // Only `paths` and `projectPaths` are ever user-edited (via the settings tab);
+    // Only `paths`/`projectPaths`/`disabled` are ever user-edited (via the "All tools" page);
     // icon/name/pluginsRegistry are code-defined. Rebuilding from DEFAULT_TOOLS each load means
     // adding or changing one of those later reaches existing users instead of being silently
     // overwritten by a stale persisted copy of the old shape — which is exactly what happened
@@ -87,8 +97,18 @@ export default class SkillSpacePlugin extends Plugin {
     const mergedTools = DEFAULT_TOOLS.map((defaultTool) => {
       const saved = loaded?.tools?.find((t) => t.id === defaultTool.id);
       if (!saved) return defaultTool;
-      return { ...defaultTool, paths: saved.paths, projectPaths: saved.projectPaths ?? defaultTool.projectPaths };
+      return {
+        ...defaultTool,
+        paths: saved.paths,
+        projectPaths: saved.projectPaths ?? defaultTool.projectPaths,
+        disabled: saved.disabled,
+      };
     });
+    // A user-added tool isn't in DEFAULT_TOOLS at all, so the map above never sees it — carry it
+    // over as-is instead of letting it silently vanish on the next reload.
+    const customTools = (loaded?.tools ?? []).filter(
+      (t) => t.custom && !DEFAULT_TOOLS.some((defaultTool) => defaultTool.id === t.id)
+    );
 
     // Same idea for section order: keep the user's chosen order for known sections, but a
     // section added by a later update still shows up (appended) instead of silently vanishing
@@ -98,7 +118,7 @@ export default class SkillSpacePlugin extends Plugin {
     const mergedSectionOrder = [...savedOrder, ...missingKeys];
 
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded, {
-      tools: mergedTools,
+      tools: [...mergedTools, ...customTools],
       sectionOrder: mergedSectionOrder,
     });
   }

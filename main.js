@@ -27,10 +27,10 @@ __export(main_exports, {
   default: () => SkillSpacePlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian12 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 
 // src/types.ts
-var PLUGIN_ICON_ID = "brain";
+var PLUGIN_ICON_ID = "skillspace-shapes";
 var TYPE_LABELS = {
   skill: "Skills",
   agent: "Agents",
@@ -55,7 +55,11 @@ var DEFAULT_TOOLS = [
       command: "~/.claude/commands",
       agent: "~/.claude/agents"
     },
-    pluginsRegistry: "~/.claude/plugins/installed_plugins.json"
+    pluginsRegistry: "~/.claude/plugins/installed_plugins.json",
+    // ~/.claude/skills/synced/<workspace>_<user>/ is a vendor-managed cache of Claude Code's own
+    // default skill catalog (confirmed on-disk: a manifest.json + .bucket-<id> marker sit
+    // alongside the skill folders) — not something the user installed or wrote.
+    builtInDirnames: ["synced"]
   },
   {
     id: "cursor",
@@ -137,7 +141,10 @@ var DEFAULT_TOOLS = [
       skill: "~/.codex/skills",
       command: "~/.codex/prompts",
       agent: "~/.codex/agents"
-    }
+    },
+    // ~/.codex/skills/.system/ is Codex's own bundled default skill set (e.g. review-agent) —
+    // not something the user installed or wrote.
+    builtInDirnames: [".system"]
   },
   {
     id: "windsurf",
@@ -307,7 +314,11 @@ var DEFAULT_TOOLS = [
     // equivalent — project folders symlink INTO this directory instead of having their own copy.
     id: "global",
     name: "Shared",
-    icon: "globe",
+    // Not "globe" — that icon is already spoken for by originLabel's "Global" scope indicator
+    // (sourceLabel.ts), which is a different concept (an item's scope) from this tool's own
+    // identity (a cross-tool shared skills directory). Reusing it would make the two look like
+    // the same fact wherever both appear on a card (tool caption vs. footer origin).
+    icon: "share-2",
     paths: {
       skill: "~/.agents/skills"
     }
@@ -328,14 +339,17 @@ var DEFAULT_SETTINGS = {
 };
 
 // src/settings.ts
-var import_fs10 = require("fs");
-var import_path11 = require("path");
-var import_obsidian10 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 
 // src/errors.ts
 function errorMessage(e) {
   return e instanceof Error ? e.message : String(e);
 }
+
+// src/views/LibraryView.ts
+var import_obsidian10 = require("obsidian");
+var import_fs10 = require("fs");
+var import_path10 = require("path");
 
 // src/scanners.ts
 var import_fs2 = require("fs");
@@ -552,6 +566,19 @@ function resolveToolDir(tool, type, project) {
   const relativePath = (_b = (_a = tool.projectPaths) == null ? void 0 : _a[type]) != null ? _b : tool.paths[type] ? toProjectRelative(tool.paths[type]) : void 0;
   return relativePath ? (0, import_path3.join)(expandHome(project.path), relativePath) : null;
 }
+function isBuiltInPath(sourcePath, tool) {
+  var _a;
+  if (!((_a = tool == null ? void 0 : tool.builtInDirnames) == null ? void 0 : _a.length))
+    return false;
+  const segments = sourcePath.split(import_path3.sep);
+  return tool.builtInDirnames.some((name) => segments.includes(name));
+}
+var CANDIDATE_TYPE_ORDER = ["skill", "agent", "command", "rule"];
+function candidateTypesForTool(tool) {
+  var _a;
+  const known = /* @__PURE__ */ new Set([...Object.keys(tool.paths), ...Object.keys((_a = tool.projectPaths) != null ? _a : {})]);
+  return CANDIDATE_TYPE_ORDER.filter((type) => known.has(type));
+}
 function scanTool(tool) {
   const items = [];
   for (const type of Object.keys(tool.paths)) {
@@ -614,11 +641,6 @@ function scanAllPlugins(tools) {
   return { items, plugins };
 }
 
-// src/views/LibraryView.ts
-var import_obsidian9 = require("obsidian");
-var import_fs9 = require("fs");
-var import_path10 = require("path");
-
 // src/projectLink.ts
 var import_fs3 = require("fs");
 var import_path4 = require("path");
@@ -676,11 +698,13 @@ var CollectionEditModal = class extends import_obsidian.Modal {
     this.existing = existing;
     this.items = items;
     this.onSave = onSave;
+    this.rows = [];
     this.name = (_a = existing == null ? void 0 : existing.name) != null ? _a : "";
     this.selected = new Set((_b = existing == null ? void 0 : existing.itemIds) != null ? _b : []);
   }
   onOpen() {
     const { contentEl } = this;
+    this.rows = [];
     contentEl.addClass("skillspace-modal");
     contentEl.createEl("h3", { text: this.existing ? "Edit collection" : "New collection" });
     new import_obsidian.Setting(contentEl).setName("Name").addText(
@@ -689,6 +713,33 @@ var CollectionEditModal = class extends import_obsidian.Modal {
       })
     );
     contentEl.createEl("p", { text: "Members", cls: "setting-item-description" });
+    if (this.items.length > 0) {
+      const searchWrap = contentEl.createDiv({ cls: "skillspace-search-wrap" });
+      const searchIcon = searchWrap.createSpan({ cls: "skillspace-search-icon" });
+      (0, import_obsidian.setIcon)(searchIcon, "search");
+      const searchInput = searchWrap.createEl("input", {
+        type: "text",
+        placeholder: "Filter skills\u2026",
+        cls: "skillspace-search"
+      });
+      const clearBtn = searchWrap.createEl("button", {
+        cls: "skillspace-icon-btn skillspace-search-clear",
+        attr: { "aria-label": "Clear search" }
+      });
+      (0, import_obsidian.setIcon)(clearBtn, "x");
+      const updateClearBtn = () => clearBtn.toggle(searchInput.value.length > 0);
+      updateClearBtn();
+      searchInput.addEventListener("input", () => {
+        updateClearBtn();
+        this.filterRows(searchInput.value);
+      });
+      clearBtn.addEventListener("click", () => {
+        searchInput.value = "";
+        updateClearBtn();
+        this.filterRows("");
+        searchInput.focus();
+      });
+    }
     const list = contentEl.createDiv({ cls: "skillspace-collection-picker" });
     if (this.items.length === 0) {
       list.createEl("p", { text: "No items yet \u2014 rescan tools from the library view first." });
@@ -704,6 +755,7 @@ var CollectionEditModal = class extends import_obsidian.Modal {
           this.selected.delete(item.entryId);
       });
       row.createSpan({ text: ` ${item.name}` });
+      this.rows.push({ row, name: item.name.toLowerCase() });
     }
     new import_obsidian.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Save").setCta().onClick(async () => {
@@ -722,6 +774,12 @@ var CollectionEditModal = class extends import_obsidian.Modal {
   }
   onClose() {
     this.contentEl.empty();
+  }
+  filterRows(query) {
+    const q = query.trim().toLowerCase();
+    for (const { row, name } of this.rows) {
+      row.toggle(!q || name.includes(q));
+    }
   }
 };
 
@@ -771,8 +829,36 @@ var AddToCollectionModal = class extends import_obsidian2.Modal {
 };
 
 // src/modals/ProjectPresenceModal.ts
+var import_obsidian4 = require("obsidian");
+
+// src/rescan.ts
 var import_obsidian3 = require("obsidian");
-var ProjectPresenceModal = class extends import_obsidian3.Modal {
+var VAULT_PROJECT_ID = "vault";
+function projectIcon(projectId) {
+  return projectId === VAULT_PROJECT_ID ? "book-marked" : "folder-git-2";
+}
+function getAllProjects(app, settings) {
+  const adapter = app.vault.adapter;
+  const vaultProject = adapter instanceof import_obsidian3.FileSystemAdapter ? [{ id: VAULT_PROJECT_ID, name: app.vault.getName(), path: adapter.getBasePath() }] : [];
+  return [...vaultProject, ...settings.projectWorkspaces];
+}
+async function performRescan(app, settings, store) {
+  const projects = getAllProjects(app, settings);
+  const pluginScan = scanAllPlugins(settings.tools);
+  const discovered = [
+    ...scanAllTools(settings.tools),
+    ...scanAllProjects(settings.tools, projects),
+    ...pluginScan.items
+  ];
+  for (const item of discovered) {
+    await store.ensureItem(item);
+  }
+  await store.pruneMissing(new Set(discovered.map((d) => d.entryId)));
+  return { items: await store.list(), plugins: pluginScan.plugins };
+}
+
+// src/modals/ProjectPresenceModal.ts
+var ProjectPresenceModal = class extends import_obsidian4.Modal {
   constructor(app, itemName, projects, presentProjectIds, onAdd, onRemove) {
     super(app);
     this.itemName = itemName;
@@ -807,10 +893,12 @@ var ProjectPresenceModal = class extends import_obsidian3.Modal {
               await this.onRemove(project);
           } catch (e) {
             checkbox.checked = !wantAdd;
-            new import_obsidian3.Notice("Failed: " + errorMessage(e));
+            new import_obsidian4.Notice("Failed: " + errorMessage(e));
           }
         })();
       });
+      const iconEl = row.createSpan({ cls: "skillspace-collection-picker-icon" });
+      (0, import_obsidian4.setIcon)(iconEl, projectIcon(project.id));
       row.createSpan({ text: ` ${project.name}` });
     }
   }
@@ -820,7 +908,7 @@ var ProjectPresenceModal = class extends import_obsidian3.Modal {
 };
 
 // src/modals/InstallFromGitHubModal.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var import_fs5 = require("fs");
 var import_path6 = require("path");
 
@@ -879,7 +967,6 @@ function shallowCloneAtCommit(repoUrl, commitSha) {
 
 // src/modals/InstallFromGitHubModal.ts
 var GLOBAL_SCOPE = "__global__";
-var CANDIDATE_TYPE_ORDER = ["skill", "agent", "command", "rule"];
 function parseGitHubUrl(input) {
   let url;
   try {
@@ -899,14 +986,9 @@ function parseGitHubUrl(input) {
   }
   return { repoUrl, ref: "", subpath: "" };
 }
-function candidateTypesForTool(tool) {
-  var _a;
-  const known = /* @__PURE__ */ new Set([...Object.keys(tool.paths), ...Object.keys((_a = tool.projectPaths) != null ? _a : {})]);
-  return CANDIDATE_TYPE_ORDER.filter((type) => known.has(type));
-}
-var InstallFromGitHubModal = class extends import_obsidian4.Modal {
-  constructor(app, settings, projects, store, rescan, prefill, onInstalled) {
-    var _a, _b;
+var InstallFromGitHubModal = class extends import_obsidian5.Modal {
+  constructor(app, settings, projects, store, rescan, prefill, onInstalled, excludeToolId, lockToGlobal, preferredToolId) {
+    var _a, _b, _c;
     super(app);
     this.settings = settings;
     this.projects = projects;
@@ -914,6 +996,9 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
     this.rescan = rescan;
     this.prefill = prefill;
     this.onInstalled = onInstalled;
+    this.excludeToolId = excludeToolId;
+    this.lockToGlobal = lockToGlobal;
+    this.preferredToolId = preferredToolId;
     this.repoUrlInput = "";
     this.ref = "";
     this.subpath = "";
@@ -922,7 +1007,8 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
     this.installScope = GLOBAL_SCOPE;
     this.statusEl = null;
     this.installing = false;
-    const firstTool = (_a = settings.tools.find((t) => candidateTypesForTool(t).length > 0)) != null ? _a : settings.tools[0];
+    const preferredTool = preferredToolId ? settings.tools.find((t) => t.id === preferredToolId && candidateTypesForTool(t).length > 0) : void 0;
+    const firstTool = (_a = preferredTool != null ? preferredTool : settings.tools.find((t) => candidateTypesForTool(t).length > 0)) != null ? _a : settings.tools[0];
     this.toolId = firstTool.id;
     this.type = (_b = candidateTypesForTool(firstTool)[0]) != null ? _b : "skill";
     if (prefill) {
@@ -931,7 +1017,7 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
       this.subpath = prefill.subpath;
       this.refTouched = true;
       this.subpathTouched = true;
-      const toolForType = settings.tools.find((t) => candidateTypesForTool(t).includes(prefill.type));
+      const toolForType = (_c = settings.tools.find((t) => candidateTypesForTool(t).includes(prefill.type) && t.id !== excludeToolId)) != null ? _c : settings.tools.find((t) => candidateTypesForTool(t).includes(prefill.type));
       if (toolForType) {
         this.toolId = toolForType.id;
         this.type = prefill.type;
@@ -942,7 +1028,7 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
     const { contentEl } = this;
     contentEl.addClass("skillspace-modal");
     contentEl.createEl("h3", { text: "Install from GitHub" });
-    new import_obsidian4.Setting(contentEl).setName("Repository URL").setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.").addText((text) => {
+    new import_obsidian5.Setting(contentEl).setName("Repository URL").setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.").addText((text) => {
       text.setPlaceholder("https://github.com/owner/repo");
       if (this.prefill)
         text.setValue(this.prefill.repoUrl);
@@ -962,7 +1048,7 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
       });
     });
     let refText;
-    new import_obsidian4.Setting(contentEl).setName("Branch or tag").setDesc("Leave blank to track the repo's default branch.").addText((text) => {
+    new import_obsidian5.Setting(contentEl).setName("Branch or tag").setDesc("Leave blank to track the repo's default branch.").addText((text) => {
       refText = text;
       if (this.prefill)
         text.setValue(this.prefill.ref);
@@ -972,7 +1058,7 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
       });
     });
     let subpathText;
-    new import_obsidian4.Setting(contentEl).setName("Subpath").setDesc("Folder within the repo to install. Leave blank to install the repo root itself.").addText((text) => {
+    new import_obsidian5.Setting(contentEl).setName("Subpath").setDesc("Folder within the repo to install. Leave blank to install the repo root itself.").addText((text) => {
       subpathText = text;
       if (this.prefill)
         text.setValue(this.prefill.subpath);
@@ -982,7 +1068,7 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
       });
     });
     let typeDropdownEl = null;
-    new import_obsidian4.Setting(contentEl).setName("Tool").addDropdown((dropdown) => {
+    new import_obsidian5.Setting(contentEl).setName("Tool").addDropdown((dropdown) => {
       for (const tool of this.settings.tools) {
         if (candidateTypesForTool(tool).length === 0)
           continue;
@@ -1003,7 +1089,7 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
         }
       });
     });
-    new import_obsidian4.Setting(contentEl).setName("Type").addDropdown((dropdown) => {
+    new import_obsidian5.Setting(contentEl).setName("Type").addDropdown((dropdown) => {
       typeDropdownEl = dropdown.selectEl;
       const tool = this.settings.tools.find((t) => t.id === this.toolId);
       for (const type of tool ? candidateTypesForTool(tool) : []) {
@@ -1013,17 +1099,19 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
         this.type = value;
       });
     });
-    new import_obsidian4.Setting(contentEl).setName("Install into").addDropdown((dropdown) => {
-      dropdown.addOption(GLOBAL_SCOPE, "Global");
-      for (const project of this.projects) {
-        dropdown.addOption(project.id, project.name);
-      }
-      dropdown.setValue(this.installScope).onChange((value) => {
-        this.installScope = value;
+    if (!this.lockToGlobal) {
+      new import_obsidian5.Setting(contentEl).setName("Install into").addDropdown((dropdown) => {
+        dropdown.addOption(GLOBAL_SCOPE, "Global");
+        for (const project of this.projects) {
+          dropdown.addOption(project.id, project.name);
+        }
+        dropdown.setValue(this.installScope).onChange((value) => {
+          this.installScope = value;
+        });
       });
-    });
+    }
     this.statusEl = contentEl.createDiv({ cls: "skillspace-modal-meta" });
-    new import_obsidian4.Setting(contentEl).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close())).addButton(
+    new import_obsidian5.Setting(contentEl).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close())).addButton(
       (btn) => btn.setButtonText("Install").setCta().onClick(() => void this.install())
     );
   }
@@ -1036,18 +1124,18 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
     if (this.installing)
       return;
     if (!this.repoUrlInput.trim()) {
-      new import_obsidian4.Notice("Enter a repository URL first.");
+      new import_obsidian5.Notice("Enter a repository URL first.");
       return;
     }
     const tool = this.settings.tools.find((t) => t.id === this.toolId);
     if (!tool) {
-      new import_obsidian4.Notice("Pick a tool to install into.");
+      new import_obsidian5.Notice("Pick a tool to install into.");
       return;
     }
     const project = this.installScope === GLOBAL_SCOPE ? null : (_a = this.projects.find((p) => p.id === this.installScope)) != null ? _a : null;
     const destDir = resolveToolDir(tool, this.type, project);
     if (!destDir) {
-      new import_obsidian4.Notice(`${tool.name} has no configured ${this.type} location${project ? " for a project" : ""}.`);
+      new import_obsidian5.Notice(`${tool.name} has no configured ${this.type} location${project ? " for a project" : ""}.`);
       return;
     }
     const repoUrl = (_c = (_b = parseGitHubUrl(this.repoUrlInput)) == null ? void 0 : _b.repoUrl) != null ? _c : this.repoUrlInput.trim();
@@ -1090,11 +1178,11 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
         sourceCommit: clone.commit
       });
       await this.rescan();
-      new import_obsidian4.Notice(`Installed "${name}" into ${tool.name}.`);
+      new import_obsidian5.Notice(`Installed "${name}" into ${tool.name}.`);
       (_e = this.onInstalled) == null ? void 0 : _e.call(this);
       this.close();
     } catch (e) {
-      new import_obsidian4.Notice(`Install failed: ${errorMessage(e)}`);
+      new import_obsidian5.Notice(`Install failed: ${errorMessage(e)}`);
       this.setStatus("");
     } finally {
       clone == null ? void 0 : clone.cleanup();
@@ -1107,13 +1195,13 @@ var InstallFromGitHubModal = class extends import_obsidian4.Modal {
 };
 
 // src/modals/AddDiscoverSourceModal.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/discover.ts
 var import_fs6 = require("fs");
 var import_path7 = require("path");
 var import_crypto = require("crypto");
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 function discoverEntryId(repoUrl, entrySubpath, name) {
   const hash = (0, import_crypto.createHash)("sha1").update(`${repoUrl}#${entrySubpath}#${name}`).digest("hex").slice(0, 12);
   return `${slug(name)}-${hash}`;
@@ -1220,6 +1308,25 @@ async function discoverGitSkills(repoUrl, ref, subpath) {
     clone.cleanup();
   }
 }
+async function addDiscoverSource(settings, repoUrl, ref, subpath, isInstalled) {
+  const allFound = await discoverGitSkills(repoUrl, ref, subpath);
+  const found = allFound.filter((entry) => !isInstalled(entry.repoUrl, entry.subpath));
+  const starCount = await fetchGithubStars(repoUrl);
+  const starsFetchedAt = starCount !== null ? Date.now() : null;
+  for (const entry of found) {
+    entry.starCount = starCount;
+    entry.starsFetchedAt = starsFetchedAt;
+  }
+  const byId = new Map(settings.discoverCatalog.map((e) => [e.id, e]));
+  for (const entry of found)
+    byId.set(entry.id, entry);
+  settings.discoverCatalog = dedupeDiscoverCatalog(Array.from(byId.values()));
+  const sourceId = discoverSourceId(repoUrl, ref, subpath);
+  if (!settings.discoverSources.some((s) => s.id === sourceId)) {
+    settings.discoverSources.push({ id: sourceId, repoUrl, ref, subpath, addedAt: Date.now() });
+  }
+  return { foundCount: found.length, skippedCount: allFound.length - found.length };
+}
 async function refetchDiscoverEntry(entry) {
   const clone = shallowCloneRepo(entry.repoUrl, entry.ref || void 0);
   try {
@@ -1266,7 +1373,7 @@ async function fetchGithubStars(repoUrl) {
   if (!parsed)
     return null;
   try {
-    const res = await (0, import_obsidian5.requestUrl)({
+    const res = await (0, import_obsidian6.requestUrl)({
       url: `https://api.github.com/repos/${parsed.owner}/${parsed.repo}`,
       throw: false
     });
@@ -1282,7 +1389,7 @@ async function fetchGithubStars(repoUrl) {
 }
 
 // src/modals/AddDiscoverSourceModal.ts
-var AddDiscoverSourceModal = class extends import_obsidian6.Modal {
+var AddDiscoverSourceModal = class extends import_obsidian7.Modal {
   constructor(app, settings, saveSettings, isInstalled, onAdded) {
     super(app);
     this.settings = settings;
@@ -1307,7 +1414,7 @@ var AddDiscoverSourceModal = class extends import_obsidian6.Modal {
     });
     let refText;
     let subpathText;
-    new import_obsidian6.Setting(contentEl).setName("Repository URL").setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.").addText((text) => {
+    new import_obsidian7.Setting(contentEl).setName("Repository URL").setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.").addText((text) => {
       text.setPlaceholder("https://github.com/owner/repo").onChange((value) => {
         this.repoUrlInput = value;
         const parsed = parseGitHubUrl(value);
@@ -1323,14 +1430,14 @@ var AddDiscoverSourceModal = class extends import_obsidian6.Modal {
         }
       });
     });
-    new import_obsidian6.Setting(contentEl).setName("Branch or tag").setDesc("Leave blank to track the repo's default branch.").addText((text) => {
+    new import_obsidian7.Setting(contentEl).setName("Branch or tag").setDesc("Leave blank to track the repo's default branch.").addText((text) => {
       refText = text;
       text.onChange((value) => {
         this.ref = value;
         this.refTouched = true;
       });
     });
-    new import_obsidian6.Setting(contentEl).setName("Subpath").setDesc("Folder within the repo to search. Leave blank to search the whole repo.").addText((text) => {
+    new import_obsidian7.Setting(contentEl).setName("Subpath").setDesc("Folder within the repo to search. Leave blank to search the whole repo.").addText((text) => {
       subpathText = text;
       text.onChange((value) => {
         this.subpath = value;
@@ -1338,7 +1445,7 @@ var AddDiscoverSourceModal = class extends import_obsidian6.Modal {
       });
     });
     this.statusEl = contentEl.createDiv({ cls: "skillspace-modal-meta" });
-    new import_obsidian6.Setting(contentEl).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close())).addButton(
+    new import_obsidian7.Setting(contentEl).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close())).addButton(
       (btn) => btn.setButtonText("Search repo").setCta().onClick(() => void this.submit())
     );
   }
@@ -1351,7 +1458,7 @@ var AddDiscoverSourceModal = class extends import_obsidian6.Modal {
     if (this.submitting)
       return;
     if (!this.repoUrlInput.trim()) {
-      new import_obsidian6.Notice("Enter a repository URL first.");
+      new import_obsidian7.Notice("Enter a repository URL first.");
       return;
     }
     const repoUrl = (_b = (_a = parseGitHubUrl(this.repoUrlInput)) == null ? void 0 : _a.repoUrl) != null ? _b : this.repoUrlInput.trim();
@@ -1360,32 +1467,15 @@ var AddDiscoverSourceModal = class extends import_obsidian6.Modal {
     this.submitting = true;
     this.setStatus("Cloning repository\u2026");
     try {
-      const allFound = await discoverGitSkills(repoUrl, ref, subpath);
-      const found = allFound.filter((entry) => !this.isInstalled(entry.repoUrl, entry.subpath));
-      this.setStatus("Fetching repo info\u2026");
-      const starCount = await fetchGithubStars(repoUrl);
-      const starsFetchedAt = starCount !== null ? Date.now() : null;
-      for (const entry of found) {
-        entry.starCount = starCount;
-        entry.starsFetchedAt = starsFetchedAt;
-      }
-      const byId = new Map(this.settings.discoverCatalog.map((e) => [e.id, e]));
-      for (const entry of found)
-        byId.set(entry.id, entry);
-      this.settings.discoverCatalog = dedupeDiscoverCatalog(Array.from(byId.values()));
-      const sourceId = discoverSourceId(repoUrl, ref, subpath);
-      if (!this.settings.discoverSources.some((s) => s.id === sourceId)) {
-        this.settings.discoverSources.push({ id: sourceId, repoUrl, ref, subpath, addedAt: Date.now() });
-      }
+      const { foundCount, skippedCount } = await addDiscoverSource(this.settings, repoUrl, ref, subpath, this.isInstalled);
       await this.saveSettings();
-      const skipped = allFound.length - found.length;
-      new import_obsidian6.Notice(
-        `Found ${found.length} item${found.length === 1 ? "" : "s"} in this repo.` + (skipped > 0 ? ` (${skipped} already installed, not shown.)` : "")
+      new import_obsidian7.Notice(
+        `Found ${foundCount} item${foundCount === 1 ? "" : "s"} in this repo.` + (skippedCount > 0 ? ` (${skippedCount} already installed, not shown.)` : "")
       );
       this.onAdded();
       this.close();
     } catch (e) {
-      new import_obsidian6.Notice(`Couldn't add source: ${errorMessage(e)}`);
+      new import_obsidian7.Notice(`Couldn't add source: ${errorMessage(e)}`);
       this.setStatus("");
     } finally {
       this.submitting = false;
@@ -1397,8 +1487,8 @@ var AddDiscoverSourceModal = class extends import_obsidian6.Modal {
 };
 
 // src/modals/ConfirmModal.ts
-var import_obsidian7 = require("obsidian");
-var ConfirmModal = class extends import_obsidian7.Modal {
+var import_obsidian8 = require("obsidian");
+var ConfirmModal = class extends import_obsidian8.Modal {
   constructor(app, title, message, confirmLabel, onConfirm) {
     super(app);
     this.title = title;
@@ -1425,8 +1515,141 @@ var ConfirmModal = class extends import_obsidian7.Modal {
   }
 };
 
-// src/fileTree.ts
+// src/modals/AddToolModal.ts
+var import_obsidian9 = require("obsidian");
 var import_fs7 = require("fs");
+function attachPathStatus(controlEl) {
+  const el = controlEl.createSpan({ cls: "skillspace-path-status" });
+  return (rawPath) => {
+    const trimmed = rawPath.trim();
+    if (!trimmed) {
+      el.setText("");
+      el.title = "";
+      el.className = "skillspace-path-status";
+      return;
+    }
+    const resolved = expandHome(trimmed);
+    const found = (0, import_fs7.existsSync)(resolved);
+    el.setText(found ? "found" : "not found");
+    el.title = resolved;
+    el.className = `skillspace-path-status ${found ? "is-found" : "is-missing"}`;
+  };
+}
+var AddToolModal = class extends import_obsidian9.Modal {
+  constructor(app, settings, saveSettings, rescan) {
+    super(app);
+    this.settings = settings;
+    this.saveSettings = saveSettings;
+    this.rescan = rescan;
+    this.name = "";
+    this.paths = {};
+    /** Raw inline SVG markup — same field/rendering contract as ToolConfig.svgIcon (parsed with
+     *  DOMParser and appended directly, see LibraryView.renderIcon), not a PNG/JPG data URI or
+     *  image URL. Empty means fall back to the generic default icon. */
+    this.svgIcon = "";
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("skillspace-modal");
+    contentEl.createEl("h3", { text: "Add tool" });
+    new import_obsidian9.Setting(contentEl).setName("Name").addText(
+      (text) => text.setPlaceholder("My Tool").onChange((value) => {
+        this.name = value;
+      })
+    );
+    this.renderLogoField(contentEl);
+    for (const type of Object.keys(TYPE_LABELS)) {
+      const setting = new import_obsidian9.Setting(contentEl).setName(TYPE_LABELS[type]);
+      const updateStatus = attachPathStatus(setting.controlEl);
+      setting.addText(
+        (text) => text.setPlaceholder("~/.example/path").onChange((value) => {
+          if (value.trim()) {
+            this.paths[type] = value.trim();
+          } else {
+            delete this.paths[type];
+          }
+          updateStatus(value);
+        })
+      );
+    }
+    new import_obsidian9.Setting(contentEl).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close())).addButton(
+      (btn) => btn.setButtonText("Add tool").setCta().onClick(() => void this.save())
+    );
+  }
+  /** Logo: a textarea for pasting raw SVG markup directly, plus a file picker that reads a
+   *  chosen .svg file into that same textarea (FileReader, text — never a PNG/JPG, since
+   *  renderIcon only knows how to parse-and-append SVG markup, not raster images/data URIs). A
+   *  live preview next to the field re-parses on every change so a malformed paste is obvious
+   *  immediately rather than only failing silently later when the card tries to render it. */
+  renderLogoField(contentEl) {
+    const setting = new import_obsidian9.Setting(contentEl).setName("Logo (optional)").setDesc("Paste SVG markup, or choose a .svg file. Falls back to a generic icon if left blank.");
+    const preview = setting.controlEl.createSpan({ cls: "skillspace-tool-logo-preview" });
+    const updatePreview = () => {
+      preview.empty();
+      if (!this.svgIcon.trim())
+        return;
+      try {
+        const parsed = new DOMParser().parseFromString(this.svgIcon, "image/svg+xml");
+        if (parsed.querySelector("parsererror"))
+          return;
+        const svgEl = parsed.documentElement;
+        if (svgEl.tagName.toLowerCase() !== "svg")
+          return;
+        preview.appendChild(svgEl);
+      } catch (e) {
+      }
+    };
+    const fileInput = setting.controlEl.createEl("input", {
+      type: "file",
+      cls: "skillspace-file-input-hidden",
+      attr: { accept: ".svg,image/svg+xml" }
+    });
+    fileInput.addEventListener("change", () => {
+      var _a;
+      const file = (_a = fileInput.files) == null ? void 0 : _a[0];
+      if (!file)
+        return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== "string")
+          return;
+        this.svgIcon = reader.result;
+        textArea.setValue(this.svgIcon);
+        updatePreview();
+      };
+      reader.readAsText(file);
+    });
+    setting.addButton((btn) => btn.setButtonText("Choose file\u2026").onClick(() => fileInput.click()));
+    let textArea;
+    new import_obsidian9.Setting(contentEl).setClass("skillspace-tool-logo-textarea").addTextArea((ta) => {
+      textArea = ta;
+      ta.setPlaceholder('<svg xmlns="http://www.w3.org/2000/svg" ...>...</svg>').onChange((value) => {
+        this.svgIcon = value;
+        updatePreview();
+      });
+    });
+  }
+  async save() {
+    const trimmedName = this.name.trim();
+    if (!trimmedName) {
+      new import_obsidian9.Notice("Give the tool a name first.");
+      return;
+    }
+    const id = `${slug(trimmedName)}-${Date.now()}`;
+    const svgIcon = this.svgIcon.trim() || void 0;
+    this.settings.tools.push({ id, name: trimmedName, icon: "terminal", svgIcon, paths: this.paths, custom: true });
+    await this.saveSettings();
+    await this.rescan();
+    new import_obsidian9.Notice(`Added "${trimmedName}".`);
+    this.close();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+
+// src/fileTree.ts
+var import_fs8 = require("fs");
 var import_path8 = require("path");
 var SKIP_ENTRIES = /* @__PURE__ */ new Set(["node_modules", ".git", ".DS_Store"]);
 var MAX_DEPTH = 4;
@@ -1441,7 +1664,7 @@ function walk(dir, prefix, depth) {
     return [];
   let entries;
   try {
-    entries = (0, import_fs7.readdirSync)(dir);
+    entries = (0, import_fs8.readdirSync)(dir);
   } catch (e) {
     return [];
   }
@@ -1453,7 +1676,7 @@ function walk(dir, prefix, depth) {
     const relPath = prefix ? `${prefix}/${entry}` : entry;
     let isDir = false;
     try {
-      isDir = (0, import_fs7.statSync)(absPath).isDirectory();
+      isDir = (0, import_fs8.statSync)(absPath).isDirectory();
     } catch (e) {
       continue;
     }
@@ -1474,44 +1697,30 @@ function countFiles(nodes) {
   }, 0);
 }
 
-// src/rescan.ts
-var import_obsidian8 = require("obsidian");
-var VAULT_PROJECT_ID = "vault";
-function getAllProjects(app, settings) {
-  const adapter = app.vault.adapter;
-  const vaultProject = adapter instanceof import_obsidian8.FileSystemAdapter ? [{ id: VAULT_PROJECT_ID, name: app.vault.getName(), path: adapter.getBasePath() }] : [];
-  return [...vaultProject, ...settings.projectWorkspaces];
-}
-async function performRescan(app, settings, store) {
-  const projects = getAllProjects(app, settings);
-  const pluginScan = scanAllPlugins(settings.tools);
-  const discovered = [
-    ...scanAllTools(settings.tools),
-    ...scanAllProjects(settings.tools, projects),
-    ...pluginScan.items
-  ];
-  for (const item of discovered) {
-    await store.ensureItem(item);
-  }
-  await store.pruneMissing(new Set(discovered.map((d) => d.entryId)));
-  return { items: await store.list(), plugins: pluginScan.plugins };
-}
-
 // src/sourceLabel.ts
-function sourceLabel(item, settings, projects, plugins) {
-  var _a, _b, _c, _d, _e;
+function toolLabel(item, settings, plugins) {
+  var _a, _b, _c, _d, _e, _f;
   const tool = settings.tools.find((t) => t.id === item.tool);
   const toolName = (_a = tool == null ? void 0 : tool.name) != null ? _a : item.tool;
   if (item.pluginId) {
     const pluginName = (_c = (_b = plugins.find((p) => p.id === item.pluginId)) == null ? void 0 : _b.name) != null ? _c : item.pluginId;
-    return { icon: "package", text: `${toolName} \xB7 ${pluginName}` };
+    return { icon: (_d = tool == null ? void 0 : tool.icon) != null ? _d : "package", text: `${toolName} \xB7 ${pluginName}`, svgIcon: tool == null ? void 0 : tool.svgIcon };
   }
+  if (isBuiltInPath(item.sourcePath, tool)) {
+    return { icon: (_e = tool == null ? void 0 : tool.icon) != null ? _e : "blocks", text: `${toolName} \xB7 Built-in`, svgIcon: tool == null ? void 0 : tool.svgIcon };
+  }
+  return { icon: (_f = tool == null ? void 0 : tool.icon) != null ? _f : "blocks", text: toolName, svgIcon: tool == null ? void 0 : tool.svgIcon };
+}
+function originLabel(item, projects) {
+  var _a;
   if (item.projectId) {
     const project = projects.find((p) => p.id === item.projectId);
-    const icon = item.projectId === VAULT_PROJECT_ID ? "book-marked" : "folder-git-2";
-    return { icon, text: `${toolName} \xB7 ${(_d = project == null ? void 0 : project.name) != null ? _d : "Project"}` };
+    return { icon: projectIcon(item.projectId), text: (_a = project == null ? void 0 : project.name) != null ? _a : "Project" };
   }
-  return { icon: (_e = tool == null ? void 0 : tool.icon) != null ? _e : "globe", text: `${toolName} \xB7 Global`, svgIcon: tool == null ? void 0 : tool.svgIcon };
+  return { icon: "globe", text: "Global" };
+}
+function sourceLabel(item, settings, projects, plugins) {
+  return `${toolLabel(item, settings, plugins).text} \xB7 ${originLabel(item, projects).text}`;
 }
 
 // node_modules/diff/libesm/diff/base.js
@@ -2162,18 +2371,18 @@ function renderDiffLine(container, line) {
 }
 
 // src/diff/companions.ts
-var import_fs8 = require("fs");
+var import_fs9 = require("fs");
 var import_path9 = require("path");
 function listFilesRecursive(dir, prefix = "") {
-  if (!(0, import_fs8.existsSync)(dir))
+  if (!(0, import_fs9.existsSync)(dir))
     return [];
   const files = [];
-  for (const entry of (0, import_fs8.readdirSync)(dir)) {
+  for (const entry of (0, import_fs9.readdirSync)(dir)) {
     if (entry === ".git")
       continue;
     const entryPath = (0, import_path9.join)(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
-    if ((0, import_fs8.statSync)(entryPath).isDirectory()) {
+    if ((0, import_fs9.statSync)(entryPath).isDirectory()) {
       files.push(...listFilesRecursive(entryPath, relPath));
     } else {
       files.push(relPath);
@@ -2183,7 +2392,7 @@ function listFilesRecursive(dir, prefix = "") {
 }
 function filesEqual(a, b) {
   try {
-    return (0, import_fs8.readFileSync)(a).equals((0, import_fs8.readFileSync)(b));
+    return (0, import_fs9.readFileSync)(a).equals((0, import_fs9.readFileSync)(b));
   } catch (e) {
     return false;
   }
@@ -2226,6 +2435,24 @@ var TYPE_ICONS = {
   command: "terminal",
   rule: "scroll-text"
 };
+var STARTER_DISCOVER_SOURCES = [
+  { name: "Matt Pocock Skills", description: "Matt Pocock's public Agent Skills", repoUrl: "https://github.com/mattpocock/skills.git" },
+  {
+    name: "Claude Code Plugins",
+    description: "Anthropic-managed directory of Claude Code plugins",
+    repoUrl: "https://github.com/anthropics/claude-plugins-official.git"
+  },
+  {
+    name: "Awesome Copilot",
+    description: "Community skills/agents for GitHub Copilot",
+    repoUrl: "https://github.com/github/awesome-copilot.git"
+  },
+  {
+    name: "Superpowers",
+    description: "Agentic skills framework & dev methodology",
+    repoUrl: "https://github.com/obra/superpowers.git"
+  }
+];
 var TAG_COLORS = 8;
 function tagColorIndex(tag) {
   let hash = 0;
@@ -2234,7 +2461,7 @@ function tagColorIndex(tag) {
   }
   return hash % TAG_COLORS;
 }
-var LibraryView = class extends import_obsidian9.ItemView {
+var LibraryView = class extends import_obsidian10.ItemView {
   constructor(leaf, getSettings, store, saveSettings) {
     super(leaf);
     this.getSettings = getSettings;
@@ -2250,13 +2477,26 @@ var LibraryView = class extends import_obsidian9.ItemView {
     this.projectFilter = null;
     this.pluginFilter = null;
     this.favoritesOnly = false;
+    /** Not one of the scope filters below (isScoped/clearScopeFilters) — like tagFilter, it's a
+     *  compounding filter that stays put across sidebar navigation and ANDs with whatever scope
+     *  you're already in, rather than being a scope of its own. Lives in the tagbar row (see
+     *  renderSourceButton), not the sidebar. */
+    this.sourceFilter = null;
+    /** Per-session only (see silentUpdateItem/bulkCheckForUpdates) — whether a sourceRepo item was
+     *  last confirmed current or behind. Absent (including for anything with no sourceRepo at all)
+     *  reads as "unknown," the same muted dot as "not tracked from GitHub," until an explicit check
+     *  proves otherwise — there's no way to know staleness without asking GitHub, so nothing here
+     *  is ever assumed or persisted across sessions. */
+    this.syncStatus = /* @__PURE__ */ new Map();
+    this.bulkCheckInProgress = false;
+    this.bulkUpdateInProgress = false;
     /** True while the sidebar's "Discover" row is active — swaps the whole content pane for the
      *  catalog grid (see renderContent/renderDiscoverContent) instead of the normal filtered
      *  library grid. Not one of the scope filters below since it isn't a way of narrowing
      *  this.items — Discover browses settings.discoverCatalog instead. */
     this.discoverMode = false;
     this.discoverSearch = "";
-    this.discoverSortOrder = "recent-desc";
+    this.discoverSortOrder = "source";
     this.discoverTypeFilter = null;
     /** The catalog entry currently open in the Discover rail (see renderDiscoverRail) — mirrors
      *  selectedItem's role for the real library, but stays entirely separate: a DiscoverEntry has
@@ -2264,6 +2504,13 @@ var LibraryView = class extends import_obsidian9.ItemView {
     this.selectedDiscoverEntry = null;
     this.refreshingAllDiscover = false;
     this.rescanningManually = false;
+    /** True while the sidebar's "All tools" row is active — same swap-the-content-pane idea as
+     *  discoverMode, for the tool-configuration page (see renderContent/renderToolsPageContent).
+     *  Not a scope filter either, for the same reason: it isn't a way of narrowing this.items. */
+    this.toolsMode = false;
+    /** The tool currently open in the docked rail (see renderToolDetailRail) — mirrors
+     *  selectedItem's role, kept entirely separate since a ToolConfig has no tree/file/edit state. */
+    this.selectedTool = null;
     this.tagFilter = null;
     this.untaggedOnly = false;
     this.collapsedSections = /* @__PURE__ */ new Set();
@@ -2292,6 +2539,11 @@ var LibraryView = class extends import_obsidian9.ItemView {
     // where it landed in the narrower column layout).
     this.dockedScrollTop = 0;
     this.wasDocked = false;
+    // Same idea again, for the tagbar's horizontal tag scroller — selecting a tag re-renders the
+    // whole view, so without tracking/restoring this the scroll region would snap back to the
+    // start on every click instead of staying where the user left it. Only the "All" chip resets
+    // it to 0 explicitly.
+    this.tagbarScrollLeft = 0;
     // Same pair, for the Discover grid's own docked/undocked toggle (see renderDiscoverContent) —
     // kept separate since the two grids are different DOM subtrees with independent scroll state.
     this.dockedDiscoverScrollTop = 0;
@@ -2308,7 +2560,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     // this only needs a direction, not a target. Shared by both the library and Discover rails so
     // opening a file preview feels the same regardless of which list it was opened from.
     this.pendingDetailAnimation = null;
-    this.markdownComponent = new import_obsidian9.Component();
+    this.markdownComponent = new import_obsidian10.Component();
     this.review = null;
     // entryId of the item currently showing the inline "add a tag" input in place of the "+ tag"
     // button — local UI state, not persisted, reset whenever selection changes.
@@ -2352,10 +2604,25 @@ var LibraryView = class extends import_obsidian9.ItemView {
     this.discoveredPlugins = result.plugins;
     this.items = result.items;
     if (this.selectedItem) {
-      this.selectedItem = (_a = this.items.find((i) => {
+      const previousSourcePath = this.selectedItem.sourcePath;
+      const updated = (_a = this.items.find((i) => {
         var _a2;
         return i.entryId === ((_a2 = this.selectedItem) == null ? void 0 : _a2.entryId);
       })) != null ? _a : null;
+      if (updated && this.selectedFilePath && previousSourcePath !== updated.sourcePath) {
+        if (this.selectedFilePath === previousSourcePath) {
+          this.selectedFilePath = updated.sourcePath;
+        } else {
+          const previousDir = (0, import_path10.dirname)(previousSourcePath);
+          if (this.selectedFilePath.startsWith(previousDir + import_path10.sep)) {
+            const updatedDir = (0, import_path10.dirname)(updated.sourcePath);
+            this.selectedFilePath = updatedDir + this.selectedFilePath.slice(previousDir.length);
+          }
+        }
+      }
+      this.selectedItem = updated;
+      if (!updated)
+        this.selectedFilePath = null;
     }
     this.detailLoadedFor = null;
     this.render();
@@ -2377,7 +2644,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     this.render();
     try {
       const result = await this.rescan();
-      new import_obsidian9.Notice(`Rescan complete \u2014 ${result.items.length} item${result.items.length === 1 ? "" : "s"} found.`);
+      new import_obsidian10.Notice(`Rescan complete \u2014 ${result.items.length} item${result.items.length === 1 ? "" : "s"} found.`);
     } finally {
       this.rescanningManually = false;
       this.render();
@@ -2390,7 +2657,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     try {
       toggleItemEnabled(item);
     } catch (e) {
-      new import_obsidian9.Notice(`Couldn't toggle "${item.name}": ` + errorMessage(e));
+      new import_obsidian10.Notice(`Couldn't toggle "${item.name}": ` + errorMessage(e));
       return;
     }
     await this.rescan();
@@ -2402,7 +2669,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     try {
       removeFromProject(item.sourcePath);
     } catch (e) {
-      new import_obsidian9.Notice(`Couldn't unlink "${item.name}": ` + errorMessage(e));
+      new import_obsidian10.Notice(`Couldn't unlink "${item.name}": ` + errorMessage(e));
       return;
     }
     await this.rescan();
@@ -2440,7 +2707,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       cls: `skillspace-icon-btn${linkedSomewhere ? " is-present" : ""}`,
       attr: { "aria-label": linkedSomewhere ? "Manage project links" : "Link into a project workspace" }
     });
-    (0, import_obsidian9.setIcon)(btn, "link");
+    (0, import_obsidian10.setIcon)(btn, "link");
     btn.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.openProjectPresence(globalItem);
@@ -2471,8 +2738,19 @@ var LibraryView = class extends import_obsidian9.ItemView {
       }
     ).open();
   }
-  openInstallFromGitHub() {
-    new InstallFromGitHubModal(this.app, this.getSettings(), this.getAllProjects(), this.store, () => this.rescan()).open();
+  openInstallFromGitHub(preferredToolId) {
+    new InstallFromGitHubModal(
+      this.app,
+      this.getSettings(),
+      this.getAllProjects(),
+      this.store,
+      () => this.rescan(),
+      void 0,
+      void 0,
+      void 0,
+      void 0,
+      preferredToolId
+    ).open();
   }
   openAddDiscoverSource() {
     new AddDiscoverSourceModal(
@@ -2489,6 +2767,63 @@ var LibraryView = class extends import_obsidian9.ItemView {
   isDiscoverEntryInstalled(repoUrl, subpath) {
     return this.items.some((item) => item.sourceRepo === repoUrl && item.sourceSubpath === subpath);
   }
+  /** Discover's true empty state (no sources added at all yet, not just "no search matches") —
+   *  a real heading/description instead of one line of muted text, plus one-click "starter"
+   *  suggestions (STARTER_DISCOVER_SOURCES) so there's something to click besides opening the
+   *  blank "+ Add source" form cold. */
+  renderDiscoverEmptyState(container) {
+    const empty = container.createDiv({ cls: "skillspace-empty-state" });
+    const icon = empty.createDiv({ cls: "skillspace-empty-state-icon" });
+    (0, import_obsidian10.setIcon)(icon, "compass");
+    empty.createEl("h3", { text: "Nothing here yet", cls: "skillspace-empty-state-title" });
+    empty.createEl("p", {
+      cls: "skillspace-empty-state-desc",
+      text: "Add a GitHub repo to find the skills, agents, commands, and rules inside it."
+    });
+    const addBtn = empty.createEl("button", { text: "Add your own repo", cls: "mod-cta" });
+    addBtn.addEventListener("click", () => this.openAddDiscoverSource());
+    empty.createEl("p", { cls: "skillspace-discover-starters-label", text: "Or add one of these" });
+    const starters = empty.createDiv({ cls: "skillspace-discover-starters" });
+    for (const source of STARTER_DISCOVER_SOURCES) {
+      const pill = starters.createEl("button", { cls: "skillspace-discover-starter" });
+      (0, import_obsidian10.setIcon)(pill.createSpan({ cls: "skillspace-discover-starter-icon" }), "github");
+      const text = pill.createDiv({ cls: "skillspace-discover-starter-text" });
+      text.createSpan({ text: source.name, cls: "skillspace-discover-starter-name" });
+      text.createSpan({ text: source.description, cls: "skillspace-discover-starter-desc" });
+      pill.addEventListener("click", () => void this.addStarterDiscoverSource(source, pill));
+    }
+  }
+  async addStarterDiscoverSource(source, pill) {
+    var _a;
+    if (pill.disabled)
+      return;
+    pill.disabled = true;
+    pill.addClass("is-loading");
+    const nameEl = pill.querySelector(".skillspace-discover-starter-name");
+    const originalText = (_a = nameEl == null ? void 0 : nameEl.textContent) != null ? _a : source.name;
+    if (nameEl)
+      nameEl.textContent = "Adding\u2026";
+    try {
+      const { foundCount, skippedCount } = await addDiscoverSource(
+        this.getSettings(),
+        source.repoUrl,
+        "",
+        "",
+        (repoUrl, subpath) => this.isDiscoverEntryInstalled(repoUrl, subpath)
+      );
+      await this.saveSettings();
+      new import_obsidian10.Notice(
+        `Found ${foundCount} item${foundCount === 1 ? "" : "s"} in ${source.name}.` + (skippedCount > 0 ? ` (${skippedCount} already installed, not shown.)` : "")
+      );
+      this.render();
+    } catch (e) {
+      new import_obsidian10.Notice(`Couldn't add "${source.name}": ` + errorMessage(e));
+      pill.disabled = false;
+      pill.removeClass("is-loading");
+      if (nameEl)
+        nameEl.textContent = originalText;
+    }
+  }
   /** The one choke point every sidebar nav row calls before setting its own filter (see
    *  renderSidebar/renderTypesSection/renderToolsSection/renderProjectsSection/
    *  renderPluginsSection/renderCollectionsSection) — so jumping to a different scope from the
@@ -2504,6 +2839,8 @@ var LibraryView = class extends import_obsidian9.ItemView {
     this.favoritesOnly = false;
     this.discoverMode = false;
     this.selectedDiscoverEntry = null;
+    this.toolsMode = false;
+    this.selectedTool = null;
     this.cleanupReview();
     this.selectedItem = null;
     this.selectedFilePath = null;
@@ -2512,11 +2849,13 @@ var LibraryView = class extends import_obsidian9.ItemView {
     this.moreFieldsExpanded = false;
   }
   isScoped() {
-    return !!(this.typeFilter || this.toolFilter || this.collectionFilter || this.projectFilter || this.pluginFilter || this.favoritesOnly || this.discoverMode);
+    return !!(this.typeFilter || this.toolFilter || this.collectionFilter || this.projectFilter || this.pluginFilter || this.favoritesOnly || this.discoverMode || this.toolsMode);
   }
   filteredItems() {
     const query = this.search.trim().toLowerCase();
     const filtered = this.items.filter((item) => {
+      if (this.isToolDisabled(item.tool))
+        return false;
       if (this.enabledFilter === "enabled" && !item.enabled)
         return false;
       if (this.enabledFilter === "disabled" && item.enabled)
@@ -2532,6 +2871,12 @@ var LibraryView = class extends import_obsidian9.ItemView {
       if (this.projectFilter && item.projectId !== this.projectFilter)
         return false;
       if (this.pluginFilter && item.pluginId !== this.pluginFilter)
+        return false;
+      if (this.sourceFilter === "github" && !item.sourceRepo)
+        return false;
+      if (this.sourceFilter === "builtin" && !this.isBuiltIn(item))
+        return false;
+      if (this.sourceFilter === "local" && (item.sourceRepo || this.isBuiltIn(item)))
         return false;
       if (this.untaggedOnly && item.tags.length > 0)
         return false;
@@ -2566,7 +2911,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
   }
   itemModifiedMs(item) {
     try {
-      return (0, import_fs9.statSync)(item.sourcePath).mtimeMs;
+      return (0, import_fs10.statSync)(item.sourcePath).mtimeMs;
     } catch (e) {
       return 0;
     }
@@ -2590,7 +2935,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     }
     if (this.favoritesOnly)
       return "Favourites";
-    return "All skills";
+    return "All";
   }
   scopeDescription() {
     var _a;
@@ -2619,7 +2964,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     }
     if (this.favoritesOnly)
       return "Items you've starred for quick access.";
-    return "Every skill, agent, and command across your configured tools and projects.";
+    return "Every skill, agent, command, and rule across your configured tools and projects.";
   }
   render() {
     const container = this.containerEl.children[1];
@@ -2634,16 +2979,16 @@ var LibraryView = class extends import_obsidian9.ItemView {
     const brand = sidebar.createDiv({ cls: "skillspace-brand" });
     const brandLeft = brand.createDiv({ cls: "skillspace-brand-left" });
     const brandIcon = brandLeft.createSpan({ cls: "skillspace-brand-icon" });
-    (0, import_obsidian9.setIcon)(brandIcon, PLUGIN_ICON_ID);
+    (0, import_obsidian10.setIcon)(brandIcon, PLUGIN_ICON_ID);
     brandLeft.createSpan({ text: "AI Skills Manager", cls: "skillspace-brand-name" });
     const installBtn = brand.createEl("button", {
       cls: "skillspace-icon-btn skillspace-install-btn",
       attr: { "aria-label": "Install from GitHub" }
     });
-    (0, import_obsidian9.setIcon)(installBtn, "plus");
+    (0, import_obsidian10.setIcon)(installBtn, "plus");
     installBtn.addEventListener("click", () => this.openInstallFromGitHub());
     sidebar.createDiv({ cls: "skillspace-sidebar-heading", text: "Library" });
-    this.renderNavRow(sidebar, "library", "All skills", this.items.length, !this.isScoped(), () => {
+    this.renderNavRow(sidebar, "library", "All", this.items.length, !this.isScoped(), () => {
       this.clearScopeFilters();
       this.render();
     });
@@ -2743,7 +3088,13 @@ var LibraryView = class extends import_obsidian9.ItemView {
   renderToolsSection(sidebar) {
     if (!this.renderCollapsibleHeading(sidebar, "tools", "Global workspace"))
       return;
-    const showEmpty = this.getSettings().showEmptySidebarRows;
+    const settings = this.getSettings();
+    this.renderNavRow(sidebar, "layout-grid", "All tools", settings.tools.length, this.toolsMode, () => {
+      this.clearScopeFilters();
+      this.toolsMode = true;
+      this.render();
+    });
+    const showEmpty = settings.showEmptySidebarRows;
     for (const tool of this.getSettings().tools) {
       const count = this.items.filter((i) => i.tool === tool.id).length;
       if (!showEmpty && count === 0)
@@ -2772,8 +3123,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       const count = this.items.filter((i) => i.projectId === project.id).length;
       if (!showEmpty && count === 0)
         continue;
-      const icon = project.id === VAULT_PROJECT_ID ? "book-marked" : "folder-git-2";
-      this.renderNavRow(sidebar, icon, project.name, count, this.projectFilter === project.id, () => {
+      this.renderNavRow(sidebar, projectIcon(project.id), project.name, count, this.projectFilter === project.id, () => {
         this.clearScopeFilters();
         this.projectFilter = this.projectFilter === project.id ? null : project.id;
         this.render();
@@ -2786,8 +3136,11 @@ var LibraryView = class extends import_obsidian9.ItemView {
   renderPluginsSection(sidebar) {
     if (!this.renderCollapsibleHeading(sidebar, "plugins", "Plugins"))
       return;
+    const showEmpty = this.getSettings().showEmptySidebarRows;
     for (const plugin of this.discoveredPlugins) {
       const count = this.items.filter((i) => i.pluginId === plugin.id).length;
+      if (!showEmpty && count === 0)
+        continue;
       this.renderNavRow(sidebar, "package", plugin.name, count, this.pluginFilter === plugin.id, () => {
         this.clearScopeFilters();
         this.pluginFilter = this.pluginFilter === plugin.id ? null : plugin.id;
@@ -2799,7 +3152,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     const settings = this.getSettings();
     const expanded = this.renderCollapsibleHeading(sidebar, "collections", "Collections", (actionWrap) => {
       const addBtn = actionWrap.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "New collection" } });
-      (0, import_obsidian9.setIcon)(addBtn, "plus");
+      (0, import_obsidian10.setIcon)(addBtn, "plus");
       addBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
         new CollectionEditModal(this.app, null, this.items, (collection) => this.upsertCollection(collection)).open();
@@ -2813,7 +3166,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     for (const collection of settings.collections) {
       const row = sidebar.createDiv({ cls: "skillspace-nav-item" });
       const icon = row.createSpan({ cls: "skillspace-nav-icon" });
-      (0, import_obsidian9.setIcon)(icon, "folder");
+      (0, import_obsidian10.setIcon)(icon, "folder");
       row.createSpan({ text: collection.name, cls: "skillspace-nav-label" });
       if (this.collectionFilter === collection.id)
         row.addClass("is-active");
@@ -2829,7 +3182,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
         void this.toggleCollection(collection.id);
       });
       const editBtn = actions.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Edit collection" } });
-      (0, import_obsidian9.setIcon)(editBtn, "pencil");
+      (0, import_obsidian10.setIcon)(editBtn, "pencil");
       editBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
         new CollectionEditModal(this.app, collection, this.items, (updated) => this.upsertCollection(updated)).open();
@@ -2849,7 +3202,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     const left = heading.createDiv({ cls: "skillspace-sidebar-heading-left" });
     left.setAttr("draggable", "true");
     const chevron = left.createSpan({ cls: "skillspace-chevron" });
-    (0, import_obsidian9.setIcon)(chevron, isCollapsed ? "chevron-right" : "chevron-down");
+    (0, import_obsidian10.setIcon)(chevron, isCollapsed ? "chevron-right" : "chevron-down");
     left.createSpan({ text: title });
     left.addEventListener("click", () => {
       if (isCollapsed)
@@ -2911,11 +3264,31 @@ var LibraryView = class extends import_obsidian9.ItemView {
       const parsed = new DOMParser().parseFromString(svgIcon, "image/svg+xml").documentElement;
       container.appendChild(parsed);
     } else {
-      (0, import_obsidian9.setIcon)(container, icon);
+      (0, import_obsidian10.setIcon)(container, icon);
     }
   }
   sourceLabel(item) {
     return sourceLabel(item, this.getSettings(), this.getAllProjects(), this.discoveredPlugins);
+  }
+  toolLabel(item) {
+    return toolLabel(item, this.getSettings(), this.discoveredPlugins);
+  }
+  originLabel(item) {
+    return originLabel(item, this.getAllProjects());
+  }
+  isBuiltIn(item) {
+    const tool = this.getSettings().tools.find((t) => t.id === item.tool);
+    return isBuiltInPath(item.sourcePath, tool);
+  }
+  isToolDisabled(toolId) {
+    var _a;
+    return !!((_a = this.getSettings().tools.find((t) => t.id === toolId)) == null ? void 0 : _a.disabled);
+  }
+  syncStatusFor(item) {
+    var _a;
+    if (!item.sourceRepo)
+      return "unknown";
+    return (_a = this.syncStatus.get(item.entryId)) != null ? _a : "unknown";
   }
   async toggleCollection(collectionId) {
     const collection = this.getSettings().collections.find((c) => c.id === collectionId);
@@ -2929,7 +3302,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       try {
         toggleItemEnabled(item);
       } catch (e) {
-        new import_obsidian9.Notice(`Couldn't toggle "${item.name}": ` + errorMessage(e));
+        new import_obsidian10.Notice(`Couldn't toggle "${item.name}": ` + errorMessage(e));
       }
     }
     await this.rescan();
@@ -2963,6 +3336,10 @@ var LibraryView = class extends import_obsidian9.ItemView {
       this.renderDiscoverContent(content);
       return;
     }
+    if (this.toolsMode) {
+      this.renderToolsPageContent(content);
+      return;
+    }
     const items = this.filteredItems();
     const header = content.createDiv({ cls: "skillspace-content-header" });
     const titleRow = header.createDiv({ cls: "skillspace-title-row" });
@@ -2972,7 +3349,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     const toolbar = content.createDiv({ cls: "skillspace-toolbar" });
     const searchWrap = toolbar.createDiv({ cls: "skillspace-search-wrap" });
     const searchIcon = searchWrap.createSpan({ cls: "skillspace-search-icon" });
-    (0, import_obsidian9.setIcon)(searchIcon, "search");
+    (0, import_obsidian10.setIcon)(searchIcon, "search");
     const searchInput = searchWrap.createEl("input", {
       type: "text",
       placeholder: "Search skills, agents, commands\u2026",
@@ -2983,7 +3360,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       cls: "skillspace-icon-btn skillspace-search-clear",
       attr: { "aria-label": "Clear search" }
     });
-    (0, import_obsidian9.setIcon)(clearBtn, "x");
+    (0, import_obsidian10.setIcon)(clearBtn, "x");
     const updateClearBtn = () => clearBtn.toggle(searchInput.value.length > 0);
     updateClearBtn();
     const segmented = toolbar.createDiv({ cls: "skillspace-segmented" });
@@ -2999,6 +3376,24 @@ var LibraryView = class extends import_obsidian9.ItemView {
       this.enabledFilter = "disabled";
       this.render();
     });
+    if (!this.isScoped()) {
+      const syncActions = toolbar.createDiv({ cls: "skillspace-toolbar-actions" });
+      const checkBtn = syncActions.createEl("button", { text: "Check for updates" });
+      checkBtn.addEventListener("click", () => void this.bulkCheckForUpdates(checkBtn));
+      const staleCount = [...this.syncStatus.values()].filter((s) => s === "stale").length;
+      if (staleCount > 0) {
+        const updateAllBtn = syncActions.createEl("button", { text: `Update all (${staleCount})`, cls: "mod-cta" });
+        updateAllBtn.addEventListener("click", () => void this.bulkUpdateAll(updateAllBtn));
+      }
+    }
+    if (this.toolFilter) {
+      const tool = this.getSettings().tools.find((t) => t.id === this.toolFilter);
+      if (tool) {
+        const installActions = toolbar.createDiv({ cls: "skillspace-toolbar-actions" });
+        const installBtn = installActions.createEl("button", { cls: "mod-cta", text: `Install into ${tool.name}` });
+        installBtn.addEventListener("click", () => this.openInstallFromGitHub(tool.id));
+      }
+    }
     this.renderTagBar(content.createDiv({ cls: "skillspace-tagbar" }));
     const body = content.createDiv({ cls: "skillspace-body" });
     const animation = this.pendingDetailAnimation;
@@ -3108,7 +3503,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     const toolbar = content.createDiv({ cls: "skillspace-toolbar" });
     const searchWrap = toolbar.createDiv({ cls: "skillspace-search-wrap" });
     const searchIcon = searchWrap.createSpan({ cls: "skillspace-search-icon" });
-    (0, import_obsidian9.setIcon)(searchIcon, "search");
+    (0, import_obsidian10.setIcon)(searchIcon, "search");
     const searchInput = searchWrap.createEl("input", {
       type: "text",
       placeholder: "Search discovered skills\u2026",
@@ -3119,7 +3514,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       cls: "skillspace-icon-btn skillspace-search-clear",
       attr: { "aria-label": "Clear search" }
     });
-    (0, import_obsidian9.setIcon)(clearBtn, "x");
+    (0, import_obsidian10.setIcon)(clearBtn, "x");
     const updateClearBtn = () => clearBtn.toggle(searchInput.value.length > 0);
     updateClearBtn();
     this.renderDiscoverSortButton(toolbar);
@@ -3138,10 +3533,11 @@ var LibraryView = class extends import_obsidian9.ItemView {
       grid.empty();
       const entries = this.filteredDiscoverEntries();
       if (entries.length === 0) {
-        grid.createDiv({
-          cls: "skillspace-empty",
-          text: totalCount === 0 ? "Nothing here yet. Add a GitHub repo to find what's in it." : "Nothing discovered matches your search."
-        });
+        if (totalCount === 0) {
+          this.renderDiscoverEmptyState(grid);
+        } else {
+          grid.createDiv({ cls: "skillspace-empty", text: "Nothing discovered matches your search." });
+        }
         return;
       }
       if (grouped) {
@@ -3215,12 +3611,12 @@ var LibraryView = class extends import_obsidian9.ItemView {
     const current = (_a = DISCOVER_SORT_OPTIONS.find((o) => o.key === this.discoverSortOrder)) != null ? _a : DISCOVER_SORT_OPTIONS[0];
     const btn = toolbar.createEl("button", { cls: "skillspace-sort-btn", attr: { "aria-label": "Sort by" } });
     const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
-    (0, import_obsidian9.setIcon)(icon, "arrow-up-down");
+    (0, import_obsidian10.setIcon)(icon, "arrow-up-down");
     btn.createSpan({ text: current.label, cls: "skillspace-sort-btn-label" });
     const chevron = btn.createSpan({ cls: "skillspace-sort-btn-chevron" });
-    (0, import_obsidian9.setIcon)(chevron, "chevron-down");
+    (0, import_obsidian10.setIcon)(chevron, "chevron-down");
     btn.addEventListener("click", (evt) => {
-      const menu = new import_obsidian9.Menu();
+      const menu = new import_obsidian10.Menu();
       for (const option of DISCOVER_SORT_OPTIONS) {
         menu.addItem(
           (menuItem) => menuItem.setTitle(option.label).setChecked(this.discoverSortOrder === option.key).onClick(() => {
@@ -3238,7 +3634,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       attr: { "aria-label": "Re-search every repo already in Discover for anything new or changed" }
     });
     const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
-    (0, import_obsidian9.setIcon)(icon, "refresh-cw");
+    (0, import_obsidian10.setIcon)(icon, "refresh-cw");
     btn.createSpan({ text: "Refresh all", cls: "skillspace-sort-btn-label" });
     if (this.refreshingAllDiscover) {
       btn.disabled = true;
@@ -3275,7 +3671,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       }
     }
     if (sources.size === 0) {
-      new import_obsidian9.Notice("Nothing to refresh yet \u2014 add a source first.");
+      new import_obsidian10.Notice("Nothing to refresh yet \u2014 add a source first.");
       return;
     }
     this.refreshingAllDiscover = true;
@@ -3285,7 +3681,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     const failures = [];
     for (const source of sources.values()) {
       sourcesDone++;
-      new import_obsidian9.Notice(`Refreshing source ${sourcesDone} of ${sources.size}\u2026`);
+      new import_obsidian10.Notice(`Refreshing source ${sourcesDone} of ${sources.size}\u2026`);
       try {
         const [allFound, starCount] = await Promise.all([
           discoverGitSkills(source.repoUrl, source.ref, source.subpath),
@@ -3313,7 +3709,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       }
     }
     this.refreshingAllDiscover = false;
-    new import_obsidian9.Notice(
+    new import_obsidian10.Notice(
       failures.length === 0 ? `Refreshed ${sources.size} source${sources.size === 1 ? "" : "s"} \u2014 ${itemsFound} item${itemsFound === 1 ? "" : "s"} found.` : `Refreshed ${sources.size - failures.length} of ${sources.size} sources. Failed: ${failures.join("; ")}`
     );
     this.render();
@@ -3354,7 +3750,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       cls: "skillspace-icon-btn",
       attr: { "aria-label": `Remove all ${group.entries.length} items from ${label}` }
     });
-    (0, import_obsidian9.setIcon)(removeBtn, "trash-2");
+    (0, import_obsidian10.setIcon)(removeBtn, "trash-2");
     removeBtn.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.confirmRemoveDiscoverSource(group.repoUrl, group.ref, group.entries.length, label);
@@ -3387,7 +3783,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
           this.selectedDiscoverEntry = null;
         }
         await this.saveSettings();
-        new import_obsidian9.Notice(`Removed ${count} item${count === 1 ? "" : "s"} from "${label}".`);
+        new import_obsidian10.Notice(`Removed ${count} item${count === 1 ? "" : "s"} from "${label}".`);
         this.render();
       }
     ).open();
@@ -3405,7 +3801,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     head.createSpan({ text: entry.name, cls: "skillspace-card-name" });
     const actions = head.createDiv({ cls: "skillspace-card-discover-actions" });
     const linkBtn = actions.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Open on GitHub" } });
-    (0, import_obsidian9.setIcon)(linkBtn, "external-link");
+    (0, import_obsidian10.setIcon)(linkBtn, "external-link");
     linkBtn.addEventListener("click", (evt) => {
       evt.stopPropagation();
       window.open(this.discoverEntryUrl(entry), "_blank");
@@ -3414,7 +3810,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       cls: "skillspace-icon-btn skillspace-install-btn",
       attr: { "aria-label": "Install" }
     });
-    (0, import_obsidian9.setIcon)(installBtn, "plus");
+    (0, import_obsidian10.setIcon)(installBtn, "plus");
     installBtn.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.installDiscoverEntry(entry);
@@ -3433,7 +3829,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     const rightGroup = footer.createDiv({ cls: "skillspace-card-footer-right" });
     rightGroup.createSpan({ text: TYPE_LABEL_SINGULAR[entry.type], cls: "skillspace-card-type" });
     const menuBtn = rightGroup.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "More actions" } });
-    (0, import_obsidian9.setIcon)(menuBtn, "more-vertical");
+    (0, import_obsidian10.setIcon)(menuBtn, "more-vertical");
     menuBtn.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.openDiscoverCardMenu(evt, entry);
@@ -3457,7 +3853,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     }
     if (entry.starCount !== null) {
       const stars = repo.createDiv({ cls: "skillspace-card-discover-stars" });
-      (0, import_obsidian9.setIcon)(stars.createSpan(), "star");
+      (0, import_obsidian10.setIcon)(stars.createSpan(), "star");
       stars.createSpan({ text: String(entry.starCount) });
     }
   }
@@ -3465,7 +3861,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     return githubSourceUrl(entry.repoUrl, entry.ref, entry.subpath, entry.commit);
   }
   openDiscoverCardMenu(evt, entry) {
-    const menu = new import_obsidian9.Menu();
+    const menu = new import_obsidian10.Menu();
     menu.addItem(
       (menuItem) => menuItem.setTitle("Refresh").setIcon("refresh-cw").onClick(() => void this.refreshDiscoverEntry(entry))
     );
@@ -3501,12 +3897,12 @@ var LibraryView = class extends import_obsidian9.ItemView {
       this.selectedDiscoverEntry = null;
     await this.saveSettings();
     if (!opts.silent)
-      new import_obsidian9.Notice(`Removed "${entry.name}" from Discover.`);
+      new import_obsidian10.Notice(`Removed "${entry.name}" from Discover.`);
     this.render();
   }
   async refreshDiscoverEntry(entry) {
     var _a;
-    new import_obsidian9.Notice(`Refreshing "${entry.name}"\u2026`);
+    new import_obsidian10.Notice(`Refreshing "${entry.name}"\u2026`);
     try {
       const [updated, starCount] = await Promise.all([refetchDiscoverEntry(entry), fetchGithubStars(entry.repoUrl)]);
       updated.starCount = starCount != null ? starCount : entry.starCount;
@@ -3516,10 +3912,10 @@ var LibraryView = class extends import_obsidian9.ItemView {
       if (((_a = this.selectedDiscoverEntry) == null ? void 0 : _a.id) === entry.id)
         this.selectedDiscoverEntry = updated;
       await this.saveSettings();
-      new import_obsidian9.Notice(`Refreshed "${updated.name}".`);
+      new import_obsidian10.Notice(`Refreshed "${updated.name}".`);
       this.render();
     } catch (e) {
-      new import_obsidian9.Notice(`Couldn't refresh "${entry.name}": ` + errorMessage(e));
+      new import_obsidian10.Notice(`Couldn't refresh "${entry.name}": ` + errorMessage(e));
     }
   }
   /** The Discover equivalent of renderDetailRail — deliberately similar (same breadcrumb/header/
@@ -3531,7 +3927,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
   renderDiscoverRail(panel, entry) {
     const crumbs = panel.createDiv({ cls: "skillspace-crumbs" });
     const backBtn = crumbs.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Back" } });
-    (0, import_obsidian9.setIcon)(backBtn, "arrow-left");
+    (0, import_obsidian10.setIcon)(backBtn, "arrow-left");
     const back = () => {
       this.selectedDiscoverEntry = null;
       this.pendingDetailAnimation = "back";
@@ -3548,10 +3944,9 @@ var LibraryView = class extends import_obsidian9.ItemView {
     header.createSpan({ text: "Not installed", cls: "skillspace-detail-tool-pill skillspace-discover-pill" });
     const actions = header.createDiv({ cls: "skillspace-detail-actions" });
     const linkBtn = actions.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Open on GitHub" } });
-    (0, import_obsidian9.setIcon)(linkBtn, "external-link");
+    (0, import_obsidian10.setIcon)(linkBtn, "external-link");
     linkBtn.addEventListener("click", () => window.open(this.discoverEntryUrl(entry), "_blank"));
-    const installBtn = actions.createEl("button", { cls: "skillspace-icon-btn skillspace-install-btn", attr: { "aria-label": "Install" } });
-    (0, import_obsidian9.setIcon)(installBtn, "plus");
+    const installBtn = actions.createEl("button", { cls: "mod-cta skillspace-discover-rail-install-btn", text: "+ Install" });
     installBtn.addEventListener("click", () => this.installDiscoverEntry(entry));
     this.renderDiscoverRepoLine(panel, entry);
     if (entry.subpath) {
@@ -3568,19 +3963,251 @@ var LibraryView = class extends import_obsidian9.ItemView {
       cls: "markdown-preview-view markdown-rendered node-insert-event is-readable-line-width allow-fold-headings allow-fold-lists show-indentation-guide skillspace-markdown-preview"
     });
     const sizer = readingView.createDiv({ cls: "markdown-preview-sizer markdown-preview-section" });
-    void import_obsidian9.MarkdownRenderer.render(this.app, stripFrontmatter(entry.manifestText), sizer, entry.name, this.markdownComponent);
+    void import_obsidian10.MarkdownRenderer.render(this.app, stripFrontmatter(entry.manifestText), sizer, entry.name, this.markdownComponent);
   }
+  // ---------- "All tools" page ----------
+  renderToolsPageContent(content) {
+    const settings = this.getSettings();
+    const tools = this.sortedToolsForPage();
+    const header = content.createDiv({ cls: "skillspace-content-header" });
+    const titleRow = header.createDiv({ cls: "skillspace-title-row" });
+    titleRow.createEl("h2", { text: "All tools", cls: "skillspace-title" });
+    header.createDiv({
+      text: "Every configured tool \u2014 enable or disable one, edit its scanned paths, or add your own.",
+      cls: "skillspace-subtitle"
+    });
+    const stats = header.createDiv({ cls: "skillspace-tool-stats" });
+    const statValues = [
+      ["Detected", tools.filter((t) => this.toolIsDetected(t)).length],
+      ["Enabled", tools.filter((t) => !t.disabled).length],
+      ["Custom", tools.filter((t) => t.custom).length]
+    ];
+    for (const [label, value] of statValues) {
+      const stat = stats.createDiv({ cls: "skillspace-tool-stat" });
+      stat.createSpan({ text: String(value), cls: "skillspace-tool-stat-value" });
+      stat.createSpan({ text: label, cls: "skillspace-tool-stat-label" });
+    }
+    const addBtn = stats.createEl("button", { cls: "mod-cta skillspace-add-tool-btn", text: "+ Add tool" });
+    addBtn.addEventListener("click", () => {
+      new AddToolModal(this.app, settings, this.saveSettings, () => this.rescan()).open();
+    });
+    const body = content.createDiv({ cls: "skillspace-body" });
+    const grid = body.createDiv({ cls: `skillspace-items${this.selectedTool ? " is-docked" : ""}` });
+    for (const tool of tools)
+      this.renderToolCard(grid, tool);
+    if (this.selectedTool) {
+      const rail = body.createDiv({ cls: "skillspace-detail" });
+      this.renderToolDetailRail(rail, this.selectedTool);
+    }
+  }
+  /** "Detected" means at least one of this tool's configured global paths actually resolves to a
+   *  real directory on disk right now — independent of enabled state or item count, since a
+   *  correctly-configured tool with zero skills yet is still "detected." */
+  toolIsDetected(tool) {
+    return Object.values(tool.paths).some((p) => p && (0, import_fs10.existsSync)(expandHome(p)));
+  }
+  /** Enabled-with-content first, then enabled-and-detected-but-empty, then enabled-but-not-even-
+   *  detected, then disabled last regardless of anything else — so the tools actually worth
+   *  looking at float to the top and a pile of unused/misconfigured/disabled ones sink down
+   *  instead of being interleaved alphabetically with the ones that matter. Alphabetical within
+   *  each tier for stability. */
+  sortedToolsForPage() {
+    const tier = (tool) => {
+      if (tool.disabled)
+        return 3;
+      if (this.items.some((i) => i.tool === tool.id))
+        return 0;
+      if (this.toolIsDetected(tool))
+        return 1;
+      return 2;
+    };
+    return [...this.getSettings().tools].sort((a, b) => tier(a) - tier(b) || a.name.localeCompare(b.name));
+  }
+  async toggleToolDisabled(tool) {
+    tool.disabled = !tool.disabled;
+    await this.saveSettings();
+    await this.rescan();
+  }
+  renderToolCard(container, tool) {
+    var _a;
+    const card = container.createDiv({ cls: "skillspace-card skillspace-tool-card" });
+    if (tool.disabled)
+      card.addClass("is-off");
+    if (((_a = this.selectedTool) == null ? void 0 : _a.id) === tool.id)
+      card.addClass("is-selected");
+    const head = card.createDiv({ cls: "skillspace-card-head" });
+    const detected = this.toolIsDetected(tool);
+    head.createSpan({
+      cls: `skillspace-card-dot${detected ? " is-detected" : ""}`,
+      attr: { "aria-label": detected ? "Detected on disk" : "Not detected \u2014 check its paths" }
+    });
+    const icon = head.createSpan({ cls: "skillspace-tool-card-icon" });
+    this.renderIcon(icon, tool.icon, tool.svgIcon);
+    head.createSpan({ text: tool.name, cls: "skillspace-card-name" });
+    if (tool.custom) {
+      head.createSpan({ text: "Custom", cls: "skillspace-card-type skillspace-card-type-sm" });
+    }
+    const toggle = head.createEl("button", {
+      cls: `skillspace-toggle${!tool.disabled ? " is-on" : ""}`,
+      attr: { "aria-label": tool.disabled ? "Enable" : "Disable" }
+    });
+    toggle.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      void this.toggleToolDisabled(tool);
+    });
+    const count = this.items.filter((i) => i.tool === tool.id).length;
+    card.createDiv({
+      cls: "skillspace-card-desc",
+      text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " \u2014 disabled" : ""}`
+    });
+    card.addEventListener("click", () => {
+      this.selectedTool = tool;
+      this.pendingDetailAnimation = "forward";
+      this.render();
+    });
+  }
+  /** One labeled path input with live found/not-found status, in this view's own raw-DOM style
+   *  (this file never uses Obsidian's Setting class, unlike every modal) — the in-app replacement
+   *  for what used to be Settings' attachPathStatus-driven accordion. `resolve` turns the raw
+   *  typed value into the absolute path to check; return null to skip checking. Fires on blur
+   *  (the "change" event), not per keystroke — a rescan() follows every edit, and that's real
+   *  filesystem work, not something to trigger on every character typed. */
+  renderToolPathField(container, label, value, placeholder, resolve2, onChange) {
+    const row = container.createDiv({ cls: "skillspace-toolpath-row" });
+    row.createSpan({ text: label, cls: "skillspace-toolpath-label" });
+    const input = row.createEl("input", { type: "text", cls: "skillspace-toolpath-input", attr: { placeholder } });
+    input.value = value;
+    const status = row.createSpan({ cls: "skillspace-path-status" });
+    const updateStatus = (raw) => {
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        status.setText("");
+        status.title = "";
+        status.className = "skillspace-path-status";
+        return;
+      }
+      const resolved = resolve2(trimmed);
+      const found = resolved !== null && (0, import_fs10.existsSync)(resolved);
+      status.setText(found ? "found" : "not found");
+      status.title = resolved != null ? resolved : "";
+      status.className = `skillspace-path-status ${found ? "is-found" : "is-missing"}`;
+    };
+    updateStatus(value);
+    input.addEventListener("change", () => {
+      onChange(input.value);
+      updateStatus(input.value);
+    });
+  }
+  vaultPath() {
+    const adapter = this.app.vault.adapter;
+    return adapter instanceof import_obsidian10.FileSystemAdapter ? adapter.getBasePath() : null;
+  }
+  renderToolDetailRail(panel, tool) {
+    var _a, _b, _c, _d, _e;
+    const crumbs = panel.createDiv({ cls: "skillspace-crumbs" });
+    const backBtn = crumbs.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Back" } });
+    (0, import_obsidian10.setIcon)(backBtn, "arrow-left");
+    const back = () => {
+      this.selectedTool = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    backBtn.addEventListener("click", back);
+    const toolsCrumb = crumbs.createEl("button", { cls: "skillspace-crumb", text: "All tools" });
+    toolsCrumb.addEventListener("click", back);
+    crumbs.createSpan({ cls: "skillspace-crumb-sep", text: "/" });
+    crumbs.createEl("button", { cls: "skillspace-crumb is-current", text: tool.name });
+    const header = panel.createDiv({ cls: "skillspace-detail-header" });
+    const headerIcon = header.createSpan({ cls: "skillspace-tool-card-icon" });
+    this.renderIcon(headerIcon, tool.icon, tool.svgIcon);
+    header.createEl("h3", { text: tool.name, cls: "skillspace-detail-title" });
+    if (tool.custom) {
+      const removeBtn = header.createDiv({ cls: "skillspace-detail-actions" }).createEl("button", {
+        cls: "skillspace-icon-btn",
+        attr: { "aria-label": "Remove tool" }
+      });
+      (0, import_obsidian10.setIcon)(removeBtn, "trash-2");
+      removeBtn.addEventListener("click", () => void this.removeCustomTool(tool));
+    }
+    const body = panel.createDiv({ cls: "skillspace-detail-body" });
+    body.createDiv({ cls: "skillspace-sidebar-heading", text: "Global paths" });
+    for (const type of Object.keys(TYPE_LABELS)) {
+      this.renderToolPathField(
+        body,
+        TYPE_LABELS[type],
+        (_a = tool.paths[type]) != null ? _a : "",
+        (_c = (_b = tool.unconfirmedPaths) == null ? void 0 : _b[type]) != null ? _c : "~/.example/path",
+        (raw) => expandHome(raw),
+        (value) => {
+          if (value.trim()) {
+            tool.paths[type] = value.trim();
+          } else {
+            delete tool.paths[type];
+          }
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
+    body.createDiv({ cls: "skillspace-sidebar-heading", text: "Project-scoped paths" });
+    body.createDiv({
+      cls: "setting-item-description",
+      text: "Optional override for this tool's layout inside a project folder. Leave blank to use the global path above with the home directory stripped."
+    });
+    const vaultPath = this.vaultPath();
+    for (const type of Object.keys(TYPE_LABELS)) {
+      const globalPath = tool.paths[type];
+      this.renderToolPathField(
+        body,
+        TYPE_LABELS[type],
+        (_e = (_d = tool.projectPaths) == null ? void 0 : _d[type]) != null ? _e : "",
+        globalPath ? toProjectRelative(globalPath) : "(not scanned globally)",
+        (raw) => vaultPath ? (0, import_path10.join)(vaultPath, raw) : null,
+        (value) => {
+          var _a2;
+          if (value.trim()) {
+            tool.projectPaths = (_a2 = tool.projectPaths) != null ? _a2 : {};
+            tool.projectPaths[type] = value.trim();
+          } else if (tool.projectPaths) {
+            delete tool.projectPaths[type];
+            if (Object.keys(tool.projectPaths).length === 0)
+              delete tool.projectPaths;
+          }
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
+  }
+  async removeCustomTool(tool) {
+    const settings = this.getSettings();
+    settings.tools = settings.tools.filter((t) => t.id !== tool.id);
+    this.selectedTool = null;
+    await this.saveSettings();
+    await this.rescan();
+  }
+  /** Three regions: the "All" chip pinned at the start (never scrolls — it's the anchor/clear,
+   *  not content), a horizontally-scrolling middle for Untagged + however many tags there are
+   *  (wrapping to multiple lines would push the whole toolbar taller as the tag list grows;
+   *  scrolling keeps this row a fixed height instead), and the sort/source controls pinned at
+   *  the end. Scroll position is tracked (tagbarScrollLeft) and restored after every re-render —
+   *  selecting a tag re-renders the whole view, and without this the scroll region would silently
+   *  snap back to the start on every click. Only the "All" chip explicitly resets it to 0. */
   renderTagBar(tagbar) {
     const allTags = Array.from(new Set(this.items.flatMap((item) => item.tags))).sort((a, b) => a.localeCompare(b));
-    const allChip = tagbar.createEl("button", { text: "All", cls: "skillspace-chip" });
+    const allChip = tagbar.createEl("button", { text: "All", cls: "skillspace-chip skillspace-tagbar-anchor" });
     if (!this.tagFilter && !this.untaggedOnly)
       allChip.addClass("is-active");
     allChip.addEventListener("click", () => {
       this.tagFilter = null;
       this.untaggedOnly = false;
+      this.tagbarScrollLeft = 0;
       this.render();
     });
-    const untagged = tagbar.createEl("button", { text: "Untagged", cls: "skillspace-chip skillspace-chip-untagged" });
+    const scroll = tagbar.createDiv({ cls: "skillspace-tagbar-scroll" });
+    scroll.scrollLeft = this.tagbarScrollLeft;
+    scroll.addEventListener("scroll", () => {
+      this.tagbarScrollLeft = scroll.scrollLeft;
+    });
+    const untagged = scroll.createEl("button", { text: "Untagged", cls: "skillspace-chip skillspace-chip-untagged" });
     if (this.untaggedOnly)
       untagged.addClass("is-active");
     untagged.addEventListener("click", () => {
@@ -3590,7 +4217,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       this.render();
     });
     for (const tag of allTags) {
-      const chip = tagbar.createEl("button", { text: tag, cls: `skillspace-chip skillspace-tag-c${tagColorIndex(tag)}` });
+      const chip = scroll.createEl("button", { text: tag, cls: `skillspace-chip skillspace-tag-c${tagColorIndex(tag)}` });
       if (this.tagFilter === tag)
         chip.addClass("is-active");
       chip.addEventListener("click", () => {
@@ -3599,19 +4226,52 @@ var LibraryView = class extends import_obsidian9.ItemView {
         this.render();
       });
     }
-    this.renderSortButton(tagbar);
+    const controls = tagbar.createDiv({ cls: "skillspace-tagbar-controls" });
+    this.renderSourceButton(controls);
+    this.renderSortButton(controls);
+  }
+  renderSourceButton(container) {
+    const labels = {
+      github: "GitHub-tracked",
+      builtin: "Built-in",
+      local: "Local"
+    };
+    const btn = container.createEl("button", { cls: "skillspace-sort-btn", attr: { "aria-label": "Filter by source" } });
+    const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
+    (0, import_obsidian10.setIcon)(icon, "filter");
+    btn.createSpan({ text: this.sourceFilter ? labels[this.sourceFilter] : "All sources", cls: "skillspace-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillspace-sort-btn-chevron" });
+    (0, import_obsidian10.setIcon)(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new import_obsidian10.Menu();
+      menu.addItem(
+        (menuItem) => menuItem.setTitle("All sources").setChecked(this.sourceFilter === null).onClick(() => {
+          this.sourceFilter = null;
+          this.render();
+        })
+      );
+      for (const key of Object.keys(labels)) {
+        menu.addItem(
+          (menuItem) => menuItem.setTitle(labels[key]).setChecked(this.sourceFilter === key).onClick(() => {
+            this.sourceFilter = key;
+            this.render();
+          })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
   }
   renderSortButton(tagbar) {
     var _a;
     const current = (_a = SORT_OPTIONS.find((o) => o.key === this.sortOrder)) != null ? _a : SORT_OPTIONS[0];
     const btn = tagbar.createEl("button", { cls: "skillspace-sort-btn", attr: { "aria-label": "Sort by" } });
     const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
-    (0, import_obsidian9.setIcon)(icon, "arrow-up-down");
+    (0, import_obsidian10.setIcon)(icon, "arrow-up-down");
     btn.createSpan({ text: current.label, cls: "skillspace-sort-btn-label" });
     const chevron = btn.createSpan({ cls: "skillspace-sort-btn-chevron" });
-    (0, import_obsidian9.setIcon)(chevron, "chevron-down");
+    (0, import_obsidian10.setIcon)(chevron, "chevron-down");
     btn.addEventListener("click", (evt) => {
-      const menu = new import_obsidian9.Menu();
+      const menu = new import_obsidian10.Menu();
       for (const option of SORT_OPTIONS) {
         menu.addItem(
           (menuItem) => menuItem.setTitle(option.label).setChecked(this.sortOrder === option.key).onClick(() => {
@@ -3624,61 +4284,90 @@ var LibraryView = class extends import_obsidian9.ItemView {
     });
   }
   /** Collapses a skill's project-linked instances into its global card wherever both are
-   *  visible in the current scope, so linking a skill into 3 projects reads as one card with
-   *  3 project chips instead of 4 near-identical cards. Only applies outside a project filter —
-   *  filtered to one Project Workspace, every row is a distinct physical file/symlink and stays
-   *  its own card. A project instance whose global sibling isn't in view (search/type/tool
-   *  filtered it out, or it's genuinely project-native with no global counterpart) falls back to
-   *  its own standalone card rather than silently disappearing. */
+   *  visible in the current scope, so linking a skill into 3 projects reads as one card (its
+   *  link icon opens the full list) instead of 4 near-identical cards. Only applies outside a
+   *  project filter — filtered to one Project Workspace, every row is a distinct physical
+   *  file/symlink and stays its own card. A project instance whose global sibling isn't in view
+   *  (search/type/tool filtered it out, or it's genuinely project-native with no global
+   *  counterpart) falls back to its own standalone card rather than silently disappearing. */
   groupedRows(items) {
     if (this.projectFilter)
-      return items.map((item) => ({ item, projectIds: [] }));
+      return items;
     const rows = [];
     for (const item of items) {
       if (item.projectId !== null) {
         const hasVisibleGlobalSibling = items.some((i) => i.projectId === null && i.realPath === item.realPath);
         if (hasVisibleGlobalSibling)
           continue;
-        rows.push({ item, projectIds: [] });
-        continue;
       }
-      const projectIds = Array.from(
-        new Set(this.items.filter((i) => i.projectId && i.realPath === item.realPath).map((i) => i.projectId))
-      );
-      rows.push({ item, projectIds });
+      rows.push(item);
     }
     return rows;
   }
   renderItems(container, items) {
     container.empty();
     if (items.length === 0) {
+      if (this.favoritesOnly) {
+        this.renderFavoritesEmptyState(container, !!this.search.trim());
+        return;
+      }
       container.createDiv({
         cls: "skillspace-empty",
         text: "Nothing here yet. Rescan tools, or check the paths in plugin settings."
       });
       return;
     }
-    for (const row of this.groupedRows(items)) {
-      this.renderCard(container, row.item, row.projectIds);
+    for (const item of this.groupedRows(items)) {
+      this.renderCard(container, item);
     }
   }
-  renderCard(container, item, projectIds = []) {
-    var _a, _b;
+  /** Favourites starts empty for every new user, so — unlike the generic "rescan tools" message,
+   *  which would be actively wrong advice here (rescanning finds nothing new; starring does) —
+   *  this gets its own explanation plus a one-click way back to the full library to go star
+   *  something. Searching within an already-empty Favourites is a different, narrower case (the
+   *  star icon's not the point, the search itself came up empty) so it gets plain text instead. */
+  renderFavoritesEmptyState(container, isSearchMiss) {
+    if (isSearchMiss) {
+      container.createDiv({ cls: "skillspace-empty", text: "No favourites match your search." });
+      return;
+    }
+    const empty = container.createDiv({ cls: "skillspace-empty-state" });
+    const icon = empty.createDiv({ cls: "skillspace-empty-state-icon" });
+    (0, import_obsidian10.setIcon)(icon, "star");
+    empty.createEl("h3", { text: "No favourites yet", cls: "skillspace-empty-state-title" });
+    empty.createEl("p", {
+      cls: "skillspace-empty-state-desc",
+      text: "Star the skills, agents, and commands you reach for most and they'll show up here for quick access."
+    });
+    const browseBtn = empty.createEl("button", { text: "Browse library", cls: "mod-cta" });
+    browseBtn.addEventListener("click", () => {
+      this.clearScopeFilters();
+      this.render();
+    });
+  }
+  renderCard(container, item) {
+    var _a;
     const card = container.createDiv({ cls: "skillspace-card" });
     if (!item.enabled)
       card.addClass("is-off");
     if (((_a = this.selectedItem) == null ? void 0 : _a.entryId) === item.entryId)
       card.addClass("is-selected");
     const head = card.createDiv({ cls: "skillspace-card-head" });
-    head.createSpan({ cls: `skillspace-dot${item.enabled ? " is-on" : ""}` });
+    const syncStatus = this.syncStatusFor(item);
+    const dotLabel = syncStatus === "current" ? `Up to date with ${item.sourceRepo}` : syncStatus === "stale" ? "Update available \u2014 click the sync icon to review" : item.sourceRepo ? 'Not checked yet this session \u2014 click "Check for updates"' : "Not tracked from GitHub \u2014 install via Discover to enable update checks";
+    head.createSpan({
+      cls: `skillspace-card-dot${syncStatus === "current" ? " is-current" : syncStatus === "stale" ? " is-stale" : ""}`,
+      attr: { "aria-label": dotLabel }
+    });
     head.createSpan({ text: item.name, cls: "skillspace-card-name" });
+    head.createSpan({ text: TYPE_LABEL_SINGULAR[item.type], cls: "skillspace-card-type skillspace-card-type-sm" });
     const isLinked = item.projectId !== null && item.realPath !== item.sourcePath;
     if (item.sourceRepo) {
       const syncBtn = head.createEl("button", {
         cls: "skillspace-icon-btn skillspace-card-sync-btn",
         attr: { "aria-label": "Check for updates" }
       });
-      (0, import_obsidian9.setIcon)(syncBtn, "refresh-cw");
+      (0, import_obsidian10.setIcon)(syncBtn, "refresh-cw");
       syncBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
         void this.quickCheckForUpdate(item, syncBtn);
@@ -3692,6 +4381,11 @@ var LibraryView = class extends import_obsidian9.ItemView {
       evt.stopPropagation();
       void this.toggleEnabled(item);
     });
+    const toolInfo = this.toolLabel(item);
+    const toolCaption = card.createDiv({ cls: "skillspace-card-tool" });
+    const toolIcon = toolCaption.createSpan({ cls: "skillspace-card-tool-icon" });
+    this.renderIcon(toolIcon, toolInfo.icon, toolInfo.svgIcon);
+    toolCaption.createSpan({ text: toolInfo.text });
     if (item.description) {
       card.createDiv({ text: item.description, cls: "skillspace-card-desc" });
     }
@@ -3701,20 +4395,12 @@ var LibraryView = class extends import_obsidian9.ItemView {
         tags.createSpan({ text: tag, cls: `skillspace-chip skillspace-tag-c${tagColorIndex(tag)}` });
       }
     }
-    if (projectIds.length > 0) {
-      const allProjects = this.getAllProjects();
-      const projects = card.createDiv({ cls: "skillspace-card-projects" });
-      for (const projectId of projectIds) {
-        const project = allProjects.find((p) => p.id === projectId);
-        projects.createSpan({ text: (_b = project == null ? void 0 : project.name) != null ? _b : "Project", cls: "skillspace-chip" });
-      }
-    }
     const footer = card.createDiv({ cls: "skillspace-card-footer" });
-    const sourceLabel2 = this.sourceLabel(item);
-    const source = footer.createDiv({ cls: "skillspace-card-source" });
-    const sourceIcon = source.createSpan({ cls: "skillspace-card-source-icon" });
-    this.renderIcon(sourceIcon, sourceLabel2.icon, sourceLabel2.svgIcon);
-    source.createSpan({ text: sourceLabel2.text, cls: "skillspace-card-source-text" });
+    const originInfo = this.originLabel(item);
+    const origin = footer.createDiv({ cls: "skillspace-card-source" });
+    const originIcon = origin.createSpan({ cls: "skillspace-card-source-icon" });
+    this.renderIcon(originIcon, originInfo.icon);
+    origin.createSpan({ text: originInfo.text, cls: "skillspace-card-source-text" });
     const rightGroup = footer.createDiv({ cls: "skillspace-card-footer-right" });
     if (item.projectId === null) {
       this.renderProjectLinkButton(rightGroup, item);
@@ -3727,30 +4413,21 @@ var LibraryView = class extends import_obsidian9.ItemView {
           cls: "skillspace-icon-btn skillspace-card-link-btn",
           attr: { "aria-label": "Linked, but its library source can't be found \u2014 click to unlink from this project" }
         });
-        (0, import_obsidian9.setIcon)(unlinkBtn, "link");
-        unlinkBtn.addEventListener("mouseenter", () => (0, import_obsidian9.setIcon)(unlinkBtn, "unlink"));
-        unlinkBtn.addEventListener("mouseleave", () => (0, import_obsidian9.setIcon)(unlinkBtn, "link"));
+        (0, import_obsidian10.setIcon)(unlinkBtn, "link");
+        unlinkBtn.addEventListener("mouseenter", () => (0, import_obsidian10.setIcon)(unlinkBtn, "unlink"));
+        unlinkBtn.addEventListener("mouseleave", () => (0, import_obsidian10.setIcon)(unlinkBtn, "link"));
         unlinkBtn.addEventListener("click", (evt) => {
           evt.stopPropagation();
           void this.unlinkFromProject(item);
         });
       }
     }
-    if (item.projectId !== null && !isLinked) {
-      const badge = rightGroup.createSpan({
-        cls: "skillspace-card-badge skillspace-card-badge-local",
-        attr: { "aria-label": "A real file in this project, not linked from your library \u2014 nothing here to unlink." }
-      });
-      (0, import_obsidian9.setIcon)(badge, "file");
-      badge.createSpan({ text: "Local" });
-    }
     if (item.favorite) {
       const star = rightGroup.createSpan({ cls: "skillspace-card-star" });
-      (0, import_obsidian9.setIcon)(star, "star");
+      (0, import_obsidian10.setIcon)(star, "star");
     }
-    rightGroup.createSpan({ text: TYPE_LABEL_SINGULAR[item.type], cls: "skillspace-card-type" });
     const menuBtn = rightGroup.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "More actions" } });
-    (0, import_obsidian9.setIcon)(menuBtn, "more-vertical");
+    (0, import_obsidian10.setIcon)(menuBtn, "more-vertical");
     menuBtn.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.openCardMenu(evt, item, isLinked);
@@ -3768,20 +4445,22 @@ var LibraryView = class extends import_obsidian9.ItemView {
     try {
       const latest = remoteHeadCommit(item.sourceRepo, item.sourceRef || void 0);
       if (latest === item.sourceCommit) {
-        new import_obsidian9.Notice(`"${item.name}" is up to date.`);
+        this.syncStatus.set(item.entryId, "current");
+        new import_obsidian10.Notice(`"${item.name}" is up to date.`);
         btn.disabled = false;
         btn.removeClass("is-syncing");
       } else {
+        this.syncStatus.set(item.entryId, "stale");
         await this.startReview(item, "update");
       }
     } catch (e) {
-      new import_obsidian9.Notice(`Couldn't check for updates: ` + errorMessage(e));
+      new import_obsidian10.Notice(`Couldn't check for updates: ` + errorMessage(e));
       btn.disabled = false;
       btn.removeClass("is-syncing");
     }
   }
   openCardMenu(evt, item, isLinked) {
-    const menu = new import_obsidian9.Menu();
+    const menu = new import_obsidian10.Menu();
     menu.addItem(
       (menuItem) => menuItem.setTitle(item.favorite ? "Remove from favourites" : "Add to favourites").setIcon(item.favorite ? "star-off" : "star").onClick(() => {
         void this.applyItemUpdate(item.entryId, { favorite: !item.favorite });
@@ -3790,11 +4469,40 @@ var LibraryView = class extends import_obsidian9.ItemView {
     menu.addItem(
       (menuItem) => menuItem.setTitle("Add to collection").setIcon("bookmark-plus").onClick(() => this.openAddToCollection(item))
     );
+    if (item.sourceRepo) {
+      menu.addItem(
+        (menuItem) => menuItem.setTitle("Add to another tool\u2026").setIcon("copy-plus").onClick(() => this.addItemToAnotherTool(item))
+      );
+    }
     menu.addSeparator();
     menu.addItem(
       (menuItem) => menuItem.setTitle(isLinked ? "Unlink from project" : "Delete").setIcon(isLinked ? "unlink" : "trash-2").setWarning(true).onClick(() => this.confirmDelete(item, isLinked))
     );
     menu.showAtMouseEvent(evt);
+  }
+  /** Re-runs the same install pipeline InstallFromGitHubModal.install() already owns, prefilled
+   *  from this item's own recorded source, and always landing at the new tool's global scope
+   *  (lockToGlobal) — never a specific project. Only offered for a sourceRepo item (openCardMenu
+   *  already checks): a raw copy of something with no known origin can never be checked for
+   *  updates or reconciled with where it came from, so there's no safe fallback for that case —
+   *  see the plan notes for the reasoning. Landing at global (not a project) keeps the new copy
+   *  linkable afterward through the existing "Manage project links" picker, rather than creating
+   *  a project-scoped duplicate that can't later become a link. */
+  addItemToAnotherTool(item) {
+    var _a, _b;
+    if (!item.sourceRepo)
+      return;
+    new InstallFromGitHubModal(
+      this.app,
+      this.getSettings(),
+      this.getAllProjects(),
+      this.store,
+      () => this.rescan(),
+      { repoUrl: item.sourceRepo, ref: (_a = item.sourceRef) != null ? _a : "", subpath: (_b = item.sourceSubpath) != null ? _b : "", type: item.type },
+      void 0,
+      item.tool,
+      true
+    ).open();
   }
   openAddToCollection(item) {
     new AddToCollectionModal(
@@ -3825,7 +4533,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
           deleteItem(item);
           await this.rescan();
         } catch (e) {
-          new import_obsidian9.Notice(`Couldn't delete "${item.name}": ` + errorMessage(e));
+          new import_obsidian10.Notice(`Couldn't delete "${item.name}": ` + errorMessage(e));
         }
       }
     ).open();
@@ -3912,7 +4620,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     const fileOpenFromTree = !!tree && !!this.selectedFilePath;
     const stepBack = () => fileOpenFromTree ? this.backToTree() : this.backToLibrary();
     const backBtn = row.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Back" } });
-    (0, import_obsidian9.setIcon)(backBtn, "arrow-left");
+    (0, import_obsidian10.setIcon)(backBtn, "arrow-left");
     backBtn.addEventListener("click", stepBack);
     const crumb = (label, current, onClick) => {
       const btn = row.createEl("button", { cls: `skillspace-crumb${current ? " is-current" : ""}`, text: label });
@@ -3920,12 +4628,12 @@ var LibraryView = class extends import_obsidian9.ItemView {
         btn.addEventListener("click", onClick);
       return btn;
     };
-    const sep2 = () => row.createSpan({ cls: "skillspace-crumb-sep", text: "/" });
+    const sep4 = () => row.createSpan({ cls: "skillspace-crumb-sep", text: "/" });
     crumb("Library", false, () => this.backToLibrary());
-    sep2();
+    sep4();
     crumb(item.name, !fileOpenFromTree, fileOpenFromTree ? () => this.backToTree() : void 0);
     if (fileOpenFromTree && this.selectedFilePath) {
-      sep2();
+      sep4();
       crumb((0, import_path10.basename)(this.selectedFilePath), true);
     }
   }
@@ -3947,7 +4655,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       text: isReviewing ? `${((_a = this.review) == null ? void 0 : _a.mode) === "restore" ? "Restore" : "Update"} "${item.name}"` : filePath && !isManifest ? (0, import_path10.basename)(filePath) : item.name,
       cls: "skillspace-detail-title"
     });
-    header.createSpan({ text: this.sourceLabel(item).text, cls: "skillspace-detail-tool-pill" });
+    header.createSpan({ text: this.sourceLabel(item), cls: "skillspace-detail-tool-pill" });
     if (filePath && !isReviewing) {
       const actions = header.createDiv({ cls: "skillspace-detail-actions" });
       this.renderDetailActions(actions);
@@ -3986,7 +4694,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       cls: "skillspace-icon-btn",
       attr: { "aria-label": this.detailEditing ? "Preview" : "Edit" }
     });
-    (0, import_obsidian9.setIcon)(editBtn, this.detailEditing ? "eye" : "pencil");
+    (0, import_obsidian10.setIcon)(editBtn, this.detailEditing ? "eye" : "pencil");
     editBtn.addEventListener("click", () => {
       this.detailEditing = !this.detailEditing;
       this.render();
@@ -3996,7 +4704,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
     let fileSize = 0;
     let modified = Date.now();
     try {
-      const stat = (0, import_fs9.statSync)(filePath);
+      const stat = (0, import_fs10.statSync)(filePath);
       fileSize = stat.size;
       modified = stat.mtimeMs;
     } catch (e) {
@@ -4068,7 +4776,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
    *  wipe out the other's content, since both replace the whole element. */
   setSourceBtnContent(btn, icon, text) {
     btn.empty();
-    (0, import_obsidian9.setIcon)(btn.createSpan({ cls: "skillspace-detail-source-btn-icon" }), icon);
+    (0, import_obsidian10.setIcon)(btn.createSpan({ cls: "skillspace-detail-source-btn-icon" }), icon);
     btn.createSpan({ text });
   }
   async checkForUpdate(item, checkBtn) {
@@ -4079,15 +4787,17 @@ var LibraryView = class extends import_obsidian9.ItemView {
     try {
       const latest = remoteHeadCommit(item.sourceRepo, item.sourceRef || void 0);
       if (latest === item.sourceCommit) {
-        new import_obsidian9.Notice(`"${item.name}" is up to date.`);
+        this.syncStatus.set(item.entryId, "current");
+        new import_obsidian10.Notice(`"${item.name}" is up to date.`);
         checkBtn.disabled = false;
         checkBtn.removeClass("is-syncing");
         this.setSourceBtnContent(checkBtn, "refresh-cw", "Check for updates");
         return;
       }
+      this.syncStatus.set(item.entryId, "stale");
       await this.startReview(item, "update");
     } catch (e) {
-      new import_obsidian9.Notice(`Couldn't check for updates: ` + errorMessage(e));
+      new import_obsidian10.Notice(`Couldn't check for updates: ` + errorMessage(e));
       checkBtn.disabled = false;
       checkBtn.removeClass("is-syncing");
       this.setSourceBtnContent(checkBtn, "refresh-cw", "Check for updates");
@@ -4113,17 +4823,17 @@ var LibraryView = class extends import_obsidian9.ItemView {
     let clone = null;
     try {
       clone = mode === "restore" ? shallowCloneAtCommit(sourceRepo, item.sourceCommit) : shallowCloneRepo(sourceRepo, item.sourceRef || void 0);
-      (0, import_fs9.rmSync)((0, import_path10.join)(clone.dir, ".git"), { recursive: true, force: true });
+      (0, import_fs10.rmSync)((0, import_path10.join)(clone.dir, ".git"), { recursive: true, force: true });
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
       const newRoot = subpath ? (0, import_path10.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs9.existsSync)(newRoot)) {
+      if (!(0, import_fs10.existsSync)(newRoot)) {
         throw new Error(`"${subpath}" no longer exists in this repo.`);
       }
       const unit = linkableUnit(item.sourcePath);
       const oldPrimary = unit.isDirectory ? (0, import_path10.join)(unit.path, "SKILL.md") : unit.path;
       const newPrimary = unit.isDirectory ? (0, import_path10.join)(newRoot, "SKILL.md") : newRoot;
-      const oldText = (0, import_fs9.existsSync)(oldPrimary) ? (0, import_fs9.readFileSync)(oldPrimary, "utf-8") : "";
-      const newText = (0, import_fs9.existsSync)(newPrimary) ? (0, import_fs9.readFileSync)(newPrimary, "utf-8") : "";
+      const oldText = (0, import_fs10.existsSync)(oldPrimary) ? (0, import_fs10.readFileSync)(oldPrimary, "utf-8") : "";
+      const newText = (0, import_fs10.existsSync)(newPrimary) ? (0, import_fs10.readFileSync)(newPrimary, "utf-8") : "";
       const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
       this.review = {
         status: "ready",
@@ -4192,19 +4902,109 @@ var LibraryView = class extends import_obsidian9.ItemView {
     const { mode, unitPath, isDirectory, newRoot, newCommit, entryId, clone } = this.review;
     try {
       if (isDirectory) {
-        (0, import_fs9.rmSync)(unitPath, { recursive: true, force: true });
-        (0, import_fs9.cpSync)(newRoot, unitPath, { recursive: true });
+        (0, import_fs10.rmSync)(unitPath, { recursive: true, force: true });
+        (0, import_fs10.cpSync)(newRoot, unitPath, { recursive: true });
       } else {
-        (0, import_fs9.cpSync)(newRoot, unitPath);
+        (0, import_fs10.cpSync)(newRoot, unitPath);
       }
       await this.store.update(entryId, { sourceCommit: newCommit });
+      if (mode === "update")
+        this.syncStatus.set(entryId, "current");
       clone.cleanup();
       this.review = null;
       await this.rescan();
-      new import_obsidian9.Notice(mode === "restore" ? "Restored." : "Updated.");
+      new import_obsidian10.Notice(mode === "restore" ? "Restored." : "Updated.");
     } catch (e) {
-      new import_obsidian9.Notice(`${mode === "restore" ? "Restore" : "Update"} failed: ` + errorMessage(e));
+      new import_obsidian10.Notice(`${mode === "restore" ? "Restore" : "Update"} failed: ` + errorMessage(e));
     }
+  }
+  /** Silent counterpart to startReview("update") + applyReview() — fetches and overwrites, same
+   *  as those two, but with no diff computed and no this.review involvement at all. Kept
+   *  deliberately independent of the interactive review's state machine (rather than sharing
+   *  code with it) so a bulk run can never collide with a review the user has open elsewhere.
+   *  Used only by bulkUpdateAll; throws on failure so the caller can keep the batch going. */
+  async silentUpdateItem(item) {
+    var _a;
+    const sourceRepo = item.sourceRepo;
+    if (!sourceRepo)
+      throw new Error("no source repo");
+    let clone = null;
+    try {
+      clone = shallowCloneRepo(sourceRepo, item.sourceRef || void 0);
+      (0, import_fs10.rmSync)((0, import_path10.join)(clone.dir, ".git"), { recursive: true, force: true });
+      const subpath = (_a = item.sourceSubpath) != null ? _a : "";
+      const newRoot = subpath ? (0, import_path10.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs10.existsSync)(newRoot)) {
+        throw new Error(`"${subpath}" no longer exists in this repo.`);
+      }
+      const unit = linkableUnit(item.sourcePath);
+      if (unit.isDirectory) {
+        (0, import_fs10.rmSync)(unit.path, { recursive: true, force: true });
+        (0, import_fs10.cpSync)(newRoot, unit.path, { recursive: true });
+      } else {
+        (0, import_fs10.cpSync)(newRoot, unit.path);
+      }
+      await this.store.update(item.entryId, { sourceCommit: clone.commit });
+    } finally {
+      clone == null ? void 0 : clone.cleanup();
+    }
+  }
+  /** Bulk-checks every sourceRepo item in the whole library (not just what's currently filtered/
+   *  searched — matches what "the whole library" means on the unscoped "All" page these buttons
+   *  live on) against its remote. Sequential, same as every other git call in this codebase
+   *  (remoteHeadCommit/shallowCloneRepo are blocking execFileSync calls) — yields between calls
+   *  so the button's progress label actually paints. */
+  async bulkCheckForUpdates(btn) {
+    if (this.bulkCheckInProgress)
+      return;
+    this.bulkCheckInProgress = true;
+    btn.disabled = true;
+    const tracked = this.items.filter((i) => i.sourceRepo);
+    let errors = 0;
+    for (let i = 0; i < tracked.length; i++) {
+      const item = tracked[i];
+      btn.setText(`Checking ${i + 1}/${tracked.length}\u2026`);
+      await new Promise((resolve2) => window.setTimeout(resolve2, 0));
+      try {
+        const latest = remoteHeadCommit(item.sourceRepo, item.sourceRef || void 0);
+        this.syncStatus.set(item.entryId, latest === item.sourceCommit ? "current" : "stale");
+      } catch (e) {
+        errors++;
+      }
+    }
+    this.bulkCheckInProgress = false;
+    new import_obsidian10.Notice(
+      errors > 0 ? `Checked ${tracked.length} \u2014 ${errors} couldn't be reached.` : `Checked ${tracked.length} skill${tracked.length === 1 ? "" : "s"}.`
+    );
+    this.render();
+  }
+  /** Silently applies every item bulkCheckForUpdates found stale. cleanupReview() first is
+   *  defensive — these buttons live on the always-visible "All" page toolbar, so a review could
+   *  in principle still be open when this runs. */
+  async bulkUpdateAll(btn) {
+    if (this.bulkUpdateInProgress)
+      return;
+    this.bulkUpdateInProgress = true;
+    btn.disabled = true;
+    this.cleanupReview();
+    const stale = this.items.filter((i) => this.syncStatus.get(i.entryId) === "stale");
+    let updated = 0;
+    let errors = 0;
+    for (let i = 0; i < stale.length; i++) {
+      const item = stale[i];
+      btn.setText(`Updating ${i + 1}/${stale.length}\u2026`);
+      await new Promise((resolve2) => window.setTimeout(resolve2, 0));
+      try {
+        await this.silentUpdateItem(item);
+        this.syncStatus.set(item.entryId, "current");
+        updated++;
+      } catch (e) {
+        errors++;
+      }
+    }
+    this.bulkUpdateInProgress = false;
+    await this.rescan();
+    new import_obsidian10.Notice(errors > 0 ? `Updated ${updated}, ${errors} failed.` : `Updated ${updated} skill${updated === 1 ? "" : "s"}.`);
   }
   renderTreeNodes(container, nodes, depth) {
     for (const node of nodes) {
@@ -4216,9 +5016,9 @@ var LibraryView = class extends import_obsidian9.ItemView {
       row.style.setProperty("--skillspace-tree-depth", String(depth));
       const chevron = row.createSpan({ cls: "skillspace-tree-chevron" });
       if (node.isDir)
-        (0, import_obsidian9.setIcon)(chevron, collapsed ? "chevron-right" : "chevron-down");
+        (0, import_obsidian10.setIcon)(chevron, collapsed ? "chevron-right" : "chevron-down");
       const icon = row.createSpan({ cls: "skillspace-tree-icon" });
-      (0, import_obsidian9.setIcon)(icon, node.isDir ? collapsed ? "folder" : "folder-open" : "file-text");
+      (0, import_obsidian10.setIcon)(icon, node.isDir ? collapsed ? "folder" : "folder-open" : "file-text");
       row.createSpan({ text: node.name, cls: "skillspace-tree-label" });
       if (node.isDir) {
         row.addEventListener("click", () => {
@@ -4245,10 +5045,10 @@ var LibraryView = class extends import_obsidian9.ItemView {
     if (this.detailLoadedFor === loadKey)
       return;
     try {
-      this.detailContent = (0, import_fs9.readFileSync)(filePath, "utf-8");
+      this.detailContent = (0, import_fs10.readFileSync)(filePath, "utf-8");
     } catch (e) {
       this.detailContent = "";
-      new import_obsidian9.Notice("Could not read file: " + errorMessage(e));
+      new import_obsidian10.Notice("Could not read file: " + errorMessage(e));
     }
     this.detailLoadedFor = loadKey;
     this.detailEditing = false;
@@ -4272,7 +5072,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
       const save = () => {
         void (async () => {
           try {
-            (0, import_fs9.writeFileSync)(filePath, textarea.value, "utf-8");
+            (0, import_fs10.writeFileSync)(filePath, textarea.value, "utf-8");
             this.detailContent = textarea.value;
             if (isManifest) {
               const meta = parseSourceMeta(textarea.value);
@@ -4292,10 +5092,10 @@ var LibraryView = class extends import_obsidian9.ItemView {
               this.selectedItem = updated;
             }
             this.detailEditing = false;
-            new import_obsidian9.Notice("Saved.");
+            new import_obsidian10.Notice("Saved.");
             this.render();
           } catch (e) {
-            new import_obsidian9.Notice("Save failed: " + errorMessage(e));
+            new import_obsidian10.Notice("Save failed: " + errorMessage(e));
           }
         })();
       };
@@ -4328,7 +5128,7 @@ var LibraryView = class extends import_obsidian9.ItemView {
         cls: "markdown-preview-view markdown-rendered node-insert-event is-readable-line-width allow-fold-headings allow-fold-lists show-indentation-guide skillspace-markdown-preview"
       });
       const sizer = readingView.createDiv({ cls: "markdown-preview-sizer markdown-preview-section" });
-      void import_obsidian9.MarkdownRenderer.render(
+      void import_obsidian10.MarkdownRenderer.render(
         this.app,
         stripFrontmatter(this.detailContent),
         sizer,
@@ -4423,12 +5223,6 @@ var LibraryView = class extends import_obsidian9.ItemView {
 };
 
 // src/settings.ts
-var TYPE_LABELS2 = {
-  skill: "Skills",
-  agent: "Agents",
-  command: "Commands",
-  rule: "Rules"
-};
 var ENABLED_FILTER_OPTIONS = [
   { key: "all", label: "All" },
   { key: "enabled", label: "Enabled only" },
@@ -4441,33 +5235,15 @@ var AUTO_RESCAN_OPTIONS = [
   { minutes: 30, label: "Every 30 minutes" },
   { minutes: 60, label: "Every hour" }
 ];
-function attachPathStatus(controlEl, resolve2) {
-  const el = controlEl.createSpan({ cls: "skillspace-path-status" });
-  return (rawPath) => {
-    const trimmed = rawPath.trim();
-    if (!trimmed) {
-      el.setText("");
-      el.title = "";
-      el.className = "skillspace-path-status";
-      return;
-    }
-    const resolved = resolve2(trimmed);
-    const found = resolved !== null && (0, import_fs10.existsSync)(resolved);
-    el.setText(found ? "found" : "not found");
-    el.title = resolved != null ? resolved : "";
-    el.className = `skillspace-path-status ${found ? "is-found" : "is-missing"}`;
-  };
-}
-var SkillSpaceSettingTab = class extends import_obsidian10.PluginSettingTab {
+var SkillSpaceSettingTab = class extends import_obsidian11.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
   display() {
-    var _a, _b, _c;
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian10.Setting(containerEl).setName("Storage folder").setDesc(
+    new import_obsidian11.Setting(containerEl).setName("Storage folder").setDesc(
       "Vault folder where AI Skills Manager keeps its metadata notes (tags, enabled, favorite, collections) for each discovered item."
     ).addText(
       (text) => text.setPlaceholder("AI Skills Manager").setValue(this.plugin.settings.storageFolder).onChange(async (value) => {
@@ -4475,8 +5251,8 @@ var SkillSpaceSettingTab = class extends import_obsidian10.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian10.Setting(containerEl).setName("Library view").setHeading();
-    new import_obsidian10.Setting(containerEl).setName("Auto-rescan").setDesc(
+    new import_obsidian11.Setting(containerEl).setName("Library view").setHeading();
+    new import_obsidian11.Setting(containerEl).setName("Auto-rescan").setDesc(
       "Periodically re-scan every configured tool and project in the background, independent of opening the library or clicking Scan tools."
     ).addDropdown((dropdown) => {
       for (const { minutes, label } of AUTO_RESCAN_OPTIONS)
@@ -4487,7 +5263,7 @@ var SkillSpaceSettingTab = class extends import_obsidian10.PluginSettingTab {
         this.plugin.applyAutoRescanInterval();
       });
     });
-    new import_obsidian10.Setting(containerEl).setName("Default sort order").setDesc("Sort order the library view opens with.").addDropdown((dropdown) => {
+    new import_obsidian11.Setting(containerEl).setName("Default sort order").setDesc("Sort order the library view opens with.").addDropdown((dropdown) => {
       for (const { key, label } of SORT_OPTIONS)
         dropdown.addOption(key, label);
       dropdown.setValue(this.plugin.settings.defaultSortOrder).onChange(async (value) => {
@@ -4495,7 +5271,7 @@ var SkillSpaceSettingTab = class extends import_obsidian10.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian10.Setting(containerEl).setName("Default enabled/disabled filter").setDesc("Enabled/disabled filter the library view opens with.").addDropdown((dropdown) => {
+    new import_obsidian11.Setting(containerEl).setName("Default enabled/disabled filter").setDesc("Enabled/disabled filter the library view opens with.").addDropdown((dropdown) => {
       for (const { key, label } of ENABLED_FILTER_OPTIONS)
         dropdown.addOption(key, label);
       dropdown.setValue(this.plugin.settings.defaultEnabledFilter).onChange(async (value) => {
@@ -4503,7 +5279,7 @@ var SkillSpaceSettingTab = class extends import_obsidian10.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian10.Setting(containerEl).setName("Show every tool and project in the sidebar").setDesc(
+    new import_obsidian11.Setting(containerEl).setName("Show every tool and project in the sidebar").setDesc(
       `Off by default: the sidebar's "Global workspace" and "Project workspaces" lists only show rows with at least one discovered item, so they don't fill up with rows that always read 0. Turn on to see every configured tool and registered project, whether or not anything's been found for it yet.`
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showEmptySidebarRows).onChange(async (value) => {
@@ -4512,85 +5288,28 @@ var SkillSpaceSettingTab = class extends import_obsidian10.PluginSettingTab {
         this.plugin.refreshOpenViews();
       })
     );
-    new import_obsidian10.Setting(containerEl).setName("Tools").setHeading().addButton(
+    new import_obsidian11.Setting(containerEl).setName("Rescan tools").setDesc(
+      'Per-tool paths (which folders AI Skills Manager scans for skills, agents, commands, and rules), enabling/disabling a tool, and adding a custom one now live on the "All tools" page \u2014 at the top of the Global workspace section in the library sidebar.'
+    ).addButton(
       (btn) => btn.setIcon("refresh-cw").setTooltip("Scan tools").onClick(async () => {
         btn.setDisabled(true);
         try {
           const { items } = await this.plugin.rescanEverywhere();
-          new import_obsidian10.Notice(`Scan complete \u2014 ${items.length} item${items.length === 1 ? "" : "s"} found.`);
+          new import_obsidian11.Notice(`Scan complete \u2014 ${items.length} item${items.length === 1 ? "" : "s"} found.`);
         } catch (e) {
-          new import_obsidian10.Notice("Scan failed: " + errorMessage(e));
+          new import_obsidian11.Notice("Scan failed: " + errorMessage(e));
         } finally {
           btn.setDisabled(false);
         }
       })
     );
-    containerEl.createEl("p", {
-      text: `Filesystem paths AI Skills Manager scans for skills, agents, commands, and rules. Leave a field blank to skip it for that tool. A greyed-out path shown as placeholder text is an educated guess for a convention that isn't confirmed \u2014 type it in only once you've verified it actually exists. "found"/"not found" next to a field confirms whether what's typed resolves to a real directory on disk right now (project-scoped fields are checked against the current vault).`,
-      cls: "setting-item-description"
-    });
-    const vaultAdapter = this.app.vault.adapter;
-    const vaultPath = vaultAdapter instanceof import_obsidian10.FileSystemAdapter ? vaultAdapter.getBasePath() : null;
-    for (const tool of this.plugin.settings.tools) {
-      const details = containerEl.createEl("details", { cls: "skillspace-tool-details" });
-      details.createEl("summary", { text: tool.name, cls: "skillspace-tool-summary" });
-      for (const type of Object.keys(TYPE_LABELS2)) {
-        const setting = new import_obsidian10.Setting(details).setName(TYPE_LABELS2[type]);
-        const updateStatus = attachPathStatus(setting.controlEl, (p) => expandHome(p));
-        setting.addText(
-          (text) => {
-            var _a2, _b2, _c2;
-            return text.setPlaceholder((_b2 = (_a2 = tool.unconfirmedPaths) == null ? void 0 : _a2[type]) != null ? _b2 : "~/.example/path").setValue((_c2 = tool.paths[type]) != null ? _c2 : "").onChange(async (value) => {
-              if (value.trim()) {
-                tool.paths[type] = value.trim();
-              } else {
-                delete tool.paths[type];
-              }
-              await this.plugin.saveSettings();
-              updateStatus(value);
-            });
-          }
-        );
-        updateStatus((_a = tool.paths[type]) != null ? _a : "");
-      }
-      new import_obsidian10.Setting(details).setName("Project-scoped paths").setDesc(
-        "Optional override for this tool's layout inside a project folder, relative to the project root. Leave blank to use the default shown as a placeholder (the global path above, with the home directory stripped)."
-      );
-      for (const type of Object.keys(TYPE_LABELS2)) {
-        const globalPath = tool.paths[type];
-        const setting = new import_obsidian10.Setting(details).setName(TYPE_LABELS2[type]);
-        const updateStatus = attachPathStatus(
-          setting.controlEl,
-          (p) => vaultPath ? (0, import_path11.join)(vaultPath, p) : null
-        );
-        setting.addText(
-          (text) => {
-            var _a2, _b2;
-            return text.setPlaceholder(globalPath ? toProjectRelative(globalPath) : "(not scanned globally)").setValue((_b2 = (_a2 = tool.projectPaths) == null ? void 0 : _a2[type]) != null ? _b2 : "").onChange(async (value) => {
-              var _a3;
-              if (value.trim()) {
-                tool.projectPaths = (_a3 = tool.projectPaths) != null ? _a3 : {};
-                tool.projectPaths[type] = value.trim();
-              } else if (tool.projectPaths) {
-                delete tool.projectPaths[type];
-                if (Object.keys(tool.projectPaths).length === 0)
-                  delete tool.projectPaths;
-              }
-              await this.plugin.saveSettings();
-              updateStatus(value);
-            });
-          }
-        );
-        updateStatus((_c = (_b = tool.projectPaths) == null ? void 0 : _b[type]) != null ? _c : "");
-      }
-    }
-    new import_obsidian10.Setting(containerEl).setName("Project workspaces").setHeading();
+    new import_obsidian11.Setting(containerEl).setName("Project workspaces").setHeading();
     containerEl.createEl("p", {
       text: "Extra project folders to scan for project-local skills (e.g. <project>/.claude/skills), in addition to the current vault, which is always included automatically.",
       cls: "setting-item-description"
     });
     for (const project of this.plugin.settings.projectWorkspaces) {
-      new import_obsidian10.Setting(containerEl).setName(project.name).setDesc(project.path).addButton(
+      new import_obsidian11.Setting(containerEl).setName(project.name).setDesc(project.path).addButton(
         (btn) => btn.setIcon("trash").setTooltip("Remove").onClick(async () => {
           this.plugin.settings.projectWorkspaces = this.plugin.settings.projectWorkspaces.filter(
             (p) => p.id !== project.id
@@ -4603,7 +5322,7 @@ var SkillSpaceSettingTab = class extends import_obsidian10.PluginSettingTab {
     }
     let newProjectName = "";
     let newProjectPath = "";
-    new import_obsidian10.Setting(containerEl).setName("Add project").addText(
+    new import_obsidian11.Setting(containerEl).setName("Add project").addText(
       (text) => text.setPlaceholder("Name").onChange((value) => {
         newProjectName = value;
       })
@@ -4625,11 +5344,17 @@ var SkillSpaceSettingTab = class extends import_obsidian10.PluginSettingTab {
         this.display();
       })
     );
+    new import_obsidian11.Setting(containerEl).setName("Support").setHeading();
+    new import_obsidian11.Setting(containerEl).setName("Report a bug or request a feature").setDesc("Opens a new issue on the AI Skills Manager GitHub repo.").addButton(
+      (btn) => btn.setButtonText("Open GitHub issues").onClick(() => {
+        window.open("https://github.com/NoteNerdOfficial/ai-skills-manager/issues/new", "_blank");
+      })
+    );
   }
 };
 
 // src/store.ts
-var import_obsidian11 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 var ShadowNoteStore = class {
   constructor(app, folder) {
     this.app = app;
@@ -4639,22 +5364,22 @@ var ShadowNoteStore = class {
     this.folder = folder;
   }
   async ensureFolder() {
-    const path = (0, import_obsidian11.normalizePath)(this.folder);
+    const path = (0, import_obsidian12.normalizePath)(this.folder);
     if (!this.app.vault.getAbstractFileByPath(path)) {
       await this.app.vault.createFolder(path);
     }
   }
   notePath(entryId) {
-    return (0, import_obsidian11.normalizePath)(`${this.folder}/${slug(entryId)}.md`);
+    return (0, import_obsidian12.normalizePath)(`${this.folder}/${slug(entryId)}.md`);
   }
   async list() {
     var _a;
-    const folder = this.app.vault.getAbstractFileByPath((0, import_obsidian11.normalizePath)(this.folder));
-    if (!(folder instanceof import_obsidian11.TFolder))
+    const folder = this.app.vault.getAbstractFileByPath((0, import_obsidian12.normalizePath)(this.folder));
+    if (!(folder instanceof import_obsidian12.TFolder))
       return [];
     const items = [];
     for (const file of folder.children) {
-      if (file instanceof import_obsidian11.TFile && file.extension === "md") {
+      if (file instanceof import_obsidian12.TFile && file.extension === "md") {
         const fm = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
         if (fm == null ? void 0 : fm.entryId)
           items.push(this.fromFrontmatter(fm));
@@ -4666,7 +5391,7 @@ var ShadowNoteStore = class {
     await this.ensureFolder();
     const path = this.notePath(discovered.entryId);
     const existing = this.app.vault.getAbstractFileByPath(path);
-    const file = existing instanceof import_obsidian11.TFile ? existing : await this.app.vault.create(path, "---\n---\n");
+    const file = existing instanceof import_obsidian12.TFile ? existing : await this.app.vault.create(path, "---\n---\n");
     let metadata;
     await this.app.fileManager.processFrontMatter(file, (fm) => {
       fm.entryId = discovered.entryId;
@@ -4691,7 +5416,7 @@ var ShadowNoteStore = class {
   }
   async update(entryId, changes) {
     const file = this.app.vault.getAbstractFileByPath(this.notePath(entryId));
-    if (!(file instanceof import_obsidian11.TFile))
+    if (!(file instanceof import_obsidian12.TFile))
       return;
     await this.app.fileManager.processFrontMatter(file, (fm) => {
       Object.assign(fm, changes);
@@ -4701,11 +5426,11 @@ var ShadowNoteStore = class {
    *  symlink that was just removed), so removed items don't linger forever. */
   async pruneMissing(validEntryIds) {
     var _a;
-    const folder = this.app.vault.getAbstractFileByPath((0, import_obsidian11.normalizePath)(this.folder));
-    if (!(folder instanceof import_obsidian11.TFolder))
+    const folder = this.app.vault.getAbstractFileByPath((0, import_obsidian12.normalizePath)(this.folder));
+    if (!(folder instanceof import_obsidian12.TFolder))
       return;
     for (const file of folder.children) {
-      if (file instanceof import_obsidian11.TFile && file.extension === "md") {
+      if (file instanceof import_obsidian12.TFile && file.extension === "md") {
         const fm = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
         const entryId = typeof (fm == null ? void 0 : fm.entryId) === "string" ? fm.entryId : null;
         if (entryId && !validEntryIds.has(entryId)) {
@@ -4740,12 +5465,19 @@ var ShadowNoteStore = class {
 };
 
 // src/main.ts
-var SkillSpacePlugin = class extends import_obsidian12.Plugin {
+var PLUGIN_ICON_SVG = `
+<polygon points="26,10 43,43 9,43" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="74" cy="26" r="18" fill="none" stroke="currentColor" stroke-width="7"/>
+<polygon points="45,74 35.5,90.5 16.5,90.5 7,74 16.5,57.5 35.5,57.5" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="57" y="57" width="34" height="34" fill="none" stroke="currentColor" stroke-width="7" stroke-linejoin="round"/>
+`;
+var SkillSpacePlugin = class extends import_obsidian13.Plugin {
   constructor() {
     super(...arguments);
     this.autoRescanIntervalId = null;
   }
   async onload() {
+    (0, import_obsidian13.addIcon)(PLUGIN_ICON_ID, PLUGIN_ICON_SVG);
     await this.loadSettings();
     this.store = new ShadowNoteStore(this.app, this.settings.storageFolder);
     this.registerView(
@@ -4802,20 +5534,28 @@ var SkillSpacePlugin = class extends import_obsidian12.Plugin {
     }
   }
   async loadSettings() {
-    var _a;
+    var _a, _b;
     const loaded = await this.loadData();
     const mergedTools = DEFAULT_TOOLS.map((defaultTool) => {
-      var _a2, _b;
+      var _a2, _b2;
       const saved = (_a2 = loaded == null ? void 0 : loaded.tools) == null ? void 0 : _a2.find((t) => t.id === defaultTool.id);
       if (!saved)
         return defaultTool;
-      return { ...defaultTool, paths: saved.paths, projectPaths: (_b = saved.projectPaths) != null ? _b : defaultTool.projectPaths };
+      return {
+        ...defaultTool,
+        paths: saved.paths,
+        projectPaths: (_b2 = saved.projectPaths) != null ? _b2 : defaultTool.projectPaths,
+        disabled: saved.disabled
+      };
     });
-    const savedOrder = ((_a = loaded == null ? void 0 : loaded.sectionOrder) != null ? _a : []).filter((key) => DEFAULT_SECTION_ORDER.includes(key));
+    const customTools = ((_a = loaded == null ? void 0 : loaded.tools) != null ? _a : []).filter(
+      (t) => t.custom && !DEFAULT_TOOLS.some((defaultTool) => defaultTool.id === t.id)
+    );
+    const savedOrder = ((_b = loaded == null ? void 0 : loaded.sectionOrder) != null ? _b : []).filter((key) => DEFAULT_SECTION_ORDER.includes(key));
     const missingKeys = DEFAULT_SECTION_ORDER.filter((key) => !savedOrder.includes(key));
     const mergedSectionOrder = [...savedOrder, ...missingKeys];
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded, {
-      tools: mergedTools,
+      tools: [...mergedTools, ...customTools],
       sectionOrder: mergedSectionOrder
     });
   }

@@ -1,15 +1,14 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
 import { basename, join } from "path";
-import { ItemType, ProjectWorkspace, SkillSpacePluginSettings, ToolConfig, TYPE_LABELS } from "../types";
-import { makeEntryId, parseSourceMeta, resolveToolDir } from "../scanners";
+import { ItemType, ProjectWorkspace, SkillSpacePluginSettings, TYPE_LABELS } from "../types";
+import { candidateTypesForTool, makeEntryId, parseSourceMeta, resolveToolDir } from "../scanners";
 import { shallowCloneRepo } from "../git";
 import { ShadowNoteStore } from "../store";
 import { errorMessage } from "../errors";
 import { RescanResult } from "../rescan";
 
 const GLOBAL_SCOPE = "__global__";
-const CANDIDATE_TYPE_ORDER: ItemType[] = ["skill", "agent", "command", "rule"];
 
 export interface ParsedGitHubUrl {
   repoUrl: string;
@@ -39,11 +38,6 @@ export function parseGitHubUrl(input: string): ParsedGitHubUrl | null {
     return { repoUrl, ref, subpath: rest.join("/") };
   }
   return { repoUrl, ref: "", subpath: "" };
-}
-
-function candidateTypesForTool(tool: ToolConfig): ItemType[] {
-  const known = new Set([...Object.keys(tool.paths), ...Object.keys(tool.projectPaths ?? {})]);
-  return CANDIDATE_TYPE_ORDER.filter((type) => known.has(type));
 }
 
 export interface InstallFromGitHubPrefill {
@@ -77,10 +71,30 @@ export class InstallFromGitHubModal extends Modal {
     private prefill?: InstallFromGitHubPrefill,
     /** Called after a successful install — Discover uses this to drop the matching catalog
      *  entry, since it's now a real installed item rather than just a candidate. */
-    private onInstalled?: () => void
+    private onInstalled?: () => void,
+    /** Steers the default Tool selection away from this tool id — used when re-installing an
+     *  already-installed item into a *different* tool ("Add to another tool…"), so the modal
+     *  doesn't just default back to the tool it's already in. The Tool dropdown still lists
+     *  every tool, so picking the same one again (e.g. under a different type) stays possible. */
+    private excludeToolId?: string,
+    /** Skips the "Install into" scope dropdown entirely, always installing at that tool's global
+     *  scope — used by "Add to another tool…" so a cross-tool copy always lands somewhere it can
+     *  later be linked into a project via the normal picker, rather than landing directly in one
+     *  project as a dead-end duplicate. The normal Discover/manual-URL install keeps the picker
+     *  (installing straight into one project is a legitimate first-time choice there). */
+    private lockToGlobal?: boolean,
+    /** Defaults the Tool dropdown to this tool id instead of the first tool that supports any
+     *  type — used when opening the modal from a specific tool's own filtered library page
+     *  ("Install into <tool>"), so the tool you were already looking at is what's pre-selected.
+     *  Only affects the initial default; ignored once a Discover `prefill` is present, since that
+     *  already has its own more specific tool-selection logic keyed off the discovered type. */
+    private preferredToolId?: string
   ) {
     super(app);
-    const firstTool = settings.tools.find((t) => candidateTypesForTool(t).length > 0) ?? settings.tools[0];
+    const preferredTool = preferredToolId
+      ? settings.tools.find((t) => t.id === preferredToolId && candidateTypesForTool(t).length > 0)
+      : undefined;
+    const firstTool = preferredTool ?? settings.tools.find((t) => candidateTypesForTool(t).length > 0) ?? settings.tools[0];
     this.toolId = firstTool.id;
     this.type = candidateTypesForTool(firstTool)[0] ?? "skill";
     if (prefill) {
@@ -91,7 +105,10 @@ export class InstallFromGitHubModal extends Modal {
       this.subpathTouched = true;
       // Prefer a tool that actually has a configured path for the discovered type, rather than
       // leaving whichever tool happened to default-select (it may not support this type at all).
-      const toolForType = settings.tools.find((t) => candidateTypesForTool(t).includes(prefill.type));
+      // Among those, prefer one that isn't excludeToolId, falling back to it if it's the only match.
+      const toolForType =
+        settings.tools.find((t) => candidateTypesForTool(t).includes(prefill.type) && t.id !== excludeToolId) ??
+        settings.tools.find((t) => candidateTypesForTool(t).includes(prefill.type));
       if (toolForType) {
         this.toolId = toolForType.id;
         this.type = prefill.type;
@@ -183,15 +200,17 @@ export class InstallFromGitHubModal extends Modal {
       });
     });
 
-    new Setting(contentEl).setName("Install into").addDropdown((dropdown) => {
-      dropdown.addOption(GLOBAL_SCOPE, "Global");
-      for (const project of this.projects) {
-        dropdown.addOption(project.id, project.name);
-      }
-      dropdown.setValue(this.installScope).onChange((value) => {
-        this.installScope = value;
+    if (!this.lockToGlobal) {
+      new Setting(contentEl).setName("Install into").addDropdown((dropdown) => {
+        dropdown.addOption(GLOBAL_SCOPE, "Global");
+        for (const project of this.projects) {
+          dropdown.addOption(project.id, project.name);
+        }
+        dropdown.setValue(this.installScope).onChange((value) => {
+          this.installScope = value;
+        });
       });
-    });
+    }
 
     this.statusEl = contentEl.createDiv({ cls: "skillspace-modal-meta" });
 

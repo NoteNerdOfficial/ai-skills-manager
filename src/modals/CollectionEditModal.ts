@@ -1,9 +1,10 @@
-import { App, Modal, Setting } from "obsidian";
+import { App, Modal, Setting, setIcon } from "obsidian";
 import { Collection, ItemMetadata } from "../types";
 
 export class CollectionEditModal extends Modal {
   private name: string;
   private selected: Set<string>;
+  private rows: { row: HTMLElement; name: string }[] = [];
 
   constructor(
     app: App,
@@ -18,6 +19,7 @@ export class CollectionEditModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
+    this.rows = [];
     contentEl.addClass("skillspace-modal");
     contentEl.createEl("h3", { text: this.existing ? "Edit collection" : "New collection" });
 
@@ -28,6 +30,36 @@ export class CollectionEditModal extends Modal {
     );
 
     contentEl.createEl("p", { text: "Members", cls: "setting-item-description" });
+
+    if (this.items.length > 0) {
+      const searchWrap = contentEl.createDiv({ cls: "skillspace-search-wrap" });
+      const searchIcon = searchWrap.createSpan({ cls: "skillspace-search-icon" });
+      setIcon(searchIcon, "search");
+      const searchInput = searchWrap.createEl("input", {
+        type: "text",
+        placeholder: "Filter skills…",
+        cls: "skillspace-search",
+      });
+      const clearBtn = searchWrap.createEl("button", {
+        cls: "skillspace-icon-btn skillspace-search-clear",
+        attr: { "aria-label": "Clear search" },
+      });
+      setIcon(clearBtn, "x");
+      const updateClearBtn = () => clearBtn.toggle(searchInput.value.length > 0);
+      updateClearBtn();
+
+      searchInput.addEventListener("input", () => {
+        updateClearBtn();
+        this.filterRows(searchInput.value);
+      });
+      clearBtn.addEventListener("click", () => {
+        searchInput.value = "";
+        updateClearBtn();
+        this.filterRows("");
+        searchInput.focus();
+      });
+    }
+
     const list = contentEl.createDiv({ cls: "skillspace-collection-picker" });
     if (this.items.length === 0) {
       list.createEl("p", { text: "No items yet — rescan tools from the library view first." });
@@ -41,6 +73,7 @@ export class CollectionEditModal extends Modal {
         else this.selected.delete(item.entryId);
       });
       row.createSpan({ text: ` ${item.name}` });
+      this.rows.push({ row, name: item.name.toLowerCase() });
     }
 
     new Setting(contentEl).addButton((btn) =>
@@ -62,5 +95,12 @@ export class CollectionEditModal extends Modal {
 
   onClose() {
     this.contentEl.empty();
+  }
+
+  private filterRows(query: string) {
+    const q = query.trim().toLowerCase();
+    for (const { row, name } of this.rows) {
+      row.toggle(!q || name.includes(q));
+    }
   }
 }
