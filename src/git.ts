@@ -70,7 +70,7 @@ export function shallowCloneAtCommit(repoUrl: string, commitSha: string): Cloned
   } catch (e) {
     rmSync(dir, { recursive: true, force: true });
     throw new Error(
-      `Couldn't fetch the originally-installed commit from this host — try "Check for updates" instead. (${errorMessage(e)})`
+      `Couldn't fetch the originally-installed commit from this host. Try "Check for updates" instead. (${errorMessage(e)})`
     );
   }
 }

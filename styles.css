@@ -640,6 +640,19 @@ input.skillspace-search {
   cursor: pointer;
 }
 
+/* Bigger hit area than the bare 12px icon, and its own hover state, so it reads as a distinct
+   control from the rest of the header's click-to-scroll-to-top behavior. */
+.skillspace-discover-source-group-header .skillspace-chevron {
+  cursor: pointer;
+  padding: 4px;
+  margin: -4px;
+  border-radius: 4px;
+}
+
+.skillspace-discover-source-group-header .skillspace-chevron:hover {
+  background: var(--background-modifier-hover);
+}
+
 .skillspace-discover-source-group-header .skillspace-card-discover-repo {
   flex: 1;
   min-width: 0;
@@ -2007,3 +2020,332 @@ input.skillspace-tag-add-input {
 .skillspace-toolpath-row .skillspace-path-status {
   flex-shrink: 0;
 }
+
+/* ---------- Dashboard: context cost, ranked, plus prune/overlap flags ---------- */
+
+/* Overrides .skillspace-body's grid+rail flex row — the dashboard is a single scrollable column
+   of stacked sections, not an item grid beside a docked detail rail. */
+.skillspace-dash-body {
+  flex-direction: column;
+  overflow-y: auto;
+  gap: 20px;
+  padding: 4px 24px 24px;
+}
+
+.skillspace-dash-section {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.skillspace-dash-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.skillspace-dash-section-title {
+  font-size: var(--font-ui-medium);
+  font-weight: 500;
+  color: var(--text-normal);
+}
+
+.skillspace-dash-section-right {
+  flex-shrink: 0;
+}
+
+.skillspace-dash-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.skillspace-dash-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.skillspace-dash-row-info {
+  flex-shrink: 0;
+  width: 220px;
+  min-width: 0;
+}
+
+.skillspace-dash-row-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillspace-dash-row-icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.skillspace-dash-row-icon .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.skillspace-dash-row-meta {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.skillspace-dash-bar-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.skillspace-dash-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--interactive-accent);
+}
+
+.skillspace-dash-row-cost {
+  flex-shrink: 0;
+  width: 80px;
+  text-align: right;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.skillspace-dash-flag-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 4px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.skillspace-dash-flag-row:first-of-type {
+  border-top: none;
+}
+
+.skillspace-dash-overlap-row {
+  padding: 10px 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.skillspace-dash-overlap-row:first-of-type {
+  border-top: none;
+  padding-top: 4px;
+}
+
+/* ---- Dashboard header: title + description on the left, stat cluster on the right ---- */
+
+.skillspace-dash-header-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.skillspace-dash-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.skillspace-dash-header-stats {
+  display: flex;
+  gap: 28px;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.skillspace-dash-stat-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  margin-bottom: 4px;
+}
+
+.skillspace-dash-stat-value {
+  font-size: var(--font-ui-larger);
+  font-weight: 500;
+  color: var(--text-normal);
+}
+
+.skillspace-dash-stat-danger {
+  color: #e0654f;
+}
+
+.skillspace-dash-stat-accent {
+  color: var(--interactive-accent);
+}
+
+.skillspace-dash-divider {
+  margin-top: 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+/* ---- Cost by tool: clickable cards, a type legend, spans full width, scrolls if crowded ---- */
+
+.skillspace-dash-legend {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 14px;
+}
+
+.skillspace-dash-legend-entry {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.skillspace-dash-legend-swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+.skillspace-dash-tiles {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin-bottom: 20px;
+}
+
+.skillspace-dash-tile {
+  /* Grows to fill the full row when there's room; never shrinks below its basis, so once tiles
+     stop fitting the row scrolls instead of squeezing them. */
+  flex: 1 1 160px;
+  flex-shrink: 0;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+}
+
+.skillspace-dash-tile.is-active {
+  border-color: var(--interactive-accent);
+}
+
+.skillspace-dash-tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.skillspace-dash-tile-name {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  text-transform: capitalize;
+}
+
+.skillspace-dash-tile-value {
+  font-size: var(--font-ui-large);
+  font-weight: 500;
+  color: var(--text-normal);
+  margin: 2px 0 8px;
+}
+
+.skillspace-dash-tile-dot {
+  display: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.skillspace-dash-tile.is-active .skillspace-dash-tile-dot {
+  display: block;
+}
+
+.skillspace-dash-tile-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 3px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.skillspace-dash-stack-seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  cursor: help;
+}
+
+/* ---- Ranked: card rows, collapsed to a handful by default ---- */
+
+.skillspace-dash-ranked-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skillspace-dash-ranked-list .skillspace-dash-row {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.skillspace-dash-toggle {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 500;
+  padding: 8px;
+  border-radius: 8px;
+  text-align: center;
+}
+
+.skillspace-dash-toggle:hover {
+  color: var(--text-normal);
+  border-color: var(--interactive-accent);
+}
+
+/* ---- Prune candidates / Possible overlaps, side by side, always matched in height ---- */
+
+.skillspace-dash-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.skillspace-dash-columns > .skillspace-dash-section {
+  /* No align-items override above means the default "stretch" applies, so whichever column is
+     taller sets the height for both — wraps to its own full row below a certain width instead
+     of squeezing, since flex-basis 280px won't shrink past min-width. */
+  flex: 1 1 280px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+}
+
+.skillspace-dash-callout-rows {
+  /* Caps how tall either column can grow before it scrolls internally instead of pushing the
+     other column (and the rest of the page) to match an unbounded height. */
+  overflow-y: auto;
+  max-height: 260px;
+  margin-top: 4px;
+}
+

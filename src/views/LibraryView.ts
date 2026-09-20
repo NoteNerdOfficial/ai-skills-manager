@@ -28,6 +28,8 @@ import { InstallFromGitHubModal } from "../modals/InstallFromGitHubModal";
 import { AddDiscoverSourceModal } from "../modals/AddDiscoverSourceModal";
 import { ConfirmModal } from "../modals/ConfirmModal";
 import { AddToolModal } from "../modals/AddToolModal";
+import { ItemOverlapModal } from "../modals/ItemOverlapModal";
+import { computeDashboardMetrics, findOverlapPairs, findPruneCandidates, DashboardMetric, OverlapPair } from "../dashboard";
 import {
   addDiscoverSource,
   dedupeDiscoverCatalog,
@@ -81,6 +83,12 @@ export const SORT_OPTIONS: { key: SortOrder; label: string }[] = [
 
 type DiscoverSortOrder = "recent-desc" | "name-asc" | "name-desc" | "stars-desc" | "source";
 
+/** Identifies a "Source (grouped)" section (see renderDiscoverGroupedGrid/collapsedDiscoverSources) —
+ *  a repo can be discovered at more than one ref, so ref has to be part of the key too. */
+function discoverGroupKey(repoUrl: string, ref: string): string {
+  return `${repoUrl}#${ref}`;
+}
+
 const DISCOVER_SORT_OPTIONS: { key: DiscoverSortOrder; label: string }[] = [
   { key: "recent-desc", label: "Recently added" },
   { key: "stars-desc", label: "Most stars" },
@@ -95,6 +103,26 @@ const TYPE_ICONS: Record<ItemType, string> = {
   command: "terminal",
   rule: "scroll-text",
 };
+
+/** Colors the Dashboard's "cost by tool" stacked bars and legend by type — arbitrary but stable,
+ *  same mapping everywhere the Dashboard shows a type. */
+const DASHBOARD_TYPE_COLORS: Record<ItemType, string> = {
+  skill: "var(--color-accent, var(--interactive-accent))",
+  agent: "var(--color-blue, #4f9cf9)",
+  command: "var(--color-green, #4caf50)",
+  rule: "var(--color-orange, #e8a33d)",
+};
+
+const DASHBOARD_RANKED_COLLAPSED_COUNT = 5;
+
+/** How long a "Disable" from Prune candidates keeps offering a "Restore" shortcut before the
+ *  dashboard stops reminding about it (the item itself stays disabled either way). */
+const DASHBOARD_RESTORE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function dashboardRelativeAge(ms: number): string {
+  const hours = Math.max(1, Math.round(ms / (60 * 60 * 1000)));
+  return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`;
+}
 
 /** One-click suggestions for Discover's empty state — real, verified repos (checked against the
  *  GitHub API while building this, not guessed) known to hold SKILL.md-convention content, so a
@@ -160,6 +188,10 @@ export class LibraryView extends ItemView {
   private discoverMode = false;
   private discoverSearch = "";
   private discoverSortOrder: DiscoverSortOrder = "source";
+  /** Per-session only, keyed by discoverGroupKey — which "Source (grouped)" sections are
+   *  collapsed to just their header, so hopping to the next source doesn't mean scrolling past
+   *  however many hundred cards the current one has. */
+  private collapsedDiscoverSources = new Set<string>();
   private discoverTypeFilter: ItemType | null = null;
   /** The catalog entry currently open in the Discover rail (see renderDiscoverRail) — mirrors
    *  selectedItem's role for the real library, but stays entirely separate: a DiscoverEntry has
@@ -174,6 +206,18 @@ export class LibraryView extends ItemView {
   /** The tool currently open in the docked rail (see renderToolDetailRail) — mirrors
    *  selectedItem's role, kept entirely separate since a ToolConfig has no tree/file/edit state. */
   private selectedTool: ToolConfig | null = null;
+  /** True while the sidebar's "Dashboard" row is active — same swap-the-content-pane idea as
+   *  discoverMode/toolsMode. Not a scope filter: it doesn't narrow this.items, it reports on it. */
+  private dashboardMode = false;
+  /** Computed lazily the first time the Dashboard is opened (or after an item is toggled from
+   *  within it), not on every render — each entry means a file read, and nothing in the dashboard
+   *  changes just from typing in the search box or switching some other sidebar filter. */
+  private dashboardMetrics: DashboardMetric[] | null = null;
+  /** Which "Cost by tool" card is selected — filters the ranked list below to just that tool;
+   *  null means "All tools." */
+  private dashboardActiveTool: string | null = null;
+  /** Whether the ranked list is showing everything or just the top DASHBOARD_RANKED_COLLAPSED_COUNT. */
+  private dashboardRankedExpanded = false;
   private tagFilter: string | null = null;
   private untaggedOnly = false;
   private collapsedSections = new Set<string>();
@@ -329,7 +373,7 @@ export class LibraryView extends ItemView {
     this.render();
     try {
       const result = await this.rescan();
-      new Notice(`Rescan complete — ${result.items.length} item${result.items.length === 1 ? "" : "s"} found.`);
+      new Notice(`Rescan complete: ${result.items.length} item${result.items.length === 1 ? "" : "s"} found.`);
     } finally {
       this.rescanningManually = false;
       this.render();
@@ -393,7 +437,7 @@ export class LibraryView extends ItemView {
     const linkedSomewhere = this.items.some((i) => i.projectId && i.realPath === globalItem.realPath);
     const btn = container.createEl("button", {
       cls: `skillspace-icon-btn${linkedSomewhere ? " is-present" : ""}`,
-      attr: { "aria-label": linkedSomewhere ? "Manage project links" : "Link into a project workspace" },
+      attr: { "aria-label": linkedSomewhere ? "Manage project links" : "Link into a workspace" },
     });
     setIcon(btn, "link");
     btn.addEventListener("click", (evt) => {
@@ -533,6 +577,7 @@ export class LibraryView extends ItemView {
     this.selectedDiscoverEntry = null;
     this.toolsMode = false;
     this.selectedTool = null;
+    this.dashboardMode = false;
     this.cleanupReview();
     this.selectedItem = null;
     this.selectedFilePath = null;
@@ -550,7 +595,8 @@ export class LibraryView extends ItemView {
       this.pluginFilter ||
       this.favoritesOnly ||
       this.discoverMode ||
-      this.toolsMode
+      this.toolsMode ||
+      this.dashboardMode
     );
   }
 
@@ -648,7 +694,7 @@ export class LibraryView extends ItemView {
     if (this.toolFilter) {
       const tool = settings.tools.find((t) => t.id === this.toolFilter);
       return tool?.id === "global"
-        ? "Shared across every tool via ~/.agents/skills — projects symlink into this instead of keeping their own copy."
+        ? "Shared across every tool via ~/.agents/skills. Projects symlink into this instead of keeping their own copy."
         : `Everything found in ${tool?.name ?? "this tool"}'s configured directories.`;
     }
     if (this.projectFilter) {
@@ -657,7 +703,7 @@ export class LibraryView extends ItemView {
         : "Skills scoped to this project's local folders, symlinked in from your shared library.";
     }
     if (this.pluginFilter) {
-      return "Bundled with this installed plugin — its own package, separate from your tool's global directories.";
+      return "Bundled with this installed plugin, as its own package, separate from your tool's global directories.";
     }
     if (this.favoritesOnly) return "Items you've starred for quick access.";
     return "Every skill, agent, command, and rule across your configured tools and projects.";
@@ -704,6 +750,21 @@ export class LibraryView extends ItemView {
       this.discoverMode = true;
       this.render();
     });
+    this.renderNavRow(
+      sidebar,
+      "gauge",
+      "Dashboard",
+      this.items.filter((i) => i.enabled).length,
+      this.dashboardMode,
+      () => {
+        this.clearScopeFilters();
+        this.dashboardMode = true;
+        this.dashboardMetrics = null;
+        this.dashboardActiveTool = null;
+        this.dashboardRankedExpanded = false;
+        this.render();
+      }
+    );
 
     const sectionRenderers: Record<string, (sidebar: HTMLElement) => void> = {
       types: (s) => this.renderTypesSection(s),
@@ -790,7 +851,7 @@ export class LibraryView extends ItemView {
   }
 
   private renderToolsSection(sidebar: HTMLElement) {
-    if (!this.renderCollapsibleHeading(sidebar, "tools", "Global workspace")) return;
+    if (!this.renderCollapsibleHeading(sidebar, "tools", "Tools")) return;
     const settings = this.getSettings();
     this.renderNavRow(sidebar, "layout-grid", "All tools", settings.tools.length, this.toolsMode, () => {
       this.clearScopeFilters();
@@ -818,7 +879,7 @@ export class LibraryView extends ItemView {
   }
 
   private renderProjectsSection(sidebar: HTMLElement) {
-    if (!this.renderCollapsibleHeading(sidebar, "projects", "Project workspaces")) return;
+    if (!this.renderCollapsibleHeading(sidebar, "projects", "Workspaces")) return;
     const showEmpty = this.getSettings().showEmptySidebarRows;
     const projects = this.getAllProjects();
     for (const project of projects) {
@@ -1065,6 +1126,10 @@ export class LibraryView extends ItemView {
       this.renderToolsPageContent(content);
       return;
     }
+    if (this.dashboardMode) {
+      this.renderDashboardContent(content);
+      return;
+    }
 
     const items = this.filteredItems();
 
@@ -1258,7 +1323,7 @@ export class LibraryView extends ItemView {
       cls: "skillspace-count-pill",
     });
     header.createDiv({
-      text: "Skills, agents, commands, and rules found in GitHub repos you've pointed at — browse the real content, install whenever.",
+      text: "Skills, agents, commands, and rules found in GitHub repos you've pointed at. Browse the real content, install whenever.",
       cls: "skillspace-subtitle",
     });
 
@@ -1282,6 +1347,7 @@ export class LibraryView extends ItemView {
     updateClearBtn();
 
     this.renderDiscoverSortButton(toolbar);
+    if (this.discoverSortOrder === "source") this.renderDiscoverCollapseAllButton(toolbar);
     this.renderDiscoverRefreshAllButton(toolbar);
 
     const addBtn = toolbar.createEl("button", { cls: "mod-cta", text: "+ Add source" });
@@ -1415,6 +1481,30 @@ export class LibraryView extends ItemView {
     btn.addEventListener("click", () => void this.refreshAllDiscoverSources());
   }
 
+  /** Only shown in "Source (grouped)" sort. A one-click way to shrink every section down to its
+   *  header (or bring them all back), for jumping straight to a particular source without
+   *  scrolling past however many hundred cards a big one has. Flips to "Expand all" once every
+   *  currently-visible group is already collapsed. */
+  private renderDiscoverCollapseAllButton(toolbar: HTMLElement) {
+    const keys = new Set<string>();
+    for (const entry of this.filteredDiscoverEntries()) keys.add(discoverGroupKey(entry.repoUrl, entry.ref));
+    if (keys.size < 2) return;
+    const allCollapsed = Array.from(keys).every((key) => this.collapsedDiscoverSources.has(key));
+
+    const btn = toolbar.createEl("button", { cls: "skillspace-sort-btn" });
+    const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
+    setIcon(icon, allCollapsed ? "chevrons-down-up" : "chevrons-up-down");
+    btn.createSpan({ text: allCollapsed ? "Expand all" : "Collapse all", cls: "skillspace-sort-btn-label" });
+    btn.addEventListener("click", () => {
+      if (allCollapsed) {
+        for (const key of keys) this.collapsedDiscoverSources.delete(key);
+      } else {
+        for (const key of keys) this.collapsedDiscoverSources.add(key);
+      }
+      this.render();
+    });
+  }
+
   /** Re-runs discovery for every tracked source (settings.discoverSources) — a plain per-entry
    *  Refresh (see refreshDiscoverEntry) only re-fetches items already known, so it can't recover
    *  anything a source's search missed the first time (e.g. everything under .github/ before
@@ -1448,7 +1538,7 @@ export class LibraryView extends ItemView {
       }
     }
     if (sources.size === 0) {
-      new Notice("Nothing to refresh yet — add a source first.");
+      new Notice("Nothing to refresh yet. Add a source first.");
       return;
     }
 
@@ -1493,7 +1583,7 @@ export class LibraryView extends ItemView {
     this.refreshingAllDiscover = false;
     new Notice(
       failures.length === 0
-        ? `Refreshed ${sources.size} source${sources.size === 1 ? "" : "s"} — ${itemsFound} item${itemsFound === 1 ? "" : "s"} found.`
+        ? `Refreshed ${sources.size} source${sources.size === 1 ? "" : "s"}: ${itemsFound} item${itemsFound === 1 ? "" : "s"} found.`
         : `Refreshed ${sources.size - failures.length} of ${sources.size} sources. Failed: ${failures.join("; ")}`
     );
     this.render();
@@ -1506,7 +1596,7 @@ export class LibraryView extends ItemView {
   private renderDiscoverGroupedGrid(container: HTMLElement, entries: DiscoverEntry[]) {
     const groups = new Map<string, { repoUrl: string; ref: string; entries: DiscoverEntry[] }>();
     for (const entry of entries) {
-      const key = `${entry.repoUrl}#${entry.ref}`;
+      const key = discoverGroupKey(entry.repoUrl, entry.ref);
       let group = groups.get(key);
       if (!group) {
         group = { repoUrl: entry.repoUrl, ref: entry.ref, entries: [] };
@@ -1523,8 +1613,28 @@ export class LibraryView extends ItemView {
   }
 
   private renderDiscoverSourceGroup(container: HTMLElement, group: { repoUrl: string; ref: string; entries: DiscoverEntry[] }) {
-    const section = container.createDiv({ cls: "skillspace-discover-source-group" });
+    const groupKey = discoverGroupKey(group.repoUrl, group.ref);
+    const isCollapsed = this.collapsedDiscoverSources.has(groupKey);
+
+    const section = container.createDiv({
+      cls: `skillspace-discover-source-group${isCollapsed ? " is-collapsed" : ""}`,
+    });
     const header = section.createDiv({ cls: "skillspace-discover-source-group-header" });
+
+    // Dedicated toggle, separate from the header's own click handler below (scroll-to-top) —
+    // collapsing a section with hundreds of cards is the whole point of this control, so it
+    // shouldn't be at the mercy of "did the click also land on the sticky-scroll logic."
+    const chevron = header.createSpan({
+      cls: "skillspace-chevron",
+      attr: { "aria-label": isCollapsed ? `Expand ${group.repoUrl}` : `Collapse ${group.repoUrl}` },
+    });
+    setIcon(chevron, isCollapsed ? "chevron-right" : "chevron-down");
+    chevron.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      if (isCollapsed) this.collapsedDiscoverSources.delete(groupKey);
+      else this.collapsedDiscoverSources.add(groupKey);
+      this.render();
+    });
 
     const parsed = parseOwnerRepo(group.repoUrl);
     const label = parsed ? `${parsed.owner}/${parsed.repo}` : group.repoUrl;
@@ -1559,8 +1669,13 @@ export class LibraryView extends ItemView {
       scrollContainer.scrollTo({ top: scrollContainer.scrollTop + delta, behavior: "smooth" });
     });
 
-    const grid = section.createDiv({ cls: "skillspace-discover-source-group-grid" });
-    for (const entry of group.entries) this.renderDiscoverCard(grid, entry);
+    // Skip building the (potentially hundreds-deep) card grid at all while collapsed, rather
+    // than rendering it and hiding it with CSS — the point is to make a huge source cheap to
+    // skip past, not just invisible.
+    if (!isCollapsed) {
+      const grid = section.createDiv({ cls: "skillspace-discover-source-group-grid" });
+      for (const entry of group.entries) this.renderDiscoverCard(grid, entry);
+    }
   }
 
   /** Bulk removal is still just dropping our own cached rows (nothing on disk to touch, same as
@@ -1570,7 +1685,7 @@ export class LibraryView extends ItemView {
     new ConfirmModal(
       this.app,
       `Remove all from ${label}?`,
-      `This removes ${count} discovered item${count === 1 ? "" : "s"} from "${label}" out of Discover and stops tracking it — "Refresh all" won't search it again until you add it back. Nothing on disk is affected — none of these are installed.`,
+      `This removes ${count} discovered item${count === 1 ? "" : "s"} from "${label}" out of Discover and stops tracking it. "Refresh all" won't search it again until you add it back. Nothing on disk is affected: none of these are installed.`,
       "Remove all",
       async () => {
         const settings = this.getSettings();
@@ -1791,7 +1906,7 @@ export class LibraryView extends ItemView {
     const titleRow = header.createDiv({ cls: "skillspace-title-row" });
     titleRow.createEl("h2", { text: "All tools", cls: "skillspace-title" });
     header.createDiv({
-      text: "Every configured tool — enable or disable one, edit its scanned paths, or add your own.",
+      text: "Every configured tool. Enable or disable one, edit its scanned paths, or add your own.",
       cls: "skillspace-subtitle",
     });
 
@@ -1858,7 +1973,7 @@ export class LibraryView extends ItemView {
     const detected = this.toolIsDetected(tool);
     head.createSpan({
       cls: `skillspace-card-dot${detected ? " is-detected" : ""}`,
-      attr: { "aria-label": detected ? "Detected on disk" : "Not detected — check its paths" },
+      attr: { "aria-label": detected ? "Detected on disk" : "Not detected: check its paths" },
     });
     const icon = head.createSpan({ cls: "skillspace-tool-card-icon" });
     this.renderIcon(icon, tool.icon, tool.svgIcon);
@@ -1879,7 +1994,7 @@ export class LibraryView extends ItemView {
     const count = this.items.filter((i) => i.tool === tool.id).length;
     card.createDiv({
       cls: "skillspace-card-desc",
-      text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " — disabled" : ""}`,
+      text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " (disabled)" : ""}`,
     });
 
     card.addEventListener("click", () => {
@@ -2211,10 +2326,10 @@ export class LibraryView extends ItemView {
       syncStatus === "current"
         ? `Up to date with ${item.sourceRepo}`
         : syncStatus === "stale"
-          ? "Update available — click the sync icon to review"
+          ? "Update available: click the sync icon to review"
           : item.sourceRepo
-            ? 'Not checked yet this session — click "Check for updates"'
-            : "Not tracked from GitHub — install via Discover to enable update checks";
+            ? 'Not checked yet this session: click "Check for updates"'
+            : "Not tracked from GitHub: install via Discover to enable update checks";
     head.createSpan({
       cls: `skillspace-card-dot${syncStatus === "current" ? " is-current" : syncStatus === "stale" ? " is-stale" : ""}`,
       attr: { "aria-label": dotLabel },
@@ -2295,7 +2410,7 @@ export class LibraryView extends ItemView {
         // open a picker on. Offer a direct unlink instead, previewed on hover.
         const unlinkBtn = rightGroup.createEl("button", {
           cls: "skillspace-icon-btn skillspace-card-link-btn",
-          attr: { "aria-label": "Linked, but its library source can't be found — click to unlink from this project" },
+          attr: { "aria-label": "Linked, but its library source can't be found. Click to unlink from this project" },
         });
         setIcon(unlinkBtn, "link");
         unlinkBtn.addEventListener("mouseenter", () => setIcon(unlinkBtn, "unlink"));
@@ -2443,6 +2558,284 @@ export class LibraryView extends ItemView {
         }
       }
     ).open();
+  }
+
+  // ---------- Dashboard: context cost, ranked, plus prune/overlap flags ----------
+
+  private renderDashboardContent(content: HTMLElement) {
+    if (!this.dashboardMetrics) {
+      this.dashboardMetrics = computeDashboardMetrics(this.items.filter((i) => i.enabled));
+    }
+    const metrics = this.dashboardMetrics;
+    const pruneCandidates = findPruneCandidates(metrics);
+    const overlapPairs = findOverlapPairs(metrics.map((m) => m.item));
+
+    const header = content.createDiv({ cls: "skillspace-content-header" });
+    const headerTop = header.createDiv({ cls: "skillspace-dash-header-top" });
+    const headerLeft = headerTop.createDiv({ cls: "skillspace-dash-header-left" });
+    const titleRow = headerLeft.createDiv({ cls: "skillspace-title-row" });
+    titleRow.createEl("h2", { text: "Dashboard", cls: "skillspace-title" });
+    headerLeft.createDiv({
+      text: "Context usage across enabled skills, agents, commands, and rules. Calibrate for optimal performance.",
+      cls: "skillspace-subtitle",
+    });
+    const headerStats = headerTop.createDiv({ cls: "skillspace-dash-header-stats" });
+    const totalChars = metrics.reduce((sum, m) => sum + m.charCount, 0);
+    this.renderDashboardStat(headerStats, "Enabled", String(metrics.length));
+    this.renderDashboardStat(headerStats, "Est. tokens", formatTokens(totalChars).replace("~", ""));
+    this.renderDashboardStat(headerStats, "Prune", String(pruneCandidates.length), pruneCandidates.length ? "skillspace-dash-stat-danger" : "");
+    this.renderDashboardStat(headerStats, "Overlaps", String(overlapPairs.length), overlapPairs.length ? "skillspace-dash-stat-accent" : "");
+    header.createDiv({ cls: "skillspace-dash-divider" });
+
+    const body = content.createDiv({ cls: "skillspace-body skillspace-dash-body" });
+    if (metrics.length === 0) {
+      body.createDiv({ text: "No enabled items yet.", cls: "skillspace-empty" });
+      return;
+    }
+
+    this.renderDashboardToolCards(body, metrics);
+    this.renderDashboardRanked(body, metrics);
+    const columns = body.createDiv({ cls: "skillspace-dash-columns" });
+    this.renderDashboardPruneCandidates(columns, pruneCandidates);
+    this.renderDashboardOverlaps(columns, overlapPairs);
+  }
+
+  private renderDashboardStat(parent: HTMLElement, label: string, value: string, accentCls = "") {
+    const stat = parent.createDiv({ cls: "skillspace-dash-stat" });
+    stat.createDiv({ text: label, cls: "skillspace-dash-stat-label" });
+    stat.createDiv({ text: value, cls: `skillspace-dash-stat-value ${accentCls}`.trim() });
+  }
+
+  private renderDashboardSectionHead(parent: HTMLElement, title: string, buildRight?: (right: HTMLElement) => void) {
+    const head = parent.createDiv({ cls: "skillspace-dash-section-head" });
+    head.createDiv({ text: title, cls: "skillspace-dash-section-title" });
+    if (buildRight) buildRight(head.createDiv({ cls: "skillspace-dash-section-right" }));
+  }
+
+  private renderDashboardTypeLegend(parent: HTMLElement) {
+    const legend = parent.createDiv({ cls: "skillspace-dash-legend" });
+    for (const type of Object.keys(DASHBOARD_TYPE_COLORS) as ItemType[]) {
+      const entry = legend.createDiv({ cls: "skillspace-dash-legend-entry" });
+      const swatch = entry.createSpan({ cls: "skillspace-dash-legend-swatch" });
+      swatch.style.background = DASHBOARD_TYPE_COLORS[type];
+      entry.createSpan({ text: TYPE_LABEL_SINGULAR[type] });
+    }
+  }
+
+  /** A stacked bar of colored segments, one per item, each carrying a native title tooltip
+   *  since the colors alone don't say what they mean. */
+  private renderDashboardStackedBar(track: HTMLElement, list: DashboardMetric[], maxTotal: number) {
+    let offset = 0;
+    for (const m of list) {
+      const seg = track.createDiv({ cls: "skillspace-dash-stack-seg" });
+      seg.style.width = `${(m.charCount / maxTotal) * 100}%`;
+      seg.style.left = `${(offset / maxTotal) * 100}%`;
+      seg.style.background = DASHBOARD_TYPE_COLORS[m.item.type];
+      seg.setAttr("title", `${m.item.name} — ${TYPE_LABEL_SINGULAR[m.item.type]} · ${formatTokens(m.charCount)}`);
+      offset += m.charCount;
+    }
+  }
+
+  private dashboardDominantType(list: DashboardMetric[]): ItemType {
+    const totals = new Map<ItemType, number>();
+    for (const m of list) totals.set(m.item.type, (totals.get(m.item.type) ?? 0) + m.charCount);
+    return [...totals.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  }
+
+  /** Clickable, one per tool, scaled against the grand total (not the biggest single tool) so
+   *  each card's bar reads as "this much of the whole pie" — clicking one filters Ranked below,
+   *  since the ranking alone doesn't make each item's tool obvious. Grows to fill the row when
+   *  there's room; falls back to horizontal scroll once there are too many tools to fit. */
+  private renderDashboardToolCards(body: HTMLElement, metrics: DashboardMetric[]) {
+    this.renderDashboardSectionHead(body, "Cost by tool", (right) => this.renderDashboardTypeLegend(right));
+    const tileGrid = body.createDiv({ cls: "skillspace-dash-tiles" });
+
+    const byType = (list: DashboardMetric[]) => [...list].sort((a, b) => a.item.type.localeCompare(b.item.type));
+    const groups = new Map<string, DashboardMetric[]>();
+    for (const m of metrics) {
+      const list = groups.get(m.item.tool) ?? [];
+      list.push(m);
+      groups.set(m.item.tool, list);
+    }
+    const grandTotal = metrics.reduce((s, m) => s + m.charCount, 0);
+
+    const selectTool = (tool: string | null) => {
+      this.dashboardActiveTool = tool;
+      this.dashboardRankedExpanded = false;
+      this.render();
+    };
+
+    const allTile = tileGrid.createDiv({ cls: "skillspace-dash-tile" });
+    if (!this.dashboardActiveTool) allTile.addClass("is-active");
+    allTile.createDiv({ text: "All tools", cls: "skillspace-dash-tile-name" });
+    allTile.createDiv({ text: formatTokens(grandTotal), cls: "skillspace-dash-tile-value" });
+    this.renderDashboardStackedBar(allTile.createDiv({ cls: "skillspace-dash-tile-bar" }), byType(metrics), grandTotal);
+    allTile.addEventListener("click", () => selectTool(null));
+
+    for (const [tool, list] of groups) {
+      const total = list.reduce((s, m) => s + m.charCount, 0);
+      const tile = tileGrid.createDiv({ cls: "skillspace-dash-tile" });
+      if (this.dashboardActiveTool === tool) tile.addClass("is-active");
+      const tileHead = tile.createDiv({ cls: "skillspace-dash-tile-head" });
+      tileHead.createDiv({ text: tool, cls: "skillspace-dash-tile-name" });
+      tileHead.createSpan({ cls: "skillspace-dash-tile-dot" }).style.background = DASHBOARD_TYPE_COLORS[this.dashboardDominantType(list)];
+      tile.createDiv({ text: formatTokens(total), cls: "skillspace-dash-tile-value" });
+      this.renderDashboardStackedBar(tile.createDiv({ cls: "skillspace-dash-tile-bar" }), byType(list), grandTotal);
+      tile.addEventListener("click", () => selectTool(tool));
+    }
+  }
+
+  /** Collapsed to a handful by default, filtered by whichever tool card is active. */
+  private renderDashboardRanked(body: HTMLElement, metrics: DashboardMetric[]) {
+    const section = body.createDiv({ cls: "skillspace-dash-ranked" });
+    this.renderDashboardSectionHead(section, "Ranked by cost");
+
+    const filtered = this.dashboardActiveTool ? metrics.filter((m) => m.item.tool === this.dashboardActiveTool) : metrics;
+    const sorted = [...filtered].sort((a, b) => b.charCount - a.charCount);
+    const maxCharCount = Math.max(...metrics.map((m) => m.charCount), 1);
+    const shown = this.dashboardRankedExpanded ? sorted : sorted.slice(0, DASHBOARD_RANKED_COLLAPSED_COUNT);
+
+    const list = section.createDiv({ cls: "skillspace-dash-ranked-list" });
+    for (const metric of shown) this.renderDashboardRow(list, metric, maxCharCount);
+
+    if (sorted.length > DASHBOARD_RANKED_COLLAPSED_COUNT) {
+      const toggleBtn = section.createEl("button", {
+        text: this.dashboardRankedExpanded ? "Show fewer" : `Show all (${sorted.length})`,
+        cls: "skillspace-dash-toggle",
+      });
+      toggleBtn.addEventListener("click", () => {
+        this.dashboardRankedExpanded = !this.dashboardRankedExpanded;
+        this.render();
+      });
+    }
+  }
+
+  private renderDashboardRow(container: HTMLElement, metric: DashboardMetric, maxCharCount: number) {
+    const { item, charCount } = metric;
+    const row = container.createDiv({ cls: "skillspace-dash-row" });
+    row.addEventListener("click", () => {
+      this.dashboardMode = false;
+      this.selectItem(item);
+    });
+
+    const info = row.createDiv({ cls: "skillspace-dash-row-info" });
+    const nameRow = info.createDiv({ cls: "skillspace-dash-row-name" });
+    const iconEl = nameRow.createSpan({ cls: "skillspace-dash-row-icon" });
+    setIcon(iconEl, TYPE_ICONS[item.type]);
+    nameRow.createSpan({ text: item.name });
+    info.createDiv({ text: `${item.tool} · ${TYPE_LABELS[item.type]}`, cls: "skillspace-dash-row-meta" });
+
+    const barTrack = row.createDiv({ cls: "skillspace-dash-bar-track" });
+    const barFill = barTrack.createDiv({ cls: "skillspace-dash-bar-fill" });
+    barFill.style.width = `${Math.max(2, (charCount / maxCharCount) * 100)}%`;
+
+    row.createDiv({ text: formatTokens(charCount), cls: "skillspace-dash-row-cost" });
+  }
+
+  /** entryId -> the moment it was disabled from this list, dropped once the item's been enabled
+   *  again or DASHBOARD_RESTORE_WINDOW_MS has passed since. */
+  private pruneExpiredDashboardRestores(): Record<string, number> {
+    const settings = this.getSettings();
+    const now = Date.now();
+    const kept: Record<string, number> = {};
+    for (const [entryId, disabledAt] of Object.entries(settings.dashboardRecentlyDisabled)) {
+      if (now - disabledAt < DASHBOARD_RESTORE_WINDOW_MS) kept[entryId] = disabledAt;
+    }
+    return kept;
+  }
+
+  private renderDashboardPruneCandidates(columns: HTMLElement, candidates: DashboardMetric[]) {
+    const section = columns.createDiv({ cls: "skillspace-dash-section skillspace-dash-callout" });
+    this.renderDashboardSectionHead(section, "Prune candidates");
+    section.createDiv({
+      text: "Large and untouched for 90+ days, probably not earning their context cost.",
+      cls: "skillspace-subtitle",
+    });
+
+    const now = Date.now();
+    const recentlyDisabled = this.pruneExpiredDashboardRestores();
+    const restoreRows = Object.entries(recentlyDisabled)
+      .map(([entryId, disabledAt]) => ({ item: this.items.find((i) => i.entryId === entryId), disabledAt }))
+      .filter((r): r is { item: ItemMetadata; disabledAt: number } => !!r.item && !r.item.enabled);
+
+    const rows = section.createDiv({ cls: "skillspace-dash-callout-rows" });
+    if (candidates.length === 0 && restoreRows.length === 0) {
+      rows.createDiv({ text: "Nothing flagged. Nice.", cls: "skillspace-empty" });
+      return;
+    }
+    for (const metric of candidates) {
+      const { item, charCount, mtimeMs } = metric;
+      const row = rows.createDiv({ cls: "skillspace-dash-flag-row" });
+      const info = row.createDiv({ cls: "skillspace-dash-row-info" });
+      info.createDiv({ text: item.name, cls: "skillspace-dash-row-name" });
+      info.createDiv({
+        text: `${formatTokens(charCount)} · last touched ${mtimeMs ? formatDate(mtimeMs) : "unknown"}`,
+        cls: "skillspace-dash-row-meta",
+      });
+      const disableBtn = row.createEl("button", { text: "Disable", cls: "mod-warning" });
+      disableBtn.addEventListener("click", () => {
+        void (async () => {
+          const settings = this.getSettings();
+          settings.dashboardRecentlyDisabled = { ...this.pruneExpiredDashboardRestores(), [item.entryId]: Date.now() };
+          await this.saveSettings();
+          this.dashboardMetrics = null;
+          await this.toggleEnabled(item);
+        })();
+      });
+    }
+    for (const { item, disabledAt } of restoreRows) {
+      const row = rows.createDiv({ cls: "skillspace-dash-flag-row" });
+      const info = row.createDiv({ cls: "skillspace-dash-row-info" });
+      info.createDiv({ text: item.name, cls: "skillspace-dash-row-name" });
+      info.createDiv({
+        text: `Disabled ${dashboardRelativeAge(now - disabledAt)} ago`,
+        cls: "skillspace-dash-row-meta",
+      });
+      const restoreBtn = row.createEl("button", { text: "Restore" });
+      restoreBtn.addEventListener("click", () => {
+        void (async () => {
+          const settings = this.getSettings();
+          const kept = this.pruneExpiredDashboardRestores();
+          delete kept[item.entryId];
+          settings.dashboardRecentlyDisabled = kept;
+          await this.saveSettings();
+          this.dashboardMetrics = null;
+          await this.toggleEnabled(item);
+        })();
+      });
+    }
+  }
+
+  private renderDashboardOverlaps(columns: HTMLElement, pairs: OverlapPair[]) {
+    const section = columns.createDiv({ cls: "skillspace-dash-section skillspace-dash-callout" });
+    this.renderDashboardSectionHead(section, "Possible overlaps");
+    section.createDiv({
+      text: "Enabled items with near-duplicate names and descriptions, likely fighting over the same trigger conditions.",
+      cls: "skillspace-subtitle",
+    });
+    const rows = section.createDiv({ cls: "skillspace-dash-callout-rows" });
+    if (pairs.length === 0) {
+      rows.createDiv({ text: "No overlapping descriptions found.", cls: "skillspace-empty" });
+      return;
+    }
+    for (const pair of pairs) {
+      const row = rows.createDiv({ cls: "skillspace-dash-flag-row" });
+      const info = row.createDiv({ cls: "skillspace-dash-row-info" });
+      info.createDiv({ text: `${pair.a.name} ↔ ${pair.b.name}`, cls: "skillspace-dash-row-name" });
+      info.createDiv({
+        text: `${Math.round(pair.score * 100)}% description overlap`,
+        cls: "skillspace-dash-row-meta",
+      });
+      const compareBtn = row.createEl("button", { text: "Compare" });
+      compareBtn.addEventListener("click", () => {
+        new ItemOverlapModal(this.app, pair.a, pair.b, pair.score, (item) => {
+          void (async () => {
+            this.dashboardMetrics = null;
+            await this.toggleEnabled(item);
+          })();
+        }).open();
+      });
+    }
   }
 
   // ---------- selection: one detail rail, breadcrumbed between the file list and a file ----------
@@ -2939,7 +3332,7 @@ export class LibraryView extends ItemView {
     this.bulkCheckInProgress = false;
     new Notice(
       errors > 0
-        ? `Checked ${tracked.length} — ${errors} couldn't be reached.`
+        ? `Checked ${tracked.length}: ${errors} couldn't be reached.`
         : `Checked ${tracked.length} skill${tracked.length === 1 ? "" : "s"}.`
     );
     this.render();

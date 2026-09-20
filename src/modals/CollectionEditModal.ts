@@ -62,7 +62,7 @@ export class CollectionEditModal extends Modal {
 
     const list = contentEl.createDiv({ cls: "skillspace-collection-picker" });
     if (this.items.length === 0) {
-      list.createEl("p", { text: "No items yet — rescan tools from the library view first." });
+      list.createEl("p", { text: "No items yet. Rescan tools from the library view first." });
     }
     for (const item of this.items) {
       const row = list.createDiv({ cls: "skillspace-collection-picker-row" });

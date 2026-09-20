@@ -201,7 +201,7 @@ export interface SkillSpacePluginSettings {
   projectWorkspaces: ProjectWorkspace[];
   /** Sidebar section keys in display order, everything after the fixed "Library" section. */
   sectionOrder: string[];
-  /** When false (default), the sidebar's "Global workspace" and "Project workspaces" lists only
+  /** When false (default), the sidebar's "Tools" and "Workspaces" lists only
    *  show rows with at least one discovered item — most vaults only use a handful of the
    *  configured tools, and listing every one of them regardless just pads the sidebar with rows
    *  that always read "0". */
@@ -213,6 +213,10 @@ export interface SkillSpacePluginSettings {
    *  session starts back at name-asc/all even if you always switch to the same one. */
   defaultSortOrder: SortOrder;
   defaultEnabledFilter: EnabledFilter;
+  /** entryId -> the timestamp it was disabled from the Dashboard's "Prune candidates" list.
+   *  Keeps a "Restore" option available there for a day afterward; older entries are dropped
+   *  (not the item itself — it stays disabled, this just stops reminding about it). */
+  dashboardRecentlyDisabled: Record<string, number>;
 }
 
 /** Canonical set of reorderable sidebar sections and their default order. "Library" isn't
@@ -300,7 +304,7 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
     // form is set here.)
     //
     // "skill" deliberately omitted: Antigravity's project-scoped skills convention IS the
-    // shared cross-tool standard (<project>/.agents/skills) — the exact same path the
+    // shared cross-tool standard (<project>/.agents/skills), the exact same path the
     // "global" (Shared) tool below already derives per-project automatically (it has no
     // projectPaths override, so scanProject strips "~/" off its global ~/.agents/skills path).
     // Declaring it again here would scan that same directory twice and list every skill in it
@@ -499,8 +503,8 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
     },
   },
   {
-    // Cross-tool shared library convention (~/.agents/skills/). No project-local
-    // equivalent — project folders symlink INTO this directory instead of having their own copy.
+    // Cross-tool shared library convention (~/.agents/skills/). No project-local equivalent:
+    // project folders symlink INTO this directory instead of having their own copy.
     id: "global",
     name: "Shared",
     // Not "globe" — that icon is already spoken for by originLabel's "Global" scope indicator
@@ -526,4 +530,5 @@ export const DEFAULT_SETTINGS: SkillSpacePluginSettings = {
   autoRescanMinutes: 0,
   defaultSortOrder: "name-asc",
   defaultEnabledFilter: "all",
+  dashboardRecentlyDisabled: {},
 };

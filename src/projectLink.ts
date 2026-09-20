@@ -24,7 +24,7 @@ export function addToProject(item: ItemMetadata, tool: ToolConfig, project: Proj
 export function removeFromProject(projectItemSourcePath: string): void {
   const unit = linkableUnit(projectItemSourcePath);
   if (!lstatSync(unit.path).isSymbolicLink()) {
-    throw new Error("This item isn't a symlink — refusing to delete a real file or folder.");
+    throw new Error("This item isn't a symlink, so it won't be deleted as a real file or folder.");
   }
   unlinkSync(unit.path);
 }

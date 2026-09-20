@@ -18,6 +18,29 @@ const AUTO_RESCAN_OPTIONS: { minutes: number; label: string }[] = [
   { minutes: 60, label: "Every hour" },
 ];
 
+const RELATED_PLUGINS: { name: string; desc: string; url: string }[] = [
+  {
+    name: "Convert to Markdown",
+    desc: "Converts PDFs, Word/PowerPoint/Excel files, web pages, and more into Markdown locally, with no cloud services or API keys. Useful for turning existing documentation into new skills, agents, or rules before adding them to a tool.",
+    url: "https://community.obsidian.md/plugins/convert-to-markdown",
+  },
+  {
+    name: "Terminus",
+    desc: "A real terminal inside Obsidian with Claude Code support, including a pending-changes panel for reviewing and accepting file edits. Handy for running the CLI tools whose skills and agents AI Skills Manager is managing, without leaving the vault.",
+    url: "https://community.obsidian.md/plugins/terminus",
+  },
+  {
+    name: "Unhidden",
+    desc: "Most tools keep their skills, agents, and commands in dot-folders like .claude or .codex, which Obsidian hides from the file explorer, search, and Bases by default. Unhidden reveals them so those folders show up alongside everything else in your vault.",
+    url: "https://community.obsidian.md/plugins/unhidden",
+  },
+  {
+    name: "Working Tabs",
+    desc: "Groups open tabs by task and timeframe instead of folder structure. Helps keep the notes, terminals, and library views open while authoring or reviewing several skills at once from sprawling into a mess of unrelated tabs.",
+    url: "https://community.obsidian.md/plugins/working-tabs",
+  },
+];
+
 export class SkillSpaceSettingTab extends PluginSettingTab {
   plugin: SkillSpacePlugin;
 
@@ -86,7 +109,7 @@ export class SkillSpaceSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Show every tool and project in the sidebar")
       .setDesc(
-        "Off by default: the sidebar's \"Global workspace\" and \"Project workspaces\" lists only show rows with at least one discovered item, so they don't fill up with rows that always read 0. Turn on to see every configured tool and registered project, whether or not anything's been found for it yet."
+        "Off by default: the sidebar's \"Tools\" and \"Workspaces\" lists only show rows with at least one discovered item, so they don't fill up with rows that always read 0. Turn on to see every configured tool and registered project, whether or not anything's been found for it yet."
       )
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.showEmptySidebarRows).onChange(async (value) => {
@@ -99,7 +122,7 @@ export class SkillSpaceSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Rescan tools")
       .setDesc(
-        "Per-tool paths (which folders AI Skills Manager scans for skills, agents, commands, and rules), enabling/disabling a tool, and adding a custom one now live on the \"All tools\" page — at the top of the Global workspace section in the library sidebar."
+        "Per-tool paths (which folders AI Skills Manager scans for skills, agents, commands, and rules), enabling/disabling a tool, and adding a custom one now live on the \"All tools\" page, at the top of the Tools section in the library sidebar."
       )
       .addButton((btn) =>
         btn
@@ -109,7 +132,7 @@ export class SkillSpaceSettingTab extends PluginSettingTab {
             btn.setDisabled(true);
             try {
               const { items } = await this.plugin.rescanEverywhere();
-              new Notice(`Scan complete — ${items.length} item${items.length === 1 ? "" : "s"} found.`);
+              new Notice(`Scan complete: ${items.length} item${items.length === 1 ? "" : "s"} found.`);
             } catch (e) {
               new Notice("Scan failed: " + errorMessage(e));
             } finally {
@@ -118,7 +141,7 @@ export class SkillSpaceSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl).setName("Project workspaces").setHeading();
+    new Setting(containerEl).setName("Workspaces").setHeading();
     containerEl.createEl("p", {
       text: "Extra project folders to scan for project-local skills (e.g. <project>/.claude/skills), in addition to the current vault, which is always included automatically.",
       cls: "setting-item-description",
@@ -186,5 +209,21 @@ export class SkillSpaceSettingTab extends PluginSettingTab {
           window.open("https://github.com/NoteNerdOfficial/ai-skills-manager/issues/new", "_blank");
         })
       );
+
+    new Setting(containerEl).setName("Related plugins").setHeading();
+    containerEl.createEl("p", {
+      text: "Other community plugins that pair well with AI Skills Manager.",
+      cls: "setting-item-description",
+    });
+    for (const plugin of RELATED_PLUGINS) {
+      new Setting(containerEl)
+        .setName(plugin.name)
+        .setDesc(plugin.desc)
+        .addButton((btn) =>
+          btn.setButtonText("View plugin").onClick(() => {
+            window.open(plugin.url, "_blank");
+          })
+        );
+    }
   }
 }

@@ -35,7 +35,7 @@ export class AddDiscoverSourceModal extends Modal {
     contentEl.createEl("h3", { text: "Add a GitHub source to Discover" });
     contentEl.createDiv({
       cls: "skillspace-modal-meta",
-      text: "Finds every skill, agent, command, and rule in the repo (or just the given folder) and adds them to Discover to browse and install later — nothing is installed yet.",
+      text: "Finds every skill, agent, command, and rule in the repo (or just the given folder) and adds them to Discover to browse and install later. Nothing is installed yet.",
     });
 
     let refText: { setValue: (v: string) => void } | undefined;

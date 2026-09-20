@@ -18,14 +18,14 @@ export class ProjectPresenceModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillspace-modal");
-    contentEl.createEl("h3", { text: "Project workspaces" });
+    contentEl.createEl("h3", { text: "Workspaces" });
     contentEl.createEl("p", {
-      text: `Check a project to symlink "${this.itemName}" into its local skills folder — the original is never copied, so it can't drift out of sync. Uncheck it to remove just that symlink; nothing is deleted.`,
+      text: `Check a project to symlink "${this.itemName}" into its local skills folder. The original is never copied, so it can't drift out of sync. Uncheck it to remove just that symlink; nothing is deleted.`,
       cls: "setting-item-description",
     });
 
     if (this.projects.length === 0) {
-      contentEl.createEl("p", { text: "No project workspaces registered yet — add some in plugin settings." });
+      contentEl.createEl("p", { text: "No workspaces registered yet. Add some in plugin settings." });
       return;
     }
 
