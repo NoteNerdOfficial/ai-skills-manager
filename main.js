@@ -397,8 +397,8 @@ var import_obsidian15 = require("obsidian");
 // src/views/LibraryView.ts
 var import_obsidian14 = require("obsidian");
 var import_child_process2 = require("child_process");
-var import_fs13 = require("fs");
-var import_path12 = require("path");
+var import_fs14 = require("fs");
+var import_path13 = require("path");
 
 // src/scanners.ts
 var import_fs2 = require("fs");
@@ -2389,23 +2389,110 @@ function rankTopUsedItems(items, usageByEntryId) {
   return ranked.sort((a, b) => b.stats.count - a.stats.count);
 }
 
-// src/fileTree.ts
+// src/codex-usage.ts
 var import_fs11 = require("fs");
 var import_path10 = require("path");
+var CODEX_SESSIONS_DIR = "~/.codex/sessions";
+function listCodexSessionFiles(sessionsDir) {
+  const files = [];
+  const visit = (dir) => {
+    let entries;
+    try {
+      entries = (0, import_fs11.readdirSync)(dir);
+    } catch (e) {
+      return;
+    }
+    for (const entry of entries) {
+      const path = (0, import_path10.join)(dir, entry);
+      try {
+        if ((0, import_fs11.statSync)(path).isDirectory())
+          visit(path);
+        else if (entry.endsWith(".jsonl"))
+          files.push(path);
+      } catch (e) {
+      }
+    }
+  };
+  if ((0, import_fs11.existsSync)(sessionsDir))
+    visit(sessionsDir);
+  return files;
+}
+function itemPathPattern(item) {
+  if (item.tool !== "codex" || item.type !== "skill" && item.type !== "agent")
+    return null;
+  const folder = item.type === "skill" ? "skills" : "agents";
+  const escapedName = item.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|/)\\.codex/${folder}/(?:[^\\s/"']+/)*${escapedName}(?:/|\\.md(?:[\\s"']|$)|[\\s"']|$)`, "i");
+}
+function scanCodexSessionFile(filePath, items, into, sinceMs = 0) {
+  var _a;
+  let raw;
+  try {
+    raw = (0, import_fs11.readFileSync)(filePath, "utf-8");
+  } catch (e) {
+    return;
+  }
+  for (const line of raw.split("\n")) {
+    if (!line.trim())
+      continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch (e) {
+      continue;
+    }
+    if (entry.type !== "response_item")
+      continue;
+    const payload = entry.payload;
+    if ((payload == null ? void 0 : payload.type) !== "custom_tool_call")
+      continue;
+    const input = typeof payload.input === "string" ? payload.input : "";
+    if (!input)
+      continue;
+    const timestamp = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
+    const ts = Number.isNaN(timestamp) ? 0 : timestamp;
+    for (const item of items) {
+      const pattern = itemPathPattern(item);
+      if (!pattern || !pattern.test(input))
+        continue;
+      const key = usageKey(item.type, item.name);
+      const existing = (_a = into.get(key)) != null ? _a : { count: 0, lastUsedMs: 0 };
+      if (ts >= sinceMs)
+        existing.count += 1;
+      if (ts > existing.lastUsedMs)
+        existing.lastUsedMs = ts;
+      into.set(key, existing);
+    }
+  }
+}
+function computeCodexUsage(items, rawUsage) {
+  var _a;
+  const result = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    if (item.tool !== "codex" || item.type !== "skill" && item.type !== "agent")
+      continue;
+    result.set(item.entryId, (_a = rawUsage.get(usageKey(item.type, item.name))) != null ? _a : { count: 0, lastUsedMs: 0 });
+  }
+  return result;
+}
+
+// src/fileTree.ts
+var import_fs12 = require("fs");
+var import_path11 = require("path");
 var SKIP_ENTRIES = /* @__PURE__ */ new Set(["node_modules", ".git", ".DS_Store"]);
 var MAX_DEPTH = 4;
 function isFolderItem(item) {
-  return (0, import_path10.basename)(item.sourcePath) === "SKILL.md";
+  return (0, import_path11.basename)(item.sourcePath) === "SKILL.md";
 }
 function skillFolder(item) {
-  return (0, import_path10.dirname)(item.sourcePath);
+  return (0, import_path11.dirname)(item.sourcePath);
 }
 function walk(dir, prefix, depth) {
   if (depth > MAX_DEPTH)
     return [];
   let entries;
   try {
-    entries = (0, import_fs11.readdirSync)(dir);
+    entries = (0, import_fs12.readdirSync)(dir);
   } catch (e) {
     return [];
   }
@@ -2413,11 +2500,11 @@ function walk(dir, prefix, depth) {
   for (const entry of entries) {
     if (SKIP_ENTRIES.has(entry) || entry.startsWith("."))
       continue;
-    const absPath = (0, import_path10.join)(dir, entry);
+    const absPath = (0, import_path11.join)(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
     let isDir = false;
     try {
-      isDir = (0, import_fs11.statSync)(absPath).isDirectory();
+      isDir = (0, import_fs12.statSync)(absPath).isDirectory();
     } catch (e) {
       continue;
     }
@@ -3112,18 +3199,18 @@ function renderDiffLine(container, line) {
 }
 
 // src/diff/companions.ts
-var import_fs12 = require("fs");
-var import_path11 = require("path");
+var import_fs13 = require("fs");
+var import_path12 = require("path");
 function listFilesRecursive(dir, prefix = "") {
-  if (!(0, import_fs12.existsSync)(dir))
+  if (!(0, import_fs13.existsSync)(dir))
     return [];
   const files = [];
-  for (const entry of (0, import_fs12.readdirSync)(dir)) {
+  for (const entry of (0, import_fs13.readdirSync)(dir)) {
     if (entry === ".git")
       continue;
-    const entryPath = (0, import_path11.join)(dir, entry);
+    const entryPath = (0, import_path12.join)(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
-    if ((0, import_fs12.statSync)(entryPath).isDirectory()) {
+    if ((0, import_fs13.statSync)(entryPath).isDirectory()) {
       files.push(...listFilesRecursive(entryPath, relPath));
     } else {
       files.push(relPath);
@@ -3133,7 +3220,7 @@ function listFilesRecursive(dir, prefix = "") {
 }
 function filesEqual(a, b) {
   try {
-    return (0, import_fs12.readFileSync)(a).equals((0, import_fs12.readFileSync)(b));
+    return (0, import_fs13.readFileSync)(a).equals((0, import_fs13.readFileSync)(b));
   } catch (e) {
     return false;
   }
@@ -3145,7 +3232,7 @@ function computeCompanionChanges(oldDir, newDir) {
   for (const file of newFiles) {
     if (!oldFiles.has(file))
       rows.push({ file, status: "added" });
-    else if (!filesEqual((0, import_path11.join)(oldDir, file), (0, import_path11.join)(newDir, file)))
+    else if (!filesEqual((0, import_path12.join)(oldDir, file), (0, import_path12.join)(newDir, file)))
       rows.push({ file, status: "modified" });
   }
   for (const file of oldFiles) {
@@ -3316,6 +3403,9 @@ var LibraryView = class extends import_obsidian14.ItemView {
      *  before the first finishes, and lets the two Claude-Code-only sections show a loading state
      *  instead of an empty one. */
     this.claudeUsageLoading = false;
+    /** Codex usage is derived from the CLI's session JSONL and loaded only when its tile is selected. */
+    this.codexUsage = null;
+    this.codexUsageLoading = false;
     /** Independent from dashboardRankedExpanded — Top Skills & Agents and Ranked by cost are
      *  different lists and shouldn't share collapse state. */
     this.dashboardTopSkillsExpanded = false;
@@ -3437,9 +3527,9 @@ var LibraryView = class extends import_obsidian14.ItemView {
         if (this.selectedFilePath === previousSourcePath) {
           this.selectedFilePath = updated.sourcePath;
         } else {
-          const previousDir = (0, import_path12.dirname)(previousSourcePath);
-          if (this.selectedFilePath.startsWith(previousDir + import_path12.sep)) {
-            const updatedDir = (0, import_path12.dirname)(updated.sourcePath);
+          const previousDir = (0, import_path13.dirname)(previousSourcePath);
+          if (this.selectedFilePath.startsWith(previousDir + import_path13.sep)) {
+            const updatedDir = (0, import_path13.dirname)(updated.sourcePath);
             this.selectedFilePath = updatedDir + this.selectedFilePath.slice(previousDir.length);
           }
         }
@@ -3452,6 +3542,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     this.dashboardMetrics = null;
     this.dashboardAttentionCount = null;
     this.claudeUsage = null;
+    this.codexUsage = null;
     this.render();
     return result;
   }
@@ -3512,6 +3603,26 @@ var LibraryView = class extends import_obsidian14.ItemView {
       this.render();
     }
   }
+  async loadCodexUsage() {
+    try {
+      const files = listCodexSessionFiles(expandHome2(CODEX_SESSIONS_DIR));
+      const sinceMs = Date.now() - TOP_USED_WINDOW_DAYS * 24 * 60 * 60 * 1e3;
+      const raw = /* @__PURE__ */ new Map();
+      const codexItems = this.items.filter((i) => i.tool === "codex" && (i.type === "skill" || i.type === "agent"));
+      for (const file of files) {
+        scanCodexSessionFile(file, codexItems, raw, sinceMs);
+        await new Promise((resolve2) => window.setTimeout(resolve2, 0));
+      }
+      this.codexUsage = computeCodexUsage(this.items, raw);
+    } catch (e) {
+      console.error("AI Skills Manager: failed to read Codex usage history", e);
+      new import_obsidian14.Notice(`Couldn't read Codex usage history: ${errorMessage(e)}`);
+      this.codexUsage = /* @__PURE__ */ new Map();
+    } finally {
+      this.codexUsageLoading = false;
+      this.render();
+    }
+  }
   /** Returns the cached usage map, or null while it's still being computed — kicks off
    *  loadClaudeUsage as a side effect the first time this is called (from renderDashboardContent,
    *  only when the Claude Code tile is active), same "getter triggers the lazy computation" shape
@@ -3525,6 +3636,15 @@ var LibraryView = class extends import_obsidian14.ItemView {
     if (!this.claudeUsageLoading) {
       this.claudeUsageLoading = true;
       window.setTimeout(() => void this.loadClaudeUsage(), 0);
+    }
+    return null;
+  }
+  getCodexUsage() {
+    if (this.codexUsage)
+      return this.codexUsage;
+    if (!this.codexUsageLoading) {
+      this.codexUsageLoading = true;
+      window.setTimeout(() => void this.loadCodexUsage(), 0);
     }
     return null;
   }
@@ -3802,7 +3922,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
   }
   itemModifiedMs(item) {
     try {
-      return (0, import_fs13.statSync)(item.sourcePath).mtimeMs;
+      return (0, import_fs14.statSync)(item.sourcePath).mtimeMs;
     } catch (e) {
       return 0;
     }
@@ -4018,6 +4138,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
         this.dashboardMode = true;
         this.claudeUsage = null;
         this.claudeUsageLoading = false;
+        this.codexUsage = null;
+        this.codexUsageLoading = false;
         this.dashboardActiveTool = null;
         this.dashboardTypeFilter = null;
         this.dashboardRankedExpanded = false;
@@ -4280,7 +4402,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     if (!plugin.repoUrl)
       return;
     const unitPath = linkableUnit(item.sourcePath).path;
-    const subpath = (0, import_path12.relative)(plugin.path, unitPath).split(import_path12.sep).join("/");
+    const subpath = (0, import_path13.relative)(plugin.path, unitPath).split(import_path13.sep).join("/");
     new InstallFromGitHubModal(
       this.app,
       this.getSettings(),
@@ -5513,7 +5635,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  real directory on disk right now — independent of enabled state or item count, since a
    *  correctly-configured tool with zero skills yet is still "detected." */
   toolIsDetected(tool) {
-    return Object.values(tool.paths).some((p) => p && (0, import_fs13.existsSync)(expandHome2(p)));
+    return Object.values(tool.paths).some((p) => p && (0, import_fs14.existsSync)(expandHome2(p)));
   }
   toolMatchesStatusFilter(tool) {
     switch (this.toolStatusFilter) {
@@ -5648,7 +5770,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
         return;
       }
       const resolved = resolve2(trimmed);
-      const found = resolved !== null && (0, import_fs13.existsSync)(resolved);
+      const found = resolved !== null && (0, import_fs14.existsSync)(resolved);
       status.setText(found ? "found" : "not found");
       status.title = resolved != null ? resolved : "";
       status.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
@@ -5670,7 +5792,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     var _a;
     const entries = (_a = scope === "global" ? tool.ruleAdditionalPaths : tool.ruleAdditionalProjectPaths) != null ? _a : [];
     const vaultPath = this.vaultPath();
-    const resolve2 = (raw) => scope === "global" ? expandHome2(raw) : vaultPath ? (0, import_path12.join)(vaultPath, raw) : null;
+    const resolve2 = (raw) => scope === "global" ? expandHome2(raw) : vaultPath ? (0, import_path13.join)(vaultPath, raw) : null;
     const commit = (next) => {
       const trimmed = next.filter((e) => e.path.trim());
       if (scope === "global") {
@@ -5708,7 +5830,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
           return;
         }
         const resolved = resolve2(trimmedVal);
-        const found = resolved !== null && (0, import_fs13.existsSync)(resolved);
+        const found = resolved !== null && (0, import_fs14.existsSync)(resolved);
         status.setText(found ? "found" : "not found");
         status.title = resolved != null ? resolved : "";
         status.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
@@ -5804,7 +5926,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
         TYPE_LABELS[type],
         (_e = (_d = tool.projectPaths) == null ? void 0 : _d[type]) != null ? _e : "",
         globalPath ? toProjectRelative(globalPath) : "(not scanned globally)",
-        (raw) => vaultPath ? (0, import_path12.join)(vaultPath, raw) : null,
+        (raw) => vaultPath ? (0, import_path13.join)(vaultPath, raw) : null,
         (value) => {
           var _a2;
           if (value.trim()) {
@@ -5845,7 +5967,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       "Project config",
       (_g = tool.projectMcpConfigPath) != null ? _g : "",
       ".example/mcp.json",
-      (raw) => vaultPath ? (0, import_path12.join)(vaultPath, raw) : null,
+      (raw) => vaultPath ? (0, import_path13.join)(vaultPath, raw) : null,
       (value) => {
         if (value.trim())
           tool.projectMcpConfigPath = value.trim();
@@ -6414,13 +6536,14 @@ var LibraryView = class extends import_obsidian14.ItemView {
     }
     this.renderDashboardToolCards(body, metrics);
     this.renderDashboardRanked(body, metrics);
-    if (this.dashboardActiveTool === "claude-code") {
-      const usage = this.getClaudeUsage();
-      const allClaudeSkillAgentItems = this.items.filter(
-        (i) => i.tool === "claude-code" && (i.type === "skill" || i.type === "agent")
+    if (this.dashboardActiveTool === "claude-code" || this.dashboardActiveTool === "codex") {
+      const isClaude = this.dashboardActiveTool === "claude-code";
+      const usage = isClaude ? this.getClaudeUsage() : this.getCodexUsage();
+      const items = this.items.filter(
+        (i) => i.tool === this.dashboardActiveTool && (i.type === "skill" || i.type === "agent")
       );
-      const topUsed = usage ? rankTopUsedItems(allClaudeSkillAgentItems, usage) : [];
-      this.renderDashboardTopUsed(body, topUsed, !usage);
+      const topUsed = usage ? rankTopUsedItems(items, usage) : [];
+      this.renderDashboardTopUsed(body, topUsed, !usage, isClaude ? "Claude Code" : "Codex");
     }
     const columns = body.createDiv({ cls: "skillmanager-dash-columns" });
     this.renderDashboardPruneCandidates(columns, usagePrune, mtimePrune);
@@ -6614,6 +6737,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     this.dashboardMetrics = null;
     this.dashboardAttentionCount = null;
     this.claudeUsage = null;
+    this.codexUsage = null;
     await this.toggleEnabled(item);
   }
   async restoreFromDashboard(item) {
@@ -6625,6 +6749,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     this.dashboardMetrics = null;
     this.dashboardAttentionCount = null;
     this.claudeUsage = null;
+    this.codexUsage = null;
     await this.toggleEnabled(item);
   }
   /** Opens an item's file preview from anywhere in the Dashboard (a Ranked card, a Prune
@@ -6754,19 +6879,18 @@ var LibraryView = class extends import_obsidian14.ItemView {
       restoreBtn.addEventListener("click", () => void this.restoreFromDashboard(item));
     }
   }
-  /** Ranked-by-invocation-count sibling to renderDashboardRanked — only rendered when
-   *  dashboardActiveTool === "claude-code". Skills and agents combined into one list (a product
-   *  decision, not an oversight — see claude-usage.ts's rankTopUsedItems). */
-  renderDashboardTopUsed(body, ranked, loading) {
+  /** Ranked-by-activity sibling to renderDashboardRanked — rendered for tools with usage data.
+   *  Skills and agents are combined into one list. */
+  renderDashboardTopUsed(body, ranked, loading, toolName) {
     const section = body.createDiv({ cls: "skillmanager-dash-ranked" });
     this.renderDashboardSectionHead(section, "Top Skills & Agents");
     section.createDiv({
-      text: `Based on real Claude Code invocations across all projects in ~/.claude/projects, last ${TOP_USED_WINDOW_DAYS} days.`,
+      text: `Based on recorded ${toolName} activity, last ${TOP_USED_WINDOW_DAYS} days.`,
       cls: "skillmanager-subtitle"
     });
     const list = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
     if (loading) {
-      list.createDiv({ text: "Scanning Claude Code history\u2026", cls: "skillmanager-empty" });
+      list.createDiv({ text: `Scanning ${toolName} history\u2026`, cls: "skillmanager-empty" });
       return;
     }
     if (ranked.length === 0) {
@@ -6966,7 +7090,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     crumb(item.name, !fileOpenFromTree, fileOpenFromTree ? () => this.backToTree() : void 0);
     if (fileOpenFromTree && this.selectedFilePath) {
       sep4();
-      crumb((0, import_path12.basename)(this.selectedFilePath), true);
+      crumb((0, import_path13.basename)(this.selectedFilePath), true);
     }
   }
   /** Title + tool pill + edit action, then a two-column strip: tags/description/path/extra
@@ -6984,7 +7108,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const isReviewing = this.review !== null && this.review.entryId === item.entryId;
     const header = panel.createDiv({ cls: "skillmanager-detail-header" });
     header.createEl("h3", {
-      text: isReviewing ? `${((_a = this.review) == null ? void 0 : _a.mode) === "restore" ? "Restore" : "Update"} "${item.name}"` : filePath && !isManifest ? (0, import_path12.basename)(filePath) : item.name,
+      text: isReviewing ? `${((_a = this.review) == null ? void 0 : _a.mode) === "restore" ? "Restore" : "Update"} "${item.name}"` : filePath && !isManifest ? (0, import_path13.basename)(filePath) : item.name,
       cls: "skillmanager-detail-title"
     });
     header.createSpan({ text: this.sourceLabel(item), cls: "skillmanager-detail-tool-pill" });
@@ -7036,7 +7160,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     let fileSize = 0;
     let modified = Date.now();
     try {
-      const stat = (0, import_fs13.statSync)(filePath);
+      const stat = (0, import_fs14.statSync)(filePath);
       fileSize = stat.size;
       modified = stat.mtimeMs;
     } catch (e) {
@@ -7165,17 +7289,17 @@ var LibraryView = class extends import_obsidian14.ItemView {
     let clone = null;
     try {
       clone = mode === "restore" ? shallowCloneAtCommit(sourceRepo, item.sourceCommit) : shallowCloneRepo(sourceRepo, item.sourceRef || void 0);
-      (0, import_fs13.rmSync)((0, import_path12.join)(clone.dir, ".git"), { recursive: true, force: true });
+      (0, import_fs14.rmSync)((0, import_path13.join)(clone.dir, ".git"), { recursive: true, force: true });
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
-      const newRoot = subpath ? (0, import_path12.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs13.existsSync)(newRoot)) {
+      const newRoot = subpath ? (0, import_path13.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs14.existsSync)(newRoot)) {
         throw new Error(`"${subpath}" no longer exists in this repo.`);
       }
       const unit = linkableUnit(item.sourcePath);
-      const oldPrimary = unit.isDirectory ? (0, import_path12.join)(unit.path, "SKILL.md") : unit.path;
-      const newPrimary = unit.isDirectory ? (0, import_path12.join)(newRoot, "SKILL.md") : newRoot;
-      const oldText = (0, import_fs13.existsSync)(oldPrimary) ? (0, import_fs13.readFileSync)(oldPrimary, "utf-8") : "";
-      const newText = (0, import_fs13.existsSync)(newPrimary) ? (0, import_fs13.readFileSync)(newPrimary, "utf-8") : "";
+      const oldPrimary = unit.isDirectory ? (0, import_path13.join)(unit.path, "SKILL.md") : unit.path;
+      const newPrimary = unit.isDirectory ? (0, import_path13.join)(newRoot, "SKILL.md") : newRoot;
+      const oldText = (0, import_fs14.existsSync)(oldPrimary) ? (0, import_fs14.readFileSync)(oldPrimary, "utf-8") : "";
+      const newText = (0, import_fs14.existsSync)(newPrimary) ? (0, import_fs14.readFileSync)(newPrimary, "utf-8") : "";
       const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
       this.review = {
         status: "ready",
@@ -7244,10 +7368,10 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const { mode, unitPath, isDirectory, newRoot, newCommit, entryId, clone } = this.review;
     try {
       if (isDirectory) {
-        (0, import_fs13.rmSync)(unitPath, { recursive: true, force: true });
-        (0, import_fs13.cpSync)(newRoot, unitPath, { recursive: true });
+        (0, import_fs14.rmSync)(unitPath, { recursive: true, force: true });
+        (0, import_fs14.cpSync)(newRoot, unitPath, { recursive: true });
       } else {
-        (0, import_fs13.cpSync)(newRoot, unitPath);
+        (0, import_fs14.cpSync)(newRoot, unitPath);
       }
       await this.store.update(entryId, { sourceCommit: newCommit });
       if (mode === "update")
@@ -7273,18 +7397,18 @@ var LibraryView = class extends import_obsidian14.ItemView {
     let clone = null;
     try {
       clone = shallowCloneRepo(sourceRepo, item.sourceRef || void 0);
-      (0, import_fs13.rmSync)((0, import_path12.join)(clone.dir, ".git"), { recursive: true, force: true });
+      (0, import_fs14.rmSync)((0, import_path13.join)(clone.dir, ".git"), { recursive: true, force: true });
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
-      const newRoot = subpath ? (0, import_path12.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs13.existsSync)(newRoot)) {
+      const newRoot = subpath ? (0, import_path13.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs14.existsSync)(newRoot)) {
         throw new Error(`"${subpath}" no longer exists in this repo.`);
       }
       const unit = linkableUnit(item.sourcePath);
       if (unit.isDirectory) {
-        (0, import_fs13.rmSync)(unit.path, { recursive: true, force: true });
-        (0, import_fs13.cpSync)(newRoot, unit.path, { recursive: true });
+        (0, import_fs14.rmSync)(unit.path, { recursive: true, force: true });
+        (0, import_fs14.cpSync)(newRoot, unit.path, { recursive: true });
       } else {
-        (0, import_fs13.cpSync)(newRoot, unit.path);
+        (0, import_fs14.cpSync)(newRoot, unit.path);
       }
       await this.store.update(item.entryId, { sourceCommit: clone.commit });
     } finally {
@@ -7418,7 +7542,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     if (this.detailLoadedFor === loadKey)
       return;
     try {
-      this.detailContent = (0, import_fs13.readFileSync)(filePath, "utf-8");
+      this.detailContent = (0, import_fs14.readFileSync)(filePath, "utf-8");
     } catch (e) {
       this.detailContent = "";
       new import_obsidian14.Notice("Could not read file: " + errorMessage(e));
@@ -7445,7 +7569,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       const save = () => {
         void (async () => {
           try {
-            (0, import_fs13.writeFileSync)(filePath, textarea.value, "utf-8");
+            (0, import_fs14.writeFileSync)(filePath, textarea.value, "utf-8");
             this.detailContent = textarea.value;
             if (isManifest) {
               const meta = parseSourceMeta(textarea.value);

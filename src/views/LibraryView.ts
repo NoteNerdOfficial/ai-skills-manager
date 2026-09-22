@@ -59,6 +59,7 @@ import {
   USAGE_STALE_DAYS,
   TOP_USED_WINDOW_DAYS,
 } from "../claude-usage";
+import { CODEX_SESSIONS_DIR, computeCodexUsage, listCodexSessionFiles, scanCodexSessionFile } from "../codex-usage";
 import {
   addDiscoverSource,
   dedupeDiscoverCatalog,
@@ -280,6 +281,9 @@ export class LibraryView extends ItemView {
    *  before the first finishes, and lets the two Claude-Code-only sections show a loading state
    *  instead of an empty one. */
   private claudeUsageLoading = false;
+  /** Codex usage is derived from the CLI's session JSONL and loaded only when its tile is selected. */
+  private codexUsage: Map<string, ClaudeUsageStats> | null = null;
+  private codexUsageLoading = false;
   /** Independent from dashboardRankedExpanded — Top Skills & Agents and Ranked by cost are
    *  different lists and shouldn't share collapse state. */
   private dashboardTopSkillsExpanded = false;
@@ -439,6 +443,7 @@ export class LibraryView extends ItemView {
     this.dashboardMetrics = null;
     this.dashboardAttentionCount = null;
     this.claudeUsage = null;
+    this.codexUsage = null;
     this.render();
     return result;
   }
@@ -520,6 +525,27 @@ export class LibraryView extends ItemView {
     }
   }
 
+  private async loadCodexUsage() {
+    try {
+      const files = listCodexSessionFiles(expandHome(CODEX_SESSIONS_DIR));
+      const sinceMs = Date.now() - TOP_USED_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+      const raw = new Map<string, ClaudeUsageStats>();
+      const codexItems = this.items.filter((i) => i.tool === "codex" && (i.type === "skill" || i.type === "agent"));
+      for (const file of files) {
+        scanCodexSessionFile(file, codexItems, raw, sinceMs);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
+      this.codexUsage = computeCodexUsage(this.items, raw);
+    } catch (e) {
+      console.error("AI Skills Manager: failed to read Codex usage history", e);
+      new Notice(`Couldn't read Codex usage history: ${errorMessage(e)}`);
+      this.codexUsage = new Map();
+    } finally {
+      this.codexUsageLoading = false;
+      this.render();
+    }
+  }
+
   /** Returns the cached usage map, or null while it's still being computed — kicks off
    *  loadClaudeUsage as a side effect the first time this is called (from renderDashboardContent,
    *  only when the Claude Code tile is active), same "getter triggers the lazy computation" shape
@@ -532,6 +558,15 @@ export class LibraryView extends ItemView {
     if (!this.claudeUsageLoading) {
       this.claudeUsageLoading = true;
       window.setTimeout(() => void this.loadClaudeUsage(), 0);
+    }
+    return null;
+  }
+
+  private getCodexUsage(): Map<string, ClaudeUsageStats> | null {
+    if (this.codexUsage) return this.codexUsage;
+    if (!this.codexUsageLoading) {
+      this.codexUsageLoading = true;
+      window.setTimeout(() => void this.loadCodexUsage(), 0);
     }
     return null;
   }
@@ -1054,6 +1089,8 @@ export class LibraryView extends ItemView {
         this.dashboardMode = true;
         this.claudeUsage = null;
         this.claudeUsageLoading = false;
+        this.codexUsage = null;
+        this.codexUsageLoading = false;
         this.dashboardActiveTool = null;
         this.dashboardTypeFilter = null;
         this.dashboardRankedExpanded = false;
@@ -3765,19 +3802,20 @@ export class LibraryView extends ItemView {
     this.renderDashboardToolCards(body, metrics);
     this.renderDashboardRanked(body, metrics);
 
-    if (this.dashboardActiveTool === "claude-code") {
-      // Top Skills & Agents stays contextual to the Claude Code tool card — it's a usage lens on
-      // one tool's items specifically, not something every other tool has an equivalent of.
+    if (this.dashboardActiveTool === "claude-code" || this.dashboardActiveTool === "codex") {
+      // Top Skills & Agents stays contextual to the selected tool card — it is a usage lens on
+      // that tool's items specifically.
       // Unlike getDashboardPruneSplit's claudeSkillAgentItems (enabled-only, since "prune" is
       // meaningless for an already-disabled item), it draws from every matching item regardless
       // of enabled state so a real invocation of a since-disabled skill still shows up. Cached
       // after getDashboardPruneSplit's own call above, so this doesn't re-trigger a scan.
-      const usage = this.getClaudeUsage();
-      const allClaudeSkillAgentItems = this.items.filter(
-        (i) => i.tool === "claude-code" && (i.type === "skill" || i.type === "agent")
+      const isClaude = this.dashboardActiveTool === "claude-code";
+      const usage = isClaude ? this.getClaudeUsage() : this.getCodexUsage();
+      const items = this.items.filter(
+        (i) => i.tool === this.dashboardActiveTool && (i.type === "skill" || i.type === "agent")
       );
-      const topUsed = usage ? rankTopUsedItems(allClaudeSkillAgentItems, usage) : [];
-      this.renderDashboardTopUsed(body, topUsed, !usage);
+      const topUsed = usage ? rankTopUsedItems(items, usage) : [];
+      this.renderDashboardTopUsed(body, topUsed, !usage, isClaude ? "Claude Code" : "Codex");
     }
     const columns = body.createDiv({ cls: "skillmanager-dash-columns" });
     this.renderDashboardPruneCandidates(columns, usagePrune, mtimePrune);
@@ -3984,6 +4022,7 @@ export class LibraryView extends ItemView {
     this.dashboardMetrics = null;
     this.dashboardAttentionCount = null;
     this.claudeUsage = null;
+    this.codexUsage = null;
     await this.toggleEnabled(item);
   }
 
@@ -3996,6 +4035,7 @@ export class LibraryView extends ItemView {
     this.dashboardMetrics = null;
     this.dashboardAttentionCount = null;
     this.claudeUsage = null;
+    this.codexUsage = null;
     await this.toggleEnabled(item);
   }
 
@@ -4147,20 +4187,24 @@ export class LibraryView extends ItemView {
     }
   }
 
-  /** Ranked-by-invocation-count sibling to renderDashboardRanked — only rendered when
-   *  dashboardActiveTool === "claude-code". Skills and agents combined into one list (a product
-   *  decision, not an oversight — see claude-usage.ts's rankTopUsedItems). */
-  private renderDashboardTopUsed(body: HTMLElement, ranked: { item: ItemMetadata; stats: ClaudeUsageStats }[], loading: boolean) {
+  /** Ranked-by-activity sibling to renderDashboardRanked — rendered for tools with usage data.
+   *  Skills and agents are combined into one list. */
+  private renderDashboardTopUsed(
+    body: HTMLElement,
+    ranked: { item: ItemMetadata; stats: ClaudeUsageStats }[],
+    loading: boolean,
+    toolName: string
+  ) {
     const section = body.createDiv({ cls: "skillmanager-dash-ranked" });
     this.renderDashboardSectionHead(section, "Top Skills & Agents");
     section.createDiv({
-      text: `Based on real Claude Code invocations across all projects in ~/.claude/projects, last ${TOP_USED_WINDOW_DAYS} days.`,
+      text: `Based on recorded ${toolName} activity, last ${TOP_USED_WINDOW_DAYS} days.`,
       cls: "skillmanager-subtitle",
     });
 
     const list = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
     if (loading) {
-      list.createDiv({ text: "Scanning Claude Code history…", cls: "skillmanager-empty" });
+      list.createDiv({ text: `Scanning ${toolName} history…`, cls: "skillmanager-empty" });
       return;
     }
     if (ranked.length === 0) {
