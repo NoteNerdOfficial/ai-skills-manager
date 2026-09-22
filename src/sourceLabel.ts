@@ -1,4 +1,4 @@
-import { ItemMetadata, PluginSource, ProjectWorkspace, SkillSpacePluginSettings } from "./types";
+import { ItemMetadata, PluginSource, ProjectWorkspace, SkillManagerPluginSettings } from "./types";
 import { projectIcon } from "./rescan";
 import { isBuiltInPath } from "./scanners";
 
@@ -7,7 +7,7 @@ import { isBuiltInPath } from "./scanners";
  *  Pure/read-only. */
 export function toolLabel(
   item: ItemMetadata,
-  settings: SkillSpacePluginSettings,
+  settings: SkillManagerPluginSettings,
   plugins: PluginSource[]
 ): { icon: string; text: string; svgIcon?: string } {
   const tool = settings.tools.find((t) => t.id === item.tool);
@@ -37,7 +37,7 @@ export function originLabel(item: ItemMetadata, projects: ProjectWorkspace[]): {
  *  each (see toolLabel/originLabel) and would otherwise say the same thing twice. */
 export function sourceLabel(
   item: ItemMetadata,
-  settings: SkillSpacePluginSettings,
+  settings: SkillManagerPluginSettings,
   projects: ProjectWorkspace[],
   plugins: PluginSource[]
 ): string {

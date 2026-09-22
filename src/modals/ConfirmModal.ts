@@ -15,11 +15,11 @@ export class ConfirmModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass("skillspace-modal");
+    contentEl.addClass("skillmanager-modal");
     contentEl.createEl("h3", { text: this.title });
-    contentEl.createEl("p", { text: this.message, cls: "skillspace-modal-meta" });
+    contentEl.createEl("p", { text: this.message, cls: "skillmanager-modal-meta" });
 
-    const actions = contentEl.createDiv({ cls: "skillspace-modal-actions" });
+    const actions = contentEl.createDiv({ cls: "skillmanager-modal-actions" });
     actions.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
     actions
       .createEl("button", { text: this.confirmLabel, cls: "mod-warning" })

@@ -1,5 +1,5 @@
 import { App, Modal, Notice, Setting } from "obsidian";
-import { SkillSpacePluginSettings } from "../types";
+import { SkillManagerPluginSettings } from "../types";
 import { addDiscoverSource } from "../discover";
 import { errorMessage } from "../errors";
 import { parseGitHubUrl } from "./InstallFromGitHubModal";
@@ -19,7 +19,7 @@ export class AddDiscoverSourceModal extends Modal {
 
   constructor(
     app: App,
-    private settings: SkillSpacePluginSettings,
+    private settings: SkillManagerPluginSettings,
     private saveSettings: () => Promise<void>,
     /** True if this repoUrl/subpath is already installed as a real item — filters it out of the
      *  catalog rather than showing an "install" card for something already in the library. */
@@ -31,10 +31,10 @@ export class AddDiscoverSourceModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass("skillspace-modal");
+    contentEl.addClass("skillmanager-modal");
     contentEl.createEl("h3", { text: "Add a GitHub source to Discover" });
     contentEl.createDiv({
-      cls: "skillspace-modal-meta",
+      cls: "skillmanager-modal-meta",
       text: "Finds every skill, agent, command, and rule in the repo (or just the given folder) and adds them to Discover to browse and install later. Nothing is installed yet.",
     });
 
@@ -82,7 +82,7 @@ export class AddDiscoverSourceModal extends Modal {
         });
       });
 
-    this.statusEl = contentEl.createDiv({ cls: "skillspace-modal-meta" });
+    this.statusEl = contentEl.createDiv({ cls: "skillmanager-modal-meta" });
 
     new Setting(contentEl)
       .addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()))

@@ -6,7 +6,7 @@ import { shallowCloneRepo } from "./git";
 import { parseFrontmatter } from "./scanners";
 import { slug } from "./format";
 import { errorMessage } from "./errors";
-import { DiscoverEntry, ItemType, SkillSpacePluginSettings } from "./types";
+import { DiscoverEntry, ItemType, SkillManagerPluginSettings } from "./types";
 
 /** slug() truncates to 80 chars — fine for makeEntryId's short tool/type/project/name tuple, but
  *  a repo URL alone can eat most of that budget, so hashing the full repoUrl+subpath+name through
@@ -51,13 +51,17 @@ const SKIP_DIRNAMES = new Set(["node_modules", ".git"]);
  *  inside it, one .md file per item — the exact same "location, not content, decides the type"
  *  convention scanAllPlugins already trusts for a Claude Code plugin bundle's own skills/agents/
  *  commands folders (see scanners.ts). Best-effort for an arbitrary repo: a collection that uses
- *  different folder names (Codex's "prompts" for commands, say) won't be picked up — there's no
- *  configured path to fall back on the way the real scanner has. */
+ *  a folder name not listed here won't be picked up — there's no configured path to fall back on
+ *  the way the real scanner has. "prompt(s)" is included alongside "command(s)" since that's the
+ *  folder name Codex, Continue, and GitHub Copilot use for the same concept (see the `command`
+ *  paths in types.ts) — a repo mirroring their convention should map the same way. */
 const TYPE_DIRNAMES: Record<string, ItemType> = {
   agent: "agent",
   agents: "agent",
   command: "command",
   commands: "command",
+  prompt: "command",
+  prompts: "command",
   rule: "rule",
   rules: "rule",
 };
@@ -183,7 +187,7 @@ export async function discoverGitSkills(repoUrl: string, ref: string, subpath: s
  *  going through the modal's form fields. Mutates `settings` in place (same contract the modal
  *  already had); caller is responsible for `saveSettings()`. */
 export async function addDiscoverSource(
-  settings: SkillSpacePluginSettings,
+  settings: SkillManagerPluginSettings,
   repoUrl: string,
   ref: string,
   subpath: string,

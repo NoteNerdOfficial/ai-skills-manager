@@ -20,7 +20,7 @@ export class CollectionEditModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     this.rows = [];
-    contentEl.addClass("skillspace-modal");
+    contentEl.addClass("skillmanager-modal");
     contentEl.createEl("h3", { text: this.existing ? "Edit collection" : "New collection" });
 
     new Setting(contentEl).setName("Name").addText((text) =>
@@ -32,16 +32,16 @@ export class CollectionEditModal extends Modal {
     contentEl.createEl("p", { text: "Members", cls: "setting-item-description" });
 
     if (this.items.length > 0) {
-      const searchWrap = contentEl.createDiv({ cls: "skillspace-search-wrap" });
-      const searchIcon = searchWrap.createSpan({ cls: "skillspace-search-icon" });
+      const searchWrap = contentEl.createDiv({ cls: "skillmanager-search-wrap" });
+      const searchIcon = searchWrap.createSpan({ cls: "skillmanager-search-icon" });
       setIcon(searchIcon, "search");
       const searchInput = searchWrap.createEl("input", {
         type: "text",
         placeholder: "Filter skills…",
-        cls: "skillspace-search",
+        cls: "skillmanager-search",
       });
       const clearBtn = searchWrap.createEl("button", {
-        cls: "skillspace-icon-btn skillspace-search-clear",
+        cls: "skillmanager-icon-btn skillmanager-search-clear",
         attr: { "aria-label": "Clear search" },
       });
       setIcon(clearBtn, "x");
@@ -60,12 +60,12 @@ export class CollectionEditModal extends Modal {
       });
     }
 
-    const list = contentEl.createDiv({ cls: "skillspace-collection-picker" });
+    const list = contentEl.createDiv({ cls: "skillmanager-collection-picker" });
     if (this.items.length === 0) {
       list.createEl("p", { text: "No items yet. Rescan tools from the library view first." });
     }
     for (const item of this.items) {
-      const row = list.createDiv({ cls: "skillspace-collection-picker-row" });
+      const row = list.createDiv({ cls: "skillmanager-collection-picker-row" });
       const checkbox = row.createEl("input", { type: "checkbox" });
       checkbox.checked = this.selected.has(item.entryId);
       checkbox.addEventListener("change", () => {

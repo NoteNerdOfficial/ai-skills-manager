@@ -11,6 +11,21 @@ export interface OverlapPair {
   a: ItemMetadata;
   b: ItemMetadata;
   score: number;
+  /** Flagged by identical name rather than (or regardless of) description similarity — see
+   *  isSameName. A row can be both; sameName just means it wasn't the score that got it in. */
+  sameName: boolean;
+}
+
+/** Case-insensitive, trimmed name match, also requiring the same item type. Two items claiming
+ *  the same name are an unambiguous overlap signal on their own — the name is effectively a
+ *  skill's trigger id — independent of how differently their descriptions happen to be worded
+ *  (e.g. a terse GitHub-installed one-liner vs. a detailed hand-written version of the "same"
+ *  skill barely share any words, so Jaccard alone misses it; see OVERLAP_THRESHOLD's
+ *  jaccard-on-descriptions callers). The type check matters because that trigger-id reading only
+ *  holds within one type — an always-loaded rule and an on-demand skill that happen to share a
+ *  name aren't actually competing for the same trigger. */
+export function isSameName(a: ItemMetadata, b: ItemMetadata): boolean {
+  return a.type === b.type && a.name.trim().toLowerCase() === b.name.trim().toLowerCase();
 }
 
 /** Reads each item's single representative file (its `sourcePath` — a multi-file skill's is its
@@ -76,17 +91,36 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return union === 0 ? 0 : intersection / union;
 }
 
+export const OVERLAP_THRESHOLD = 0.4;
+
+/** The same name+description similarity score findOverlapPairs uses internally, exposed so a
+ *  disabled item's dashboard "restore" row can find what it used to overlap with (that pair no
+ *  longer exists in findOverlapPairs' output once one side is disabled). */
+export function pairSimilarity(a: ItemMetadata, b: ItemMetadata): number {
+  return jaccard(wordSet(`${a.name} ${a.description}`), wordSet(`${b.name} ${b.description}`));
+}
+
 /** Pairwise over enabled items only (O(n^2), fine at the tens-to-low-hundreds scale a vault's
- *  enabled skills/agents/commands/rules actually reach) — flags near-duplicate name+description
- *  text as a likely case of two items fighting over the same trigger conditions. */
-export function findOverlapPairs(items: ItemMetadata[], threshold = 0.4): OverlapPair[] {
+ *  enabled skills/agents/commands/rules actually reach). Flags near-duplicate name+description
+ *  text as a likely case of two items fighting over the same trigger conditions.
+ *
+ *  A skill symlinked into several projects (or into a project and left in the global library)
+ *  shows up as one ItemMetadata per scope, all sharing the same name/description since they're
+ *  the same file. Comparing those would flag "100% overlap" between something and itself under
+ *  a different scope, not two genuinely different items, so pairs that resolve to the same real
+ *  file (see ItemMetadata.realPath) are skipped. */
+export function findOverlapPairs(items: ItemMetadata[], threshold = OVERLAP_THRESHOLD): OverlapPair[] {
   const sets = items.map((item) => wordSet(`${item.name} ${item.description}`));
   const pairs: OverlapPair[] = [];
   for (let i = 0; i < items.length; i++) {
     for (let j = i + 1; j < items.length; j++) {
+      if (items[i].realPath === items[j].realPath) continue;
       const score = jaccard(sets[i], sets[j]);
-      if (score >= threshold) pairs.push({ a: items[i], b: items[j], score });
+      const sameName = isSameName(items[i], items[j]);
+      if (sameName || score >= threshold) pairs.push({ a: items[i], b: items[j], score, sameName });
     }
   }
-  return pairs.sort((a, b) => b.score - a.score);
+  // Same-name pairs first — a name collision is a certain signal, unlike a description score
+  // that only crossed the threshold — then by score within each group.
+  return pairs.sort((a, b) => Number(b.sameName) - Number(a.sameName) || b.score - a.score);
 }

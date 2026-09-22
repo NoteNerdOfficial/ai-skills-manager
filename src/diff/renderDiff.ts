@@ -28,8 +28,8 @@ export function computeDiffStats(oldText: string, newText: string): DiffStats {
  *  position:relative so the minimap (and the scroll body's own overlay chrome) anchor to the
  *  whole diff area, not just the scrolled content. */
 export function renderDiffBody(wrapper: HTMLElement, oldText: string, newText: string): void {
-  wrapper.addClass("skillspace-diff-body-wrapper");
-  const scrollBody = wrapper.createDiv({ cls: "skillspace-diff-body skillspace-diff-gutter-body" });
+  wrapper.addClass("skillmanager-diff-body-wrapper");
+  const scrollBody = wrapper.createDiv({ cls: "skillmanager-diff-body skillmanager-diff-gutter-body" });
   const lines = buildDiffLines(oldText, newText);
   for (const line of lines) {
     renderDiffLine(scrollBody, line);
@@ -44,16 +44,16 @@ export function renderDiffBody(wrapper: HTMLElement, oldText: string, newText: s
 export function renderMinimap(wrapper: HTMLElement, scrollBody: HTMLElement, lines: DiffLine[]): void {
   if (lines.length === 0) return;
   const total = lines.length;
-  const minimap = wrapper.createDiv({ cls: "skillspace-diff-minimap" });
+  const minimap = wrapper.createDiv({ cls: "skillmanager-diff-minimap" });
   for (const line of lines) {
     if (line.marker === " ") continue;
     const tick = minimap.createDiv({
-      cls: `skillspace-diff-minimap-tick skillspace-diff-minimap-tick-${line.marker === "+" ? "add" : "remove"}`,
+      cls: `skillmanager-diff-minimap-tick skillmanager-diff-minimap-tick-${line.marker === "+" ? "add" : "remove"}`,
     });
     tick.style.top = `${((line.lineNumber - 1) / total) * 100}%`;
   }
 
-  const viewport = minimap.createDiv({ cls: "skillspace-diff-minimap-viewport" });
+  const viewport = minimap.createDiv({ cls: "skillmanager-diff-minimap-viewport" });
   const updateViewport = () => {
     const { scrollTop, scrollHeight, clientHeight } = scrollBody;
     if (scrollHeight <= clientHeight) {
@@ -70,16 +70,16 @@ export function renderMinimap(wrapper: HTMLElement, scrollBody: HTMLElement, lin
 
 function renderDiffLine(container: HTMLElement, line: DiffLine): void {
   const marker = line.marker === "+" ? "add" : line.marker === "-" ? "remove" : "context";
-  const row = container.createDiv({ cls: `skillspace-diff-line skillspace-diff-line-${marker}` });
+  const row = container.createDiv({ cls: `skillmanager-diff-line skillmanager-diff-line-${marker}` });
 
-  row.createSpan({ cls: "skillspace-diff-gutter-num", text: String(line.lineNumber) });
-  row.createSpan({ cls: "skillspace-diff-marker", text: line.marker });
+  row.createSpan({ cls: "skillmanager-diff-gutter-num", text: String(line.lineNumber) });
+  row.createSpan({ cls: "skillmanager-diff-marker", text: line.marker });
 
-  const content = row.createSpan({ cls: "skillspace-diff-content" });
+  const content = row.createSpan({ cls: "skillmanager-diff-content" });
   for (const segment of line.segments) {
     if (segment.emphasis) {
       content.createSpan({
-        cls: line.marker === "-" ? "skillspace-diff-remove" : "skillspace-diff-add",
+        cls: line.marker === "-" ? "skillmanager-diff-remove" : "skillmanager-diff-add",
         text: segment.text,
       });
     } else {

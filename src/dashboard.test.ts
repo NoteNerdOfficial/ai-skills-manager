@@ -27,7 +27,7 @@ describe("computeDashboardMetrics", () => {
   let root: string;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "skillspace-dash-test-"));
+    root = mkdtempSync(join(tmpdir(), "skillmanager-dash-test-"));
   });
 
   afterEach(() => {
@@ -97,6 +97,39 @@ describe("findOverlapPairs", () => {
       makeItem({ sourcePath: "/b", name: "git commit", description: "write commit messages" }),
     ];
     expect(findOverlapPairs(items, 0.4)).toEqual([]);
+  });
+
+  it("doesn't flag the same file linked into two scopes (e.g. global + a project) as an overlap", () => {
+    const items = [
+      makeItem({ sourcePath: "/global/pdf-helper/SKILL.md", realPath: "/real/pdf-helper/SKILL.md", name: "pdf helper", description: "extract text from pdf files" }),
+      makeItem({ sourcePath: "/project-a/.claude/skills/pdf-helper/SKILL.md", realPath: "/real/pdf-helper/SKILL.md", name: "pdf helper", description: "extract text from pdf files" }),
+    ];
+    expect(findOverlapPairs(items, 0.4)).toEqual([]);
+  });
+
+  it("flags two items with the same name even when their descriptions barely overlap", () => {
+    const items = [
+      makeItem({
+        sourcePath: "/a",
+        name: "defuddle",
+        description:
+          "Extract clean markdown content from web pages using Defuddle CLI, removing clutter and navigation to save tokens. Use instead of WebFetch when the user provides a URL to read or analyze, for online documentation, articles, blog posts, or any standard web page.",
+      }),
+      makeItem({ sourcePath: "/b", name: "defuddle", description: "Extract clean Markdown from HTML pages with Defuddle CLI." }),
+    ];
+    const pairs = findOverlapPairs(items, 0.4);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].sameName).toBe(true);
+    expect(pairs[0].score).toBeLessThan(0.4);
+  });
+
+  it("doesn't mark a description-only match as sameName", () => {
+    const items = [
+      makeItem({ sourcePath: "/a", name: "pdf helper", description: "extract text from pdf files" }),
+      makeItem({ sourcePath: "/b", name: "pdf assistant", description: "extract text from pdf files" }),
+    ];
+    const pairs = findOverlapPairs(items, 0.4);
+    expect(pairs[0].sameName).toBe(false);
   });
 
   it("sorts multiple matching pairs by score descending", () => {

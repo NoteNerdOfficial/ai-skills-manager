@@ -1,13 +1,13 @@
 /* ---------- shell ---------- */
 
-.skillspace-view {
+.skillmanager-view {
   display: flex;
   height: 100%;
   overflow: hidden;
   background: var(--background-secondary);
 }
 
-.skillspace-sidebar {
+.skillmanager-sidebar {
   width: 240px;
   flex-shrink: 0;
   display: flex;
@@ -18,7 +18,7 @@
   border-right: 1px solid var(--background-modifier-border);
 }
 
-.skillspace-content {
+.skillmanager-content {
   flex: 1;
   min-width: 0;
   display: flex;
@@ -28,7 +28,7 @@
 
 /* ---------- sidebar ---------- */
 
-.skillspace-brand {
+.skillmanager-brand {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -36,26 +36,26 @@
   padding: 4px 8px 14px;
 }
 
-.skillspace-brand-left {
+.skillmanager-brand-left {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.skillspace-brand-icon {
+.skillmanager-brand-icon {
   display: flex;
   color: var(--interactive-accent);
 }
 
-.skillspace-brand-name {
+.skillmanager-brand-name {
   font-size: var(--font-ui-medium);
   font-weight: 700;
 }
 
-/* Overrides .skillspace-icon-btn's forced-transparent background — this is the one icon button
+/* Overrides .skillmanager-icon-btn's forced-transparent background — this is the one icon button
    meant to stand out (installing is the main way new content enters the library) rather than
    blend in like the rest of the chrome. */
-.skillspace-icon-btn.skillspace-install-btn {
+.skillmanager-icon-btn.skillmanager-install-btn {
   width: 24px;
   height: 24px;
   border-radius: 6px;
@@ -63,8 +63,8 @@
   color: var(--text-on-accent);
 }
 
-.skillspace-icon-btn.skillspace-install-btn:hover,
-.skillspace-icon-btn.skillspace-install-btn:focus {
+.skillmanager-icon-btn.skillmanager-install-btn:hover,
+.skillmanager-icon-btn.skillmanager-install-btn:focus {
   background: var(--interactive-accent-hover) !important;
   color: var(--text-on-accent);
 }
@@ -73,14 +73,14 @@
    icon-only button reads as too small/unlabeled for the main action on the page. Sized close to
    mod-cta's default (rather than shrunk to match the icon buttons next to it) and squared off a
    bit more than Obsidian's default button-radius so it reads as a firmer, more deliberate CTA. */
-.skillspace-discover-rail-install-btn {
+.skillmanager-discover-rail-install-btn {
   height: 30px;
   padding: 0 14px;
   border-radius: 6px;
   font-size: var(--font-ui-small);
 }
 
-.skillspace-sidebar-heading {
+.skillmanager-sidebar-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -92,7 +92,7 @@
   color: var(--text-faint);
 }
 
-.skillspace-sidebar-heading-collapsible .skillspace-sidebar-heading-left {
+.skillmanager-sidebar-heading-collapsible .skillmanager-sidebar-heading-left {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -104,44 +104,44 @@
   user-select: none;
 }
 
-.skillspace-sidebar-heading-collapsible .skillspace-sidebar-heading-left:active {
+.skillmanager-sidebar-heading-collapsible .skillmanager-sidebar-heading-left:active {
   cursor: grabbing;
 }
 
-.skillspace-sidebar-heading-collapsible.is-drop-target {
+.skillmanager-sidebar-heading-collapsible.is-drop-target {
   outline: 2px dashed var(--interactive-accent);
   outline-offset: -2px;
   border-radius: 4px;
 }
 
-.skillspace-chevron {
+.skillmanager-chevron {
   display: flex;
   flex-shrink: 0;
 }
 
-.skillspace-chevron .svg-icon {
+.skillmanager-chevron .svg-icon {
   width: 12px;
   height: 12px;
 }
 
-.skillspace-sidebar-heading-action {
+.skillmanager-sidebar-heading-action {
   display: flex;
   align-items: center;
   gap: 2px;
 }
 
-.skillspace-sidebar-empty {
+.skillmanager-sidebar-empty {
   padding: 2px 10px;
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
 }
 
-.skillspace-sidebar-footer {
+.skillmanager-sidebar-footer {
   margin-top: auto;
   padding-top: 12px;
 }
 
-.skillspace-nav-item {
+.skillmanager-nav-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -152,30 +152,48 @@
   font-size: var(--font-ui-small);
 }
 
-.skillspace-nav-item:hover {
+.skillmanager-nav-item:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
-.skillspace-nav-item.is-active {
+.skillmanager-nav-item.is-active {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
   font-weight: 600;
 }
 
-.skillspace-nav-icon {
+.skillmanager-nav-item-accent {
+  border: 1px solid var(--interactive-accent);
+  color: var(--interactive-accent);
+}
+
+.skillmanager-nav-item-accent .skillmanager-nav-icon {
+  color: var(--interactive-accent);
+}
+
+.skillmanager-nav-item-accent:hover {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.skillmanager-nav-item-accent:hover .skillmanager-nav-icon {
+  color: var(--text-on-accent);
+}
+
+.skillmanager-nav-icon {
   display: flex;
   flex-shrink: 0;
   color: var(--text-muted);
 }
 
-.skillspace-nav-icon .svg-icon,
-.skillspace-nav-icon svg {
+.skillmanager-nav-icon .svg-icon,
+.skillmanager-nav-icon svg {
   width: 16px;
   height: 16px;
 }
 
-.skillspace-nav-label {
+.skillmanager-nav-label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -183,12 +201,30 @@
   white-space: nowrap;
 }
 
-.skillspace-nav-count {
+.skillmanager-nav-count {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
 }
 
-.skillspace-nav-actions {
+/* Attention badge (e.g. Dashboard's prune/overlap count) — same size/weight as the other nav
+ * counts, just colored red so it reads as "needs a look" without standing out structurally. */
+.skillmanager-nav-count-danger {
+  font-size: var(--font-ui-smaller);
+  color: #e0654f;
+}
+
+/* Replaces the old numeric attention badge on the Dashboard row — a simple "needs a look"
+ * signal rather than a count to parse, since the number itself was never actionable from the
+ * sidebar. See getDashboardAttentionCount and dashboardDisregarded. */
+.skillmanager-nav-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e0654f;
+}
+
+.skillmanager-nav-actions {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -196,31 +232,136 @@
 
 /* ---------- content header + toolbar ---------- */
 
-.skillspace-content-header {
+.skillmanager-content-header {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 18px 20px 0;
 }
 
-.skillspace-title-row {
+.skillmanager-title-row {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.skillspace-title {
+.skillmanager-title {
   margin: 0;
   font-size: 1.5em;
   font-weight: 500;
 }
 
-.skillspace-subtitle {
+.skillmanager-subtitle {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
 }
 
-.skillspace-count-pill {
+/* Wraps the subtitle together with an inline filter button (see MCP servers'
+   renderMcpToolFilterButton call) so the button sits on the description's own line, pushed to
+   the row's right edge via .skillmanager-sort-btn's own margin-left: auto, instead of crowding
+   the title row above it. */
+.skillmanager-subtitle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Workspace-scope banner (see LibraryView.renderWorkspaceBanner) — a one-time nudge shown only
+   while nothing's tracked beyond the vault yet, styled like a quiet info callout rather than a
+   warning (this isn't an error state, just a "you might want to know" note). */
+.skillmanager-workspace-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-primary);
+  max-width: 620px;
+}
+
+.skillmanager-workspace-banner-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--text-muted);
+}
+
+.skillmanager-workspace-banner-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.skillmanager-workspace-banner-title {
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.skillmanager-workspace-banner-desc {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+.skillmanager-workspace-banner-add {
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+
+.skillmanager-workspace-banner-close {
+  flex-shrink: 0;
+}
+
+/* Quiet header-row chip that replaces the banner once it's dismissed (or once a workspace
+   already exists) — see LibraryView.renderWorkspaceChip/openWorkspaceScopeMenu. Dashed border
+   when there's nothing beyond the vault yet (an invitation, not a fact), solid once there is. */
+.skillmanager-workspace-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.skillmanager-workspace-chip:hover {
+  color: var(--text-normal);
+  border-color: var(--text-faint);
+}
+
+.skillmanager-workspace-chip-icon {
+  display: flex;
+}
+
+.skillmanager-workspace-chip-icon .svg-icon,
+.skillmanager-workspace-chip-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Always-visible workspace count on the sidebar's "Workspaces" heading (see
+   renderProjectsSection) — the persistent signal that doesn't depend on the banner/chip above,
+   or on the section being expanded. */
+.skillmanager-sidebar-heading-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.skillmanager-count-pill {
   padding: 2px 10px;
   border-radius: 999px;
   background: var(--background-modifier-hover);
@@ -228,7 +369,7 @@
   font-size: var(--font-ui-small);
 }
 
-.skillspace-toolbar {
+.skillmanager-toolbar {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -237,10 +378,10 @@
 }
 
 /* Generic right-aligned cluster of toolbar buttons — pushed to the far right of
-   .skillspace-toolbar's flex row via margin-left: auto. Reused for whatever action set is
+   .skillmanager-toolbar's flex row via margin-left: auto. Reused for whatever action set is
    contextually relevant (bulk sync on the unscoped "All" page, "Install into <tool>" on a
    tool-filtered page, …), never more than one cluster shown at a time. */
-.skillspace-toolbar-actions {
+.skillmanager-toolbar-actions {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -249,19 +390,19 @@
 
 /* Shared control height for the toolbar row — the search field and the segmented filter need to
    match exactly, not just look close, so both are pinned to this and use border-box sizing. */
-.skillspace-search-wrap,
-.skillspace-segmented {
+.skillmanager-search-wrap,
+.skillmanager-segmented {
   height: 32px;
   box-sizing: border-box;
 }
 
-.skillspace-search-wrap {
+.skillmanager-search-wrap {
   position: relative;
   flex: 1;
   min-width: 180px;
 }
 
-.skillspace-search-icon {
+.skillmanager-search-icon {
   position: absolute;
   left: 10px;
   top: 0;
@@ -273,17 +414,17 @@
   pointer-events: none;
   /* Obsidian's own icon styling otherwise wins this fight by specificity and leaves the icon at
      zero opacity until something (hover/focus on a nearby element) happens to override it — same
-     class of problem .skillspace-icon-btn already has to force its way past below. */
+     class of problem .skillmanager-icon-btn already has to force its way past below. */
   opacity: 1 !important;
 }
 
-.skillspace-search-icon .svg-icon {
+.skillmanager-search-icon .svg-icon {
   width: 16px;
   height: 16px;
   opacity: 1 !important;
 }
 
-input.skillspace-search {
+input.skillmanager-search {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
@@ -293,14 +434,14 @@ input.skillspace-search {
   border-radius: 4px;
 }
 
-.skillspace-search-clear {
+.skillmanager-search-clear {
   position: absolute;
   right: 6px;
   top: 50%;
   transform: translateY(-50%);
 }
 
-.skillspace-segmented {
+.skillmanager-segmented {
   display: flex;
   align-items: center;
   gap: 2px;
@@ -309,7 +450,7 @@ input.skillspace-search {
   background: var(--background-modifier-hover);
 }
 
-.skillspace-segment {
+.skillmanager-segment {
   display: flex;
   align-items: center;
   height: 100%;
@@ -324,7 +465,7 @@ input.skillspace-search {
   cursor: pointer;
 }
 
-.skillspace-segment.is-active {
+.skillmanager-segment.is-active {
   background: var(--background-primary);
   color: var(--text-normal);
   font-weight: 600;
@@ -334,16 +475,19 @@ input.skillspace-search {
 /* Same treatment as the sort button — rests transparent, so the plain hover tint is already a
    clear, visible step up. Excludes the active segment, which already has its own solid
    background/shadow; layering a translucent hover tint on top of that would just look muddy. */
-.skillspace-segment:not(.is-active):hover {
+.skillmanager-segment:not(.is-active):hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
-.skillspace-icon-btn {
+.skillmanager-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 20px;
+  height: 20px;
   padding: 2px;
+  line-height: 1;
   border: none !important;
   box-shadow: none !important;
   background: transparent !important;
@@ -352,23 +496,23 @@ input.skillspace-search {
   cursor: pointer;
 }
 
-.skillspace-icon-btn:hover,
-.skillspace-icon-btn:focus,
-.skillspace-icon-btn:active {
+.skillmanager-icon-btn:hover,
+.skillmanager-icon-btn:focus,
+.skillmanager-icon-btn:active {
   color: var(--text-normal);
   background: transparent !important;
   background-color: transparent !important;
   box-shadow: none !important;
 }
 
-.skillspace-icon-btn .svg-icon {
+.skillmanager-icon-btn .svg-icon {
   width: 15px;
   height: 15px;
 }
 
 /* ---------- tag chips ---------- */
 
-.skillspace-tagbar {
+.skillmanager-tagbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -377,13 +521,13 @@ input.skillspace-search {
 }
 
 /* The library's own tagbar (renderTagBar) splits into three regions inside the shared
-   .skillspace-tagbar row above (also reused, flat, by Discover's own type-filter bar — these
+   .skillmanager-tagbar row above (also reused, flat, by Discover's own type-filter bar — these
    three classes are scoped to the library's structure only, so Discover's bar is untouched). */
-.skillspace-tagbar-anchor {
+.skillmanager-tagbar-anchor {
   flex-shrink: 0;
 }
 
-.skillspace-tagbar-scroll {
+.skillmanager-tagbar-scroll {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -401,25 +545,25 @@ input.skillspace-search {
   padding: 4px 3px;
 }
 
-.skillspace-tagbar-scroll .skillspace-chip {
+.skillmanager-tagbar-scroll .skillmanager-chip {
   flex-shrink: 0;
 }
 
-.skillspace-tagbar-controls {
+.skillmanager-tagbar-controls {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
 }
 
-/* .skillspace-sort-btn's own margin-left: auto (below) is for Discover's flat toolbar, which has
+/* .skillmanager-sort-btn's own margin-left: auto (below) is for Discover's flat toolbar, which has
    no wrapper to push against — inside this wrapper the scroll region's flex: 1 already does that
    job, so the auto margin here would just be dead space. */
-.skillspace-tagbar-controls .skillspace-sort-btn {
+.skillmanager-tagbar-controls .skillmanager-sort-btn {
   margin-left: 0;
 }
 
-.skillspace-sort-btn {
+.skillmanager-sort-btn {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -441,40 +585,71 @@ input.skillspace-search {
    instead (leaving nothing distinct left for hover to shift to, since the fallback tried here
    before — --background-modifier-border — is a subtle line color, not built to read as a fill,
    so in practice it barely differed from the resting color). */
-.skillspace-sort-btn:hover {
+.skillmanager-sort-btn:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
-.skillspace-sort-btn-icon,
-.skillspace-sort-btn-chevron {
+.skillmanager-sort-btn-icon,
+.skillmanager-sort-btn-chevron {
   display: flex;
   flex-shrink: 0;
 }
 
-.skillspace-sort-btn-icon .svg-icon,
-.skillspace-sort-btn-chevron .svg-icon {
+.skillmanager-sort-btn-icon .svg-icon,
+.skillmanager-sort-btn-chevron .svg-icon {
   width: 12px;
   height: 12px;
 }
 
-.skillspace-sort-btn-label {
+.skillmanager-sort-btn-label {
   white-space: nowrap;
+}
+
+/* Shared rest/hover recipe for plain secondary buttons embedded in the plugin's own view chrome
+   (as opposed to Obsidian's native modal dialogs) — same flat fill on hover as the sort button
+   and segmented filter, so no button in the view reads as "stroke highlights on hover" while its
+   neighbors "fill on hover". */
+.skillmanager-btn-neutral {
+  background: var(--background-primary);
+  color: var(--text-muted);
+  border: none;
+  box-shadow: none;
+}
+
+.skillmanager-btn-neutral:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+/* Demoted sibling of a "mod-cta" button — same shape, but stroked instead of filled, for when
+   another button in the same row has taken over as the primary/filled action (e.g. "Check for
+   updates" once "Update all" appears and becomes the more consequential action). */
+.skillmanager-btn-accent-stroke {
+  background: transparent;
+  color: var(--interactive-accent);
+  border: 1px solid var(--interactive-accent);
+  box-shadow: none;
+}
+
+.skillmanager-btn-accent-stroke:hover {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
 }
 
 /* Sits right after the sort button (also margin-left: auto) rather than pushing itself further
    right independently — the sort button's own auto margin already did the work of clearing the
    search field's space. */
-.skillspace-discover-refresh-all-btn {
+.skillmanager-discover-refresh-all-btn {
   margin-left: 0;
 }
 
-.skillspace-discover-refresh-all-btn:disabled {
+.skillmanager-discover-refresh-all-btn:disabled {
   cursor: default;
   opacity: 0.7;
 }
 
-.skillspace-chip {
+.skillmanager-chip {
   padding: 3px 10px;
   border: none;
   box-shadow: none;
@@ -486,41 +661,41 @@ input.skillspace-search {
   cursor: pointer;
 }
 
-.skillspace-chip.is-active {
+.skillmanager-chip.is-active {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 1px;
 }
 
 /* Scoped to the tagbar (the real library's tag filter row, and Discover's type filter row —
-   both use this same container) rather than .skillspace-chip generally, since a display-only
+   both use this same container) rather than .skillmanager-chip generally, since a display-only
    chip elsewhere (a card's own tags, its project badges) isn't clickable and shouldn't look like
    it might be. Resting grey stays the shared base rule's --background-modifier-hover — that's
    already "used up" as the resting color, so hover needs the next tier up
    (--background-modifier-active-hover, the variable Obsidian themes define specifically for
    "hovering something that already has a hover-style background") rather than the same token,
    which would be indistinguishable from rest. */
-.skillspace-tagbar .skillspace-chip:hover {
+.skillmanager-tagbar .skillmanager-chip:hover {
   background: var(--background-modifier-active-hover);
   color: var(--text-normal);
 }
 
-.skillspace-chip-untagged {
+.skillmanager-chip-untagged {
   border: 1px dashed var(--background-modifier-border);
   background: transparent;
 }
 
-.skillspace-tag-c0 { background: rgba(var(--color-blue-rgb), 0.15); color: var(--color-blue); }
-.skillspace-tag-c1 { background: rgba(var(--color-green-rgb), 0.15); color: var(--color-green); }
-.skillspace-tag-c2 { background: rgba(var(--color-purple-rgb), 0.15); color: var(--color-purple); }
-.skillspace-tag-c3 { background: rgba(var(--color-pink-rgb), 0.15); color: var(--color-pink); }
-.skillspace-tag-c4 { background: rgba(var(--color-red-rgb), 0.15); color: var(--color-red); }
-.skillspace-tag-c5 { background: rgba(var(--color-orange-rgb), 0.15); color: var(--color-orange); }
-.skillspace-tag-c6 { background: rgba(var(--color-cyan-rgb), 0.15); color: var(--color-cyan); }
-.skillspace-tag-c7 { background: rgba(var(--color-yellow-rgb), 0.18); color: var(--color-yellow); }
+.skillmanager-tag-c0 { background: rgba(var(--color-blue-rgb), 0.15); color: var(--color-blue); }
+.skillmanager-tag-c1 { background: rgba(var(--color-green-rgb), 0.15); color: var(--color-green); }
+.skillmanager-tag-c2 { background: rgba(var(--color-purple-rgb), 0.15); color: var(--color-purple); }
+.skillmanager-tag-c3 { background: rgba(var(--color-pink-rgb), 0.15); color: var(--color-pink); }
+.skillmanager-tag-c4 { background: rgba(var(--color-red-rgb), 0.15); color: var(--color-red); }
+.skillmanager-tag-c5 { background: rgba(var(--color-orange-rgb), 0.15); color: var(--color-orange); }
+.skillmanager-tag-c6 { background: rgba(var(--color-cyan-rgb), 0.15); color: var(--color-cyan); }
+.skillmanager-tag-c7 { background: rgba(var(--color-yellow-rgb), 0.18); color: var(--color-yellow); }
 
 /* ---------- body: primary (grid or tree) plus an optional docked file panel ---------- */
 
-.skillspace-body {
+.skillmanager-body {
   flex: 1;
   display: flex;
   min-height: 0;
@@ -530,10 +705,10 @@ input.skillspace-search {
 /* The grid shrinks to a fixed rail as soon as anything's selected, and stays exactly that width
    for as long as the selection lasts — browsing a multi-file skill's file list, then opening one
    of its files, never resizes or replaces it. The detail rail beside it is what changes with
-   depth (see .skillspace-crumbs). The shrink itself animates (see the `transition` on
-   .skillspace-items below) instead of snapping instantly, so docking/undocking and the rail's
+   depth (see .skillmanager-crumbs). The shrink itself animates (see the `transition` on
+   .skillmanager-items below) instead of snapping instantly, so docking/undocking and the rail's
    fade-in read as one coordinated motion rather than two unrelated ones. */
-.skillspace-items.is-docked {
+.skillmanager-items.is-docked {
   flex: 0 0 400px;
   border-right: 1px solid var(--background-modifier-border);
   grid-template-columns: 1fr;
@@ -543,7 +718,7 @@ input.skillspace-search {
    from the left, so the two directions read as distinct instead of every swap looking identical
    regardless of which way navigation is actually going. Timed to match the grid's own dock
    transition below so both read as one motion. */
-@keyframes skillspace-panel-in-forward {
+@keyframes skillmanager-panel-in-forward {
   from {
     opacity: 0;
     transform: translateX(8px);
@@ -554,7 +729,7 @@ input.skillspace-search {
   }
 }
 
-@keyframes skillspace-panel-in-back {
+@keyframes skillmanager-panel-in-back {
   from {
     opacity: 0;
     transform: translateX(-8px);
@@ -565,24 +740,24 @@ input.skillspace-search {
   }
 }
 
-.skillspace-panel-enter-forward {
-  animation: skillspace-panel-in-forward 200ms ease-out;
+.skillmanager-panel-enter-forward {
+  animation: skillmanager-panel-in-forward 200ms ease-out;
 }
 
-.skillspace-panel-enter-back {
-  animation: skillspace-panel-in-back 200ms ease-out;
+.skillmanager-panel-enter-back {
+  animation: skillmanager-panel-in-back 200ms ease-out;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .skillspace-panel-enter-forward,
-  .skillspace-panel-enter-back {
+  .skillmanager-panel-enter-forward,
+  .skillmanager-panel-enter-back {
     animation: none;
   }
 }
 
 /* ---------- item grid ---------- */
 
-.skillspace-items {
+.skillmanager-items {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
@@ -600,18 +775,18 @@ input.skillspace-search {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .skillspace-items {
+  .skillmanager-items {
     transition: none;
   }
 }
 
 /* Discover's "Source (grouped)" sort — full-width stacked sections instead of grid cells, each
-   section holding its own mini-grid of cards (see .skillspace-discover-source-group-grid). */
+   section holding its own mini-grid of cards (see .skillmanager-discover-source-group-grid). */
 /* No gap between sections and no top padding on the scroll container — either one leaves a
    transparent strip that a sticky header doesn't cover, so scrolling cards are briefly visible
    sliding past above/between headers instead of being cleanly occluded. Sections butt flush
    against each other; the header's own (opaque) padding is what supplies breathing room now. */
-.skillspace-items.is-grouped {
+.skillmanager-items.is-grouped {
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -621,7 +796,7 @@ input.skillspace-search {
 /* Sticky within its own section only — position: sticky constrains to the containing block, so
    each header un-sticks and scrolls away with its own cards right as the next section's header
    reaches the top and takes over. No JS needed for the handoff, just plain stacked sticky boxes. */
-.skillspace-discover-source-group-header {
+.skillmanager-discover-source-group-header {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -634,51 +809,57 @@ input.skillspace-search {
   background: var(--background-primary);
   /* At fractional scroll offsets Chromium can round the sticky box a hair off `top: 0`, leaving a
      hairline of the scrolling cards visible above the header even though it's flush in layout.
-     A box-shadow isn't subject to that rounding, so paint an extra 1px of the same opaque
-     background above the box to cover the seam without affecting layout. */
-  box-shadow: 0 -1px 0 0 var(--background-primary);
+     A box-shadow isn't subject to that rounding, so paint extra opaque background above the box
+     to cover the seam without affecting layout. 1px wasn't enough margin for the rounding error
+     it was meant to cover — the previous group's last row was still peeking through. */
+  box-shadow: 0 -4px 0 0 var(--background-primary);
   cursor: pointer;
 }
 
 /* Bigger hit area than the bare 12px icon, and its own hover state, so it reads as a distinct
    control from the rest of the header's click-to-scroll-to-top behavior. */
-.skillspace-discover-source-group-header .skillspace-chevron {
+.skillmanager-discover-source-group-header .skillmanager-chevron {
   cursor: pointer;
   padding: 4px;
   margin: -4px;
   border-radius: 4px;
 }
 
-.skillspace-discover-source-group-header .skillspace-chevron:hover {
+.skillmanager-discover-source-group-header .skillmanager-chevron:hover {
   background: var(--background-modifier-hover);
 }
 
-.skillspace-discover-source-group-header .skillspace-card-discover-repo {
+.skillmanager-discover-source-group-header .skillmanager-card-discover-repo {
   flex: 1;
   min-width: 0;
 }
 
-.skillspace-discover-source-group-header .skillspace-card-discover-repo img {
+.skillmanager-discover-source-group-header .skillmanager-card-discover-repo img {
   width: 20px;
   height: 20px;
 }
 
-.skillspace-discover-source-group-grid {
+.skillmanager-discover-source-group-grid {
   display: grid;
-  /* Same breakpoint as .skillspace-items (Library, and Discover's own flat sort modes) — cards
+  /* Same breakpoint as .skillmanager-items (Library, and Discover's own flat sort modes) — cards
      should be the same width at the same viewport width regardless of which grid they're in. */
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
+  /* Clears the next section header's `box-shadow: 0 -4px 0 0` (its own seam cover, above) — without
+     this, that opaque strip paints over the bottom few px of this grid's last row, clipping a
+     selected card's ring (.skillmanager-card.is-selected's box-shadow) right where it butts against
+     the following sticky header. */
+  padding-bottom: 6px;
 }
 
-.skillspace-empty {
+.skillmanager-empty {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
 }
 
 /* Spans the full grid width (not just one 280px cell) so an icon + heading + description block
    reads as a centered page state rather than a stray card. */
-.skillspace-empty-state {
+.skillmanager-empty-state {
   grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
@@ -688,7 +869,7 @@ input.skillspace-search {
   padding: 56px 24px;
 }
 
-.skillspace-empty-state-icon {
+.skillmanager-empty-state-icon {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -700,19 +881,19 @@ input.skillspace-search {
   color: var(--text-faint);
 }
 
-.skillspace-empty-state-icon .svg-icon {
+.skillmanager-empty-state-icon .svg-icon {
   width: 22px;
   height: 22px;
 }
 
-.skillspace-empty-state-title {
+.skillmanager-empty-state-title {
   margin: 0 0 6px;
   font-size: var(--font-ui-medium);
   font-weight: 600;
   color: var(--text-normal);
 }
 
-.skillspace-empty-state-desc {
+.skillmanager-empty-state-desc {
   margin: 0;
   max-width: 320px;
   color: var(--text-muted);
@@ -721,18 +902,18 @@ input.skillspace-search {
 }
 
 /* Scoped to a direct child (not `button` generally) so it doesn't also catch the starter pill
-   buttons nested inside .skillspace-discover-starters below — those manage their own spacing
+   buttons nested inside .skillmanager-discover-starters below — those manage their own spacing
    via that container's gap. */
-.skillspace-empty-state > button {
+.skillmanager-empty-state > button {
   margin-top: 16px;
 }
 
 /* One-click "starter" repo suggestions on Discover's true empty state (see
-   STARTER_DISCOVER_SOURCES) — sized and styled like the "All tools" cards (.skillspace-card)
+   STARTER_DISCOVER_SOURCES) — sized and styled like the "All tools" cards (.skillmanager-card)
    rather than a plain chip, since each carries a name and a short description rather than a
    single label. Set apart from the primary "Add your own repo" CTA above with generous top
    margin. */
-.skillspace-discover-starters-label {
+.skillmanager-discover-starters-label {
   margin: 36px 0 10px;
   max-width: 320px;
   color: var(--text-muted);
@@ -740,27 +921,34 @@ input.skillspace-search {
   line-height: 1.5;
 }
 
-.skillspace-discover-starters {
-  display: flex;
-  flex-wrap: wrap;
+/* Grid, not flex-wrap: flex-wrap rows each get justify-content'd independently, so a shorter
+   last row centers on its own and its cards land at different x offsets than the rows above.
+   A grid's column tracks are fixed for the whole container, so every card's left edge lines up
+   down each column no matter how the last row fills.
+   Hardcoded to 2 columns rather than repeat(auto-fit, ...): this container is a child of a
+   center-aligned flex parent (.skillmanager-empty-state), so it has no definite width to size
+   itself against, and auto-fit's column count is only well-defined against a definite container
+   width — against an intrinsic/shrink-to-fit width it resolves inconsistently per browser, which
+   is what let column edges drift between rows. */
+.skillmanager-discover-starters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 280px));
   justify-content: center;
   gap: 12px;
   max-width: 600px;
 }
 
-/* Qualified as `.skillspace-discover-starters button.skillspace-discover-starter` (not just
-   `.skillspace-discover-starter`) to out-specificity Obsidian core's own
+/* Qualified as `.skillmanager-discover-starters button.skillmanager-discover-starter` (not just
+   `.skillmanager-discover-starter`) to out-specificity Obsidian core's own
    `button:not(.clickable-icon)` rule (element + pseudo-class = one class-equivalent + one
    element), which otherwise wins over a bare single-class selector and stamps its grey
-   `var(--interactive-normal)` fill straight through ours. .skillspace-card's div-based cards
+   `var(--interactive-normal)` fill straight through ours. .skillmanager-card's div-based cards
    don't hit this since they were never <button> elements to begin with. */
-.skillspace-discover-starters button.skillspace-discover-starter {
+.skillmanager-discover-starters button.skillmanager-discover-starter {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex: 1 1 260px;
-  min-width: 220px;
-  max-width: 280px;
+  width: 100%;
   padding: 14px 16px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 12px;
@@ -772,51 +960,56 @@ input.skillspace-search {
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-.skillspace-discover-starters button.skillspace-discover-starter:hover {
+.skillmanager-discover-starters button.skillmanager-discover-starter:hover {
   border-color: var(--interactive-accent);
   background: var(--background-primary);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
 }
 
-.skillspace-discover-starter.is-loading {
+.skillmanager-discover-starter.is-loading {
   cursor: default;
   opacity: 0.7;
 }
 
-.skillspace-discover-starter-icon {
+.skillmanager-discover-starter-icon {
   display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
   flex-shrink: 0;
   color: var(--text-muted);
 }
 
-.skillspace-discover-starter-icon .svg-icon {
+.skillmanager-discover-starter-icon .svg-icon {
   width: 20px;
   height: 20px;
 }
 
-.skillspace-discover-starter-text {
+.skillmanager-discover-starter-text {
   display: flex;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
 }
 
-.skillspace-discover-starter-name {
+.skillmanager-discover-starter-name {
   font-size: var(--font-ui-small);
   font-weight: 600;
   color: var(--text-normal);
+  text-align: left;
 }
 
-.skillspace-discover-starter-desc {
+.skillmanager-discover-starter-desc {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 200px;
+  text-align: left;
 }
 
-.skillspace-card {
+.skillmanager-card {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -829,21 +1022,21 @@ input.skillspace-search {
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-.skillspace-card:hover {
+.skillmanager-card:hover {
   border-color: var(--interactive-accent);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.07);
 }
 
-.skillspace-card.is-off {
+.skillmanager-card.is-off {
   opacity: 0.68;
 }
 
-.skillspace-card.is-selected {
+.skillmanager-card.is-selected {
   border-color: var(--interactive-accent);
   box-shadow: 0 0 0 1px var(--interactive-accent);
 }
 
-.skillspace-card-head {
+.skillmanager-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -854,7 +1047,7 @@ input.skillspace-search {
    current, orange once confirmed behind, and the same muted/dark tone for both "no sourceRepo"
    and "has one but not checked this session," since neither is distinguishable from the other
    without an explicit check (see syncStatusFor). */
-.skillspace-card-dot {
+.skillmanager-card-dot {
   width: 8px;
   height: 8px;
   flex-shrink: 0;
@@ -862,21 +1055,21 @@ input.skillspace-search {
   background: var(--background-modifier-border);
 }
 
-.skillspace-card-dot.is-current {
+.skillmanager-card-dot.is-current {
   background: var(--color-green);
 }
 
-.skillspace-card-dot.is-stale {
+.skillmanager-card-dot.is-stale {
   background: var(--color-orange);
 }
 
 /* Same dot, reused on the "All tools" page's cards — lit when a tool's path is actually found on
    disk, the same muted/dark default otherwise (see toolIsDetected). */
-.skillspace-card-dot.is-detected {
+.skillmanager-card-dot.is-detected {
   background: var(--color-green);
 }
 
-.skillspace-card-name {
+.skillmanager-card-name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -887,10 +1080,10 @@ input.skillspace-search {
 
 /* What this item is for — the tool, and the plugin it's bundled with if any (see
    sourceLabel.ts's toolLabel) — sits right under the title, small and muted. Type lives up in
-   the head row instead (.skillspace-card-type-sm, next to the name); where it's scoped (Global
+   the head row instead (.skillmanager-card-type-sm, next to the name); where it's scoped (Global
    vs. one project/vault) lives in the footer, next to the link icon that actually answers
    "where's it linked" on click. */
-.skillspace-card-tool {
+.skillmanager-card-tool {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -901,36 +1094,36 @@ input.skillspace-search {
   font-size: var(--font-ui-smaller);
 }
 
-.skillspace-card-tool span {
+.skillmanager-card-tool span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.skillspace-card-tool-icon {
+.skillmanager-card-tool-icon {
   display: flex;
   flex-shrink: 0;
 }
 
-.skillspace-card-tool-icon .svg-icon,
-.skillspace-card-tool-icon svg {
+.skillmanager-card-tool-icon .svg-icon,
+.skillmanager-card-tool-icon svg {
   width: 11px;
   height: 11px;
 }
 
 /* Per-instance link/unlink icon button — same slot and icon as the global card's "manage
    project links" button, green while linked, red on hover to preview that a click unlinks. */
-.skillspace-icon-btn.skillspace-card-link-btn {
+.skillmanager-icon-btn.skillmanager-card-link-btn {
   color: var(--color-green);
 }
 
 /* Any "check for updates" trigger (the card header shortcut, or the source row's button below)
    spins its icon while the on-demand ls-remote check is in flight. */
 .is-syncing .svg-icon {
-  animation: skillspace-spin 0.8s linear infinite;
+  animation: skillmanager-spin 0.8s linear infinite;
 }
 
-@keyframes skillspace-spin {
+@keyframes skillmanager-spin {
   from {
     transform: rotate(0deg);
   }
@@ -939,22 +1132,22 @@ input.skillspace-search {
   }
 }
 
-.skillspace-icon-btn.skillspace-card-link-btn:hover,
-.skillspace-icon-btn.skillspace-card-link-btn:focus {
+.skillmanager-icon-btn.skillmanager-card-link-btn:hover,
+.skillmanager-icon-btn.skillmanager-card-link-btn:focus {
   color: var(--color-red);
 }
 
-.skillspace-card-star {
+.skillmanager-card-star {
   display: flex;
   color: var(--color-yellow);
 }
 
-.skillspace-card-star .svg-icon {
+.skillmanager-card-star .svg-icon {
   width: 14px;
   height: 14px;
 }
 
-.skillspace-card-desc {
+.skillmanager-card-desc {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -966,20 +1159,20 @@ input.skillspace-search {
   line-height: 1.45;
 }
 
-.skillspace-card-tags {
+.skillmanager-card-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
 }
 
-.skillspace-card-tags .skillspace-chip {
+.skillmanager-card-tags .skillmanager-chip {
   cursor: default;
   padding: 1px 7px;
   font-size: 10.5px;
   line-height: 1.5;
 }
 
-.skillspace-card-footer {
+.skillmanager-card-footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -995,14 +1188,14 @@ input.skillspace-search {
   color: var(--text-faint);
 }
 
-.skillspace-card-source {
+.skillmanager-card-source {
   display: flex;
   align-items: center;
   gap: 5px;
   min-width: 0;
 }
 
-.skillspace-card-source-text {
+.skillmanager-card-source-text {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1010,18 +1203,18 @@ input.skillspace-search {
   white-space: nowrap;
 }
 
-.skillspace-card-source-icon {
+.skillmanager-card-source-icon {
   display: flex;
   flex-shrink: 0;
 }
 
-.skillspace-card-source-icon .svg-icon,
-.skillspace-card-source-icon svg {
+.skillmanager-card-source-icon .svg-icon,
+.skillmanager-card-source-icon svg {
   width: 13px;
   height: 13px;
 }
 
-.skillspace-card-type {
+.skillmanager-card-type {
   flex-shrink: 0;
   padding: 1px 8px;
   border-radius: 999px;
@@ -1032,26 +1225,70 @@ input.skillspace-search {
 /* Compact variant for the head row, next to the name — smaller than the standalone pill used
    elsewhere (e.g. Discover's type filter), so it reads as a quiet tag on the title rather than
    its own UI element. */
-.skillspace-card-type-sm {
+.skillmanager-card-type-sm {
   padding: 0 6px;
   font-size: 10px;
   line-height: 1.6;
 }
 
-.skillspace-card-footer-right {
+.skillmanager-mcp-card-command {
+  -webkit-line-clamp: 1;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+/* Env var values in the MCP detail rail are hidden by default (see renderMcpEnvRow) — wider
+   letter-spacing on the dot placeholder keeps it readable as "a masked value", not a typo. */
+.skillmanager-fm-value.is-masked {
+  letter-spacing: 2px;
+  color: var(--text-faint);
+}
+
+/* Wraps the value + its reveal toggle as one grid cell — see renderMcpEnvRow's comment on why
+   this can't just be a third child of .skillmanager-fm-row. */
+.skillmanager-mcp-env-value {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.skillmanager-mcp-reveal-btn {
+  flex-shrink: 0;
+}
+
+/* Deliberately its own class rather than reusing .skillmanager-tool-actions (that one's
+   margin-left: auto is for pushing right inside a stats row, not what a standalone action row
+   below the config-file path needs) — the missing margin-top there was crowding these buttons
+   right up against the path text above them. */
+.skillmanager-mcp-detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+/* .skillmanager-sort-btn's own margin-left: auto still applies per-button regardless of the
+   container above (that rule lives on the button, not something a plain container swap avoids)
+   — without this override each button pulls independently toward the right, spreading them
+   across the full row instead of sitting together under the path. */
+.skillmanager-mcp-detail-actions .skillmanager-sort-btn {
+  margin-left: 0;
+}
+
+.skillmanager-card-footer-right {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
 }
 
-.skillspace-icon-btn.is-present {
+.skillmanager-icon-btn.is-present {
   color: var(--color-green);
 }
 
 /* ---------- Discover card (a not-yet-installed catalog entry) ---------- */
 
-.skillspace-card-discover-actions {
+.skillmanager-card-discover-actions {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1059,7 +1296,7 @@ input.skillspace-search {
   margin-left: auto;
 }
 
-.skillspace-card-discover-repo {
+.skillmanager-card-discover-repo {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1067,14 +1304,14 @@ input.skillspace-search {
   overflow: hidden;
 }
 
-.skillspace-card-discover-repo img {
+.skillmanager-card-discover-repo img {
   width: 16px;
   height: 16px;
   border-radius: 4px;
   flex-shrink: 0;
 }
 
-.skillspace-card-discover-repo-name {
+.skillmanager-card-discover-repo-name {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1082,9 +1319,9 @@ input.skillspace-search {
   white-space: nowrap;
 }
 
-/* Nested inside .skillspace-card-discover-repo, right after the owner/repo name, so the star
+/* Nested inside .skillmanager-card-discover-repo, right after the owner/repo name, so the star
    count reads as "belonging to" that repo rather than floating as its own unrelated footer item. */
-.skillspace-card-discover-stars {
+.skillmanager-card-discover-stars {
   display: flex;
   align-items: center;
   gap: 3px;
@@ -1092,7 +1329,7 @@ input.skillspace-search {
   color: var(--color-yellow);
 }
 
-.skillspace-card-discover-stars .svg-icon {
+.skillmanager-card-discover-stars .svg-icon {
   width: 12px;
   height: 12px;
 }
@@ -1100,27 +1337,27 @@ input.skillspace-search {
 /* ---------- Discover rail (renderDiscoverRail) — deliberately reuses the real detail rail's
    classes/typography so it reads as "the same kind of thing," but a left accent stripe plus the
    accent-colored pill below keep it visibly distinct from a real installed item's preview. */
-.skillspace-discover-pill {
+.skillmanager-discover-pill {
   background: rgba(var(--color-purple-rgb), 0.16) !important;
   color: var(--interactive-accent) !important;
 }
 
-.skillspace-discover-rail-tags {
+.skillmanager-discover-rail-tags {
   margin-bottom: 14px;
 }
 
-.skillspace-discover-rail .skillspace-card-discover-repo {
+.skillmanager-discover-rail .skillmanager-card-discover-repo {
   margin-bottom: 10px;
 }
 
-.skillspace-discover-rail .skillspace-card-discover-repo img {
+.skillmanager-discover-rail .skillmanager-card-discover-repo img {
   width: 20px;
   height: 20px;
 }
 
 /* ---------- toggle switch ---------- */
 
-.skillspace-toggle {
+.skillmanager-toggle {
   position: relative;
   flex-shrink: 0;
   width: 38px;
@@ -1134,7 +1371,7 @@ input.skillspace-search {
   transition: background 120ms ease;
 }
 
-.skillspace-toggle::after {
+.skillmanager-toggle::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -1147,31 +1384,31 @@ input.skillspace-search {
   transition: transform 120ms ease;
 }
 
-.skillspace-toggle.is-on {
+.skillmanager-toggle.is-on {
   background: var(--color-green);
 }
 
-.skillspace-toggle.is-on::after {
+.skillmanager-toggle.is-on::after {
   transform: translateX(17px);
 }
 
-.skillspace-toggle-sm {
+.skillmanager-toggle-sm {
   width: 28px;
   height: 16px;
 }
 
-.skillspace-toggle-sm::after {
+.skillmanager-toggle-sm::after {
   width: 12px;
   height: 12px;
 }
 
-.skillspace-toggle-sm.is-on::after {
+.skillmanager-toggle-sm.is-on::after {
   transform: translateX(12px);
 }
 
 /* ---------- detail panel (inline, docked beside the grid) ---------- */
 
-.skillspace-detail {
+.skillmanager-detail {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
@@ -1182,7 +1419,7 @@ input.skillspace-search {
    the skill segment becomes clickable (back to its file list) only once a file from a tree is
    open. Plain text, no button chrome, so it reads as a location trail rather than another row
    of controls; the leading icon is the only affordance, a plain "step up one level". */
-.skillspace-crumbs {
+.skillmanager-crumbs {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1190,7 +1427,7 @@ input.skillspace-search {
   min-width: 0;
 }
 
-.skillspace-crumb {
+.skillmanager-crumb {
   border: none !important;
   box-shadow: none !important;
   background: transparent !important;
@@ -1205,9 +1442,9 @@ input.skillspace-search {
   white-space: nowrap;
 }
 
-.skillspace-crumb:hover,
-.skillspace-crumb:focus,
-.skillspace-crumb:active {
+.skillmanager-crumb:hover,
+.skillmanager-crumb:focus,
+.skillmanager-crumb:active {
   color: var(--text-normal);
   text-decoration: underline;
   background: transparent !important;
@@ -1215,22 +1452,22 @@ input.skillspace-search {
   box-shadow: none !important;
 }
 
-.skillspace-crumb.is-current {
+.skillmanager-crumb.is-current {
   color: var(--text-normal);
   font-weight: 600;
   cursor: default;
 }
 
-.skillspace-crumb.is-current:hover {
+.skillmanager-crumb.is-current:hover {
   text-decoration: none;
 }
 
-.skillspace-crumb-sep {
+.skillmanager-crumb-sep {
   color: var(--text-faint);
   flex-shrink: 0;
 }
 
-.skillspace-detail-header {
+.skillmanager-detail-header {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1238,7 +1475,7 @@ input.skillspace-search {
   min-width: 0;
 }
 
-.skillspace-detail-title {
+.skillmanager-detail-title {
   margin: 0;
   font-size: 1.55em;
   line-height: 1.2;
@@ -1250,7 +1487,7 @@ input.skillspace-search {
   white-space: nowrap;
 }
 
-.skillspace-detail-tool-pill {
+.skillmanager-detail-tool-pill {
   display: inline-flex;
   align-items: center;
   padding: 2px 10px;
@@ -1263,7 +1500,7 @@ input.skillspace-search {
   white-space: nowrap;
 }
 
-.skillspace-detail-actions {
+.skillmanager-detail-actions {
   display: flex;
   align-items: center;
   gap: 14px;
@@ -1276,32 +1513,32 @@ input.skillspace-search {
    the taller one's height, so the right column's divider always reaches down to wherever the
    left column actually ends — including the "N more fields" toggle — rather than stopping short
    at the right column's own, usually shorter, content. */
-.skillspace-detail-band {
+.skillmanager-detail-band {
   display: flex;
   gap: 20px;
   align-items: stretch;
   margin-bottom: 14px;
 }
 
-.skillspace-detail-band-left {
+.skillmanager-detail-band-left {
   flex: 1;
   min-width: 0;
 }
 
-.skillspace-detail-band-right {
+.skillmanager-detail-band-right {
   flex: 0 0 230px;
   border-left: 1px solid var(--background-modifier-border);
   padding-left: 16px;
 }
 
-.skillspace-detail-desc {
+.skillmanager-detail-desc {
   color: var(--text-muted);
   font-size: var(--font-ui-small);
   line-height: var(--line-height-normal);
   margin: 0 0 8px;
 }
 
-.skillspace-detail-path {
+.skillmanager-detail-path {
   margin-bottom: 8px;
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
@@ -1311,11 +1548,11 @@ input.skillspace-search {
   white-space: nowrap;
 }
 
-.skillspace-detail-path-target {
+.skillmanager-detail-path-target {
   color: var(--text-accent);
 }
 
-.skillspace-fm-toggle {
+.skillmanager-fm-toggle {
   border: none !important;
   box-shadow: none !important;
   background: transparent !important;
@@ -1325,7 +1562,7 @@ input.skillspace-search {
   cursor: pointer;
 }
 
-.skillspace-detail-frontmatter {
+.skillmanager-detail-frontmatter {
   display: grid;
   /* max-content sizes the key column to the widest key across ALL rows (e.g.
      "disable-model-invocation"), so every value still lines up rather than each
@@ -1341,32 +1578,32 @@ input.skillspace-search {
   margin-top: 6px;
 }
 
-.skillspace-fm-row {
+.skillmanager-fm-row {
   /* Dissolves the row's own box so its label/value children become direct
      items of the parent grid and share its columns. */
   display: contents;
 }
 
-.skillspace-fm-label {
+.skillmanager-fm-label {
   white-space: nowrap;
 }
 
-.skillspace-fm-key {
+.skillmanager-fm-key {
   color: var(--text-accent);
 }
 
-.skillspace-fm-colon {
+.skillmanager-fm-colon {
   color: var(--text-faint);
 }
 
-.skillspace-fm-value {
+.skillmanager-fm-value {
   color: var(--text-muted);
   word-break: break-word;
 }
 
 /* Tag chips at the top of the band's left column — each with its own remove button, plus a
    "+ tag" affordance that swaps itself for an inline input while adding. */
-.skillspace-detail-tags-row {
+.skillmanager-detail-tags-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -1374,7 +1611,7 @@ input.skillspace-search {
   margin-bottom: 10px;
 }
 
-.skillspace-tag-chip {
+.skillmanager-tag-chip {
   box-sizing: border-box;
   height: 22px;
   display: inline-flex;
@@ -1388,7 +1625,7 @@ input.skillspace-search {
   font-size: var(--font-ui-smaller);
 }
 
-.skillspace-tag-chip-remove {
+.skillmanager-tag-chip-remove {
   border: none !important;
   box-shadow: none !important;
   background: transparent !important;
@@ -1399,11 +1636,11 @@ input.skillspace-search {
   font-size: 1.1em;
 }
 
-.skillspace-tag-chip-remove:hover {
+.skillmanager-tag-chip-remove:hover {
   color: var(--text-normal);
 }
 
-.skillspace-tag-add-btn {
+.skillmanager-tag-add-btn {
   box-sizing: border-box;
   height: 22px;
   border: 1px dashed var(--background-modifier-border) !important;
@@ -1416,15 +1653,15 @@ input.skillspace-search {
   cursor: pointer;
 }
 
-.skillspace-tag-add-btn:hover {
+.skillmanager-tag-add-btn:hover {
   color: var(--text-normal);
   border-color: var(--text-muted) !important;
 }
 
 /* Obsidian's own text-input styling otherwise wins on height (a fixed --input-height taller than
-   this pill-sized chip row) — box-sizing + an explicit height matching .skillspace-tag-add-btn's
+   this pill-sized chip row) — box-sizing + an explicit height matching .skillmanager-tag-add-btn's
    is what actually keeps the "+ tag" button and the input it swaps for the same size. */
-input.skillspace-tag-add-input {
+input.skillmanager-tag-add-input {
   box-sizing: border-box;
   width: 110px;
   height: 22px;
@@ -1436,11 +1673,11 @@ input.skillspace-tag-add-input {
 
 /* ---- right column: file stats + compact source status ---- */
 
-.skillspace-detail-stats {
+.skillmanager-detail-stats {
   margin-bottom: 10px;
 }
 
-.skillspace-detail-stat-row {
+.skillmanager-detail-stat-row {
   display: flex;
   justify-content: space-between;
   gap: 10px;
@@ -1449,43 +1686,43 @@ input.skillspace-tag-add-input {
   font-family: var(--font-monospace);
 }
 
-.skillspace-detail-stat-label {
+.skillmanager-detail-stat-label {
   color: var(--text-faint);
 }
 
-.skillspace-detail-stat-value {
+.skillmanager-detail-stat-value {
   color: var(--text-muted);
 }
 
 /* Right-column variant: sits below the stats rows in the two-column band, once a file is open. */
-.skillspace-detail-source {
+.skillmanager-detail-source {
   padding-top: 10px;
   border-top: 1px solid var(--background-modifier-border);
 }
 
-.skillspace-detail-source .skillspace-detail-source-repo {
+.skillmanager-detail-source .skillmanager-detail-source-repo {
   margin-bottom: 4px;
 }
 
 /* Inline variant: a full-width row directly under the header, used whenever there's no open
    file to pair source status with in a two-column band (browsing a tree, or mid-review). */
-.skillspace-detail-source-inline {
+.skillmanager-detail-source-inline {
   display: flex;
   align-items: center;
   gap: 10px;
   margin: 10px 0 4px;
 }
 
-.skillspace-detail-source-inline .skillspace-detail-source-repo {
+.skillmanager-detail-source-inline .skillmanager-detail-source-repo {
   flex: 1;
   min-width: 0;
 }
 
-.skillspace-detail-source-inline .skillspace-detail-source-actions {
+.skillmanager-detail-source-inline .skillmanager-detail-source-actions {
   flex-shrink: 0;
 }
 
-.skillspace-detail-source-repo {
+.skillmanager-detail-source-repo {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1495,7 +1732,7 @@ input.skillspace-tag-add-input {
   color: var(--text-faint);
 }
 
-.skillspace-detail-source-avatar {
+.skillmanager-detail-source-avatar {
   width: 14px;
   height: 14px;
   border-radius: 3px;
@@ -1504,7 +1741,7 @@ input.skillspace-tag-add-input {
 
 /* The link itself carries the truncation now — the row is a flex container, not a single text
    node, so overflow/ellipsis has to live on the one child that's actually allowed to shrink. */
-.skillspace-detail-source-repo a {
+.skillmanager-detail-source-repo a {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1513,21 +1750,21 @@ input.skillspace-tag-add-input {
   text-decoration: none;
 }
 
-.skillspace-detail-source-repo a:hover {
+.skillmanager-detail-source-repo a:hover {
   color: var(--text-normal);
   text-decoration: underline;
 }
 
 /* Check for updates + Restore installed side by side, wrapping to a second line only if the
    column's too narrow to fit both (e.g. a long tool pill pushed the rail itself narrower). */
-.skillspace-detail-source-actions {
+.skillmanager-detail-source-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 2px 4px;
 }
 
-.skillspace-detail-source-btn {
+.skillmanager-detail-source-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1542,23 +1779,23 @@ input.skillspace-tag-add-input {
   white-space: nowrap;
 }
 
-.skillspace-detail-source-btn:hover,
-.skillspace-detail-source-btn:focus {
+.skillmanager-detail-source-btn:hover,
+.skillmanager-detail-source-btn:focus {
   color: var(--text-normal);
   background: var(--background-modifier-hover) !important;
 }
 
-.skillspace-detail-source-btn-icon {
+.skillmanager-detail-source-btn-icon {
   display: flex;
   flex-shrink: 0;
 }
 
-.skillspace-detail-source-btn-icon .svg-icon {
+.skillmanager-detail-source-btn-icon .svg-icon {
   width: 13px;
   height: 13px;
 }
 
-.skillspace-detail-body {
+.skillmanager-detail-body {
   border-top: 1px solid var(--background-modifier-border);
   padding-top: 16px;
 }
@@ -1570,14 +1807,14 @@ input.skillspace-tag-add-input {
    scrollable, already-padded panel, and drop the readable-line-width cap so content spans
    the full width of this (usually much narrower than a real pane) panel instead of wrapping
    early. */
-.skillspace-detail-body .skillspace-markdown-preview.markdown-preview-view {
+.skillmanager-detail-body .skillmanager-markdown-preview.markdown-preview-view {
   height: auto;
   overflow: visible;
   padding: 0;
   contain: none;
 }
 
-.skillspace-detail-body .skillspace-markdown-preview .markdown-preview-sizer {
+.skillmanager-detail-body .skillmanager-markdown-preview .markdown-preview-sizer {
   max-width: none;
   margin: 0;
   width: auto;
@@ -1587,17 +1824,17 @@ input.skillspace-tag-add-input {
 /* Some themes hardcode a blue heading color instead of deriving it from the vault's accent
    setting. Force headings in this embedded preview to track --interactive-accent so they match
    the rest of the plugin's UI (and the user's chosen accent) rather than a theme's fixed blue. */
-.skillspace-detail-body .skillspace-markdown-preview h1,
-.skillspace-detail-body .skillspace-markdown-preview h2,
-.skillspace-detail-body .skillspace-markdown-preview h3,
-.skillspace-detail-body .skillspace-markdown-preview h4,
-.skillspace-detail-body .skillspace-markdown-preview h5,
-.skillspace-detail-body .skillspace-markdown-preview h6 {
+.skillmanager-detail-body .skillmanager-markdown-preview h1,
+.skillmanager-detail-body .skillmanager-markdown-preview h2,
+.skillmanager-detail-body .skillmanager-markdown-preview h3,
+.skillmanager-detail-body .skillmanager-markdown-preview h4,
+.skillmanager-detail-body .skillmanager-markdown-preview h5,
+.skillmanager-detail-body .skillmanager-markdown-preview h6 {
   color: var(--interactive-accent);
 }
 
 
-.skillspace-detail-save-row {
+.skillmanager-detail-save-row {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -1606,67 +1843,67 @@ input.skillspace-tag-add-input {
 
 /* ---------- file tree (docked panel for a multi-file skill) ---------- */
 
-.skillspace-tree {
+.skillmanager-tree {
   display: flex;
   flex-direction: column;
   gap: 1px;
 }
 
-.skillspace-tree-item {
+.skillmanager-tree-item {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 5px 8px 5px calc(8px + var(--skillspace-tree-depth, 0) * 16px);
+  padding: 5px 8px 5px calc(8px + var(--skillmanager-tree-depth, 0) * 16px);
   border-radius: 6px;
   cursor: pointer;
   font-size: var(--font-ui-small);
   color: var(--text-muted);
 }
 
-.skillspace-tree-item:hover {
+.skillmanager-tree-item:hover {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
 }
 
-.skillspace-tree-item.is-dir {
+.skillmanager-tree-item.is-dir {
   color: var(--text-faint);
   font-weight: 500;
 }
 
 /* Which file is currently open beside the tree — otherwise nothing distinguishes it once the
    tree is docked next to an open file. */
-.skillspace-tree-item.is-active {
+.skillmanager-tree-item.is-active {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
 }
 
-.skillspace-tree-item.is-active:hover {
+.skillmanager-tree-item.is-active:hover {
   background: var(--interactive-accent-hover);
   color: var(--text-on-accent);
 }
 
-.skillspace-tree-chevron,
-.skillspace-tree-icon {
+.skillmanager-tree-chevron,
+.skillmanager-tree-icon {
   display: flex;
   flex-shrink: 0;
 }
 
-.skillspace-tree-chevron {
+.skillmanager-tree-chevron {
   width: 12px;
 }
 
-.skillspace-tree-chevron .svg-icon {
+.skillmanager-tree-chevron .svg-icon {
   width: 12px;
   height: 12px;
 }
 
-.skillspace-tree-icon .svg-icon {
+.skillmanager-tree-icon .svg-icon {
   width: 14px;
   height: 14px;
 }
 
-.skillspace-tree-label {
+.skillmanager-tree-label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -1674,7 +1911,7 @@ input.skillspace-tag-add-input {
   white-space: nowrap;
 }
 
-.skillspace-tree-hint {
+.skillmanager-tree-hint {
   margin-top: 10px;
   padding: 0 8px;
   color: var(--text-faint);
@@ -1684,36 +1921,36 @@ input.skillspace-tag-add-input {
 
 /* ---------- modals ---------- */
 
-.skillspace-modal-header {
+.skillmanager-modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
-.skillspace-modal-actions {
+.skillmanager-modal-actions {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-.skillspace-modal-meta {
+.skillmanager-modal-meta {
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
   word-break: break-all;
 }
 
-.skillspace-modal-body {
+.skillmanager-modal-body {
   max-height: 50vh;
   overflow-y: auto;
   margin-bottom: 12px;
 }
 
-.skillspace-file-input-hidden {
+.skillmanager-file-input-hidden {
   display: none;
 }
 
-.skillspace-tool-logo-preview {
+.skillmanager-tool-logo-preview {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1723,13 +1960,13 @@ input.skillspace-tag-add-input {
   flex-shrink: 0;
 }
 
-.skillspace-tool-logo-preview svg {
+.skillmanager-tool-logo-preview svg {
   width: 100%;
   height: 100%;
   color: var(--text-muted);
 }
 
-.skillspace-tool-logo-textarea textarea {
+.skillmanager-tool-logo-textarea textarea {
   width: 100%;
   min-height: 70px;
   font-family: var(--font-monospace);
@@ -1739,11 +1976,11 @@ input.skillspace-tag-add-input {
 /* Obsidian's own source-mode editor has no box around it — it's just text sitting directly
    on the note background, set in the note font (not monospace) at the note's own size and
    line-height. We match that instead of leaving this looking like a plain form field. */
-.skillspace-edit-wrap {
+.skillmanager-edit-wrap {
   min-height: 40vh;
 }
 
-.skillspace-edit-textarea {
+.skillmanager-edit-textarea {
   display: block;
   width: 100%;
   min-height: 40vh;
@@ -1761,49 +1998,49 @@ input.skillspace-tag-add-input {
   caret-color: var(--text-accent);
 }
 
-.skillspace-edit-textarea:focus,
-.skillspace-edit-textarea:focus-visible {
+.skillmanager-edit-textarea:focus,
+.skillmanager-edit-textarea:focus-visible {
   border: none !important;
   outline: none !important;
   box-shadow: none !important;
 }
 
-.skillspace-collection-picker {
+.skillmanager-collection-picker {
   max-height: 40vh;
   overflow-y: auto;
 }
 
-.skillspace-modal .skillspace-search-wrap {
+.skillmanager-modal .skillmanager-search-wrap {
   margin-bottom: 8px;
 }
 
-.skillspace-collection-picker-row {
+.skillmanager-collection-picker-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 0;
 }
 
-.skillspace-path-status {
+.skillmanager-path-status {
   margin-left: 8px;
   font-size: var(--font-ui-smaller);
   white-space: nowrap;
 }
 
-.skillspace-path-status.is-found {
+.skillmanager-path-status.is-found {
   color: var(--color-green);
 }
 
-.skillspace-path-status.is-missing {
+.skillmanager-path-status.is-missing {
   color: var(--text-faint);
 }
 
 /* ---------- diff (update review) ---------- */
 /* Ported from the sibling plugin Terminus's src/diff/renderDiff.ts styling — same gutter +
-   minimap layout, renamed to the skillspace- prefix and switched to this plugin's own
+   minimap layout, renamed to the skillmanager- prefix and switched to this plugin's own
    --color-green/--color-red theme variables instead of introducing a new pair. */
 
-.skillspace-diff-gutter-body {
+.skillmanager-diff-gutter-body {
   padding-right: 16px;
   max-height: 50vh;
   overflow-y: auto;
@@ -1811,11 +2048,11 @@ input.skillspace-tag-add-input {
   font-size: var(--font-ui-smaller);
 }
 
-.skillspace-diff-body-wrapper {
+.skillmanager-diff-body-wrapper {
   position: relative;
 }
 
-.skillspace-diff-minimap {
+.skillmanager-diff-minimap {
   position: absolute;
   top: 0;
   right: 0;
@@ -1824,7 +2061,7 @@ input.skillspace-tag-add-input {
   pointer-events: none;
 }
 
-.skillspace-diff-minimap-tick {
+.skillmanager-diff-minimap-tick {
   position: absolute;
   left: 0;
   right: 0;
@@ -1832,15 +2069,15 @@ input.skillspace-tag-add-input {
   border-radius: 1px;
 }
 
-.skillspace-diff-minimap-tick-add {
+.skillmanager-diff-minimap-tick-add {
   background-color: var(--color-green);
 }
 
-.skillspace-diff-minimap-tick-remove {
+.skillmanager-diff-minimap-tick-remove {
   background-color: var(--color-red);
 }
 
-.skillspace-diff-minimap-viewport {
+.skillmanager-diff-minimap-viewport {
   position: absolute;
   left: 0;
   right: 0;
@@ -1848,13 +2085,13 @@ input.skillspace-tag-add-input {
   background-color: var(--background-modifier-border);
 }
 
-.skillspace-diff-line {
+.skillmanager-diff-line {
   display: flex;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.skillspace-diff-gutter-num {
+.skillmanager-diff-gutter-num {
   flex: 0 0 auto;
   min-width: 2.5em;
   text-align: right;
@@ -1864,7 +2101,7 @@ input.skillspace-tag-add-input {
   white-space: nowrap;
 }
 
-.skillspace-diff-marker {
+.skillmanager-diff-marker {
   flex: 0 0 auto;
   width: 1em;
   text-align: center;
@@ -1872,49 +2109,49 @@ input.skillspace-tag-add-input {
   user-select: none;
 }
 
-.skillspace-diff-content {
+.skillmanager-diff-content {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-.skillspace-diff-line-add {
+.skillmanager-diff-line-add {
   background-color: rgba(var(--color-green-rgb), 0.06);
 }
 
-.skillspace-diff-line-remove {
+.skillmanager-diff-line-remove {
   background-color: rgba(var(--color-red-rgb), 0.1);
 }
 
-.skillspace-diff-add {
+.skillmanager-diff-add {
   background-color: rgba(var(--color-green-rgb), 0.35);
   border-radius: 2px;
 }
 
-.skillspace-diff-remove {
+.skillmanager-diff-remove {
   background-color: rgba(var(--color-red-rgb), 0.45);
   text-decoration: line-through;
   border-radius: 2px;
 }
 
-.skillspace-diff-stat-add {
+.skillmanager-diff-stat-add {
   color: var(--color-green);
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
 }
 
-.skillspace-diff-stat-remove {
+.skillmanager-diff-stat-remove {
   color: var(--color-red);
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
 }
 
-.skillspace-diff-companion-list {
+.skillmanager-diff-companion-list {
   margin-top: 12px;
   border-top: 1px solid var(--background-modifier-border);
   padding-top: 8px;
 }
 
-.skillspace-diff-companion-row {
+.skillmanager-diff-companion-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1922,24 +2159,24 @@ input.skillspace-tag-add-input {
   font-size: var(--font-ui-smaller);
 }
 
-.skillspace-diff-companion-badge {
+.skillmanager-diff-companion-badge {
   flex: 0 0 auto;
   font-size: var(--font-ui-smaller);
   padding: 1px 6px;
   border-radius: 3px;
 }
 
-.skillspace-diff-companion-badge.is-added {
+.skillmanager-diff-companion-badge.is-added {
   background: rgba(var(--color-green-rgb), 0.15);
   color: var(--color-green);
 }
 
-.skillspace-diff-companion-badge.is-removed {
+.skillmanager-diff-companion-badge.is-removed {
   background: rgba(var(--color-red-rgb), 0.15);
   color: var(--color-red);
 }
 
-.skillspace-diff-companion-badge.is-modified {
+.skillmanager-diff-companion-badge.is-modified {
   background: var(--background-modifier-border);
   color: var(--text-muted);
 }
@@ -1948,97 +2185,140 @@ input.skillspace-tag-add-input {
    companion list (or the diff itself, when there are no companions) and right-aligned so the
    primary action lands under the reader's eye after scanning down the diff, not floating at the
    left edge. */
-.skillspace-diff-review-actions {
+.skillmanager-diff-review-actions {
   justify-content: flex-end;
   margin-top: 20px;
 }
 
 /* ---------- source / install ----------
    Source status (truncated repo + Check for updates/Restore installed) lives right after the
-   identity band — see .skillspace-detail-source* above, next to .skillspace-detail-band. */
+   identity band — see .skillmanager-detail-source* above, next to .skillmanager-detail-band. */
 
 /* ---------- "All agents" tools page ---------- */
 
-.skillspace-tool-stats {
+.skillmanager-tool-stats {
   display: flex;
   align-items: baseline;
   gap: 18px;
   margin-top: 6px;
 }
 
-.skillspace-tool-stat {
+.skillmanager-tool-stat {
   display: flex;
   align-items: baseline;
   gap: 5px;
 }
 
-.skillspace-tool-stat-value {
+.skillmanager-tool-stat-value {
   font-size: var(--font-ui-medium);
   font-weight: 700;
   color: var(--text-normal);
 }
 
-.skillspace-tool-stat-label {
+.skillmanager-tool-stat-label {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
 }
 
-.skillspace-tool-card-icon {
+.skillmanager-tool-card-icon {
   display: flex;
   flex-shrink: 0;
 }
 
-.skillspace-tool-card-icon .svg-icon,
-.skillspace-tool-card-icon svg {
+.skillmanager-tool-card-icon .svg-icon,
+.skillmanager-tool-card-icon svg {
   width: 20px;
   height: 20px;
 }
 
-.skillspace-add-tool-btn {
+.skillmanager-tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-left: auto;
 }
 
-.skillspace-toolpath-row {
+.skillmanager-tool-actions .skillmanager-sort-btn {
+  margin-left: 0;
+}
+
+.skillmanager-add-tool-btn {
+  margin-left: 0;
+}
+
+.skillmanager-toolpath-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 0;
 }
 
-.skillspace-toolpath-label {
+.skillmanager-toolpath-label {
   flex-shrink: 0;
   width: 90px;
   font-size: var(--font-ui-small);
   color: var(--text-muted);
 }
 
-.skillspace-toolpath-input {
+.skillmanager-toolpath-input {
   flex: 1;
   min-width: 0;
 }
 
-.skillspace-toolpath-row .skillspace-path-status {
+.skillmanager-toolpath-row .skillmanager-path-status {
   flex-shrink: 0;
+}
+
+/* Extra rule path rows (see renderRuleAdditionalPaths) reuse .skillmanager-toolpath-row, plus a
+   "Single file" checkbox between the input and its found/not-found status. */
+.skillmanager-toolpath-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.skillmanager-toolpath-checkbox input[type="checkbox"] {
+  margin: 0;
+}
+
+.skillmanager-toolpath-add-btn {
+  border: 1px dashed var(--background-modifier-border) !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  color: var(--text-faint);
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.skillmanager-toolpath-add-btn:hover {
+  color: var(--text-normal);
+  border-color: var(--text-muted) !important;
 }
 
 /* ---------- Dashboard: context cost, ranked, plus prune/overlap flags ---------- */
 
-/* Overrides .skillspace-body's grid+rail flex row — the dashboard is a single scrollable column
+/* Overrides .skillmanager-body's grid+rail flex row — the dashboard is a single scrollable column
    of stacked sections, not an item grid beside a docked detail rail. */
-.skillspace-dash-body {
+.skillmanager-dash-body {
   flex-direction: column;
   overflow-y: auto;
   gap: 20px;
   padding: 4px 24px 24px;
 }
 
-.skillspace-dash-section {
+.skillmanager-dash-section {
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   padding: 16px;
 }
 
-.skillspace-dash-section-head {
+.skillmanager-dash-section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2046,17 +2326,17 @@ input.skillspace-tag-add-input {
   margin-bottom: 8px;
 }
 
-.skillspace-dash-section-title {
+.skillmanager-dash-section-title {
   font-size: var(--font-ui-medium);
   font-weight: 500;
   color: var(--text-normal);
 }
 
-.skillspace-dash-section-right {
+.skillmanager-dash-section-right {
   flex-shrink: 0;
 }
 
-.skillspace-dash-row {
+.skillmanager-dash-row {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -2065,17 +2345,17 @@ input.skillspace-tag-add-input {
   cursor: pointer;
 }
 
-.skillspace-dash-row:hover {
+.skillmanager-dash-row:hover {
   background: var(--background-modifier-hover);
 }
 
-.skillspace-dash-row-info {
+.skillmanager-dash-row-info {
   flex-shrink: 0;
   width: 220px;
   min-width: 0;
 }
 
-.skillspace-dash-row-name {
+.skillmanager-dash-row-name {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2086,23 +2366,47 @@ input.skillspace-tag-add-input {
   white-space: nowrap;
 }
 
-.skillspace-dash-row-icon {
+.skillmanager-dash-row-icon {
   display: flex;
   flex-shrink: 0;
   color: var(--text-muted);
 }
 
-.skillspace-dash-row-icon .svg-icon {
+.skillmanager-dash-row-icon .svg-icon {
   width: 13px;
   height: 13px;
 }
 
-.skillspace-dash-row-meta {
+.skillmanager-dash-row-meta {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
 }
 
-.skillspace-dash-bar-track {
+.skillmanager-dash-flag-row .skillmanager-dash-row-info {
+  width: auto;
+  flex: 1 1 auto;
+}
+
+.skillmanager-dash-flag-row .skillmanager-dash-row-meta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Distinguishes a mixed-method list's rows (real Claude Code usage vs. file edit history) —
+   see the Dashboard's Claude Code-contextual Prune candidates section. */
+.skillmanager-dash-method-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+  background: var(--background-modifier-border);
+}
+
+.skillmanager-dash-bar-track {
   flex: 1;
   height: 6px;
   border-radius: 3px;
@@ -2110,13 +2414,13 @@ input.skillspace-tag-add-input {
   overflow: hidden;
 }
 
-.skillspace-dash-bar-fill {
+.skillmanager-dash-bar-fill {
   height: 100%;
   border-radius: 3px;
   background: var(--interactive-accent);
 }
 
-.skillspace-dash-row-cost {
+.skillmanager-dash-row-cost {
   flex-shrink: 0;
   width: 80px;
   text-align: right;
@@ -2124,7 +2428,7 @@ input.skillspace-tag-add-input {
   color: var(--text-muted);
 }
 
-.skillspace-dash-flag-row {
+.skillmanager-dash-flag-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2133,77 +2437,153 @@ input.skillspace-tag-add-input {
   border-top: 1px solid var(--background-modifier-border);
 }
 
-.skillspace-dash-flag-row:first-of-type {
+.skillmanager-dash-flag-row:first-of-type {
   border-top: none;
 }
 
-.skillspace-dash-overlap-row {
+.skillmanager-dash-flag-row.is-clickable {
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.skillmanager-dash-flag-row.is-clickable:hover {
+  background: var(--background-modifier-hover);
+}
+
+.skillmanager-dash-action-btn {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: none;
+  color: var(--text-muted);
+}
+
+.skillmanager-dash-action-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+/* Pairs a row's "Disregard" button with its primary action (Disable/Compare) — see
+ * renderDashboardDisregardableActions. */
+.skillmanager-dash-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.skillmanager-dash-overlap-row {
   padding: 10px 0;
   border-top: 1px solid var(--background-modifier-border);
 }
 
-.skillspace-dash-overlap-row:first-of-type {
+.skillmanager-dash-overlap-row:first-of-type {
   border-top: none;
   padding-top: 4px;
 }
 
+.skillmanager-dash-overlap-name {
+  cursor: pointer;
+}
+
+.skillmanager-dash-overlap-name:hover {
+  color: var(--interactive-accent);
+  text-decoration: underline;
+}
+
 /* ---- Dashboard header: title + description on the left, stat cluster on the right ---- */
 
-.skillspace-dash-header-top {
+.skillmanager-dash-header-top {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
 }
 
-.skillspace-dash-header-left {
+.skillmanager-dash-header-left {
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-width: 0;
 }
 
-.skillspace-dash-header-stats {
+.skillmanager-dash-header-stats {
   display: flex;
   gap: 28px;
   flex-shrink: 0;
   padding-top: 2px;
 }
 
-.skillspace-dash-stat-label {
+.skillmanager-dash-stat-label {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   margin-bottom: 4px;
 }
 
-.skillspace-dash-stat-value {
+.skillmanager-dash-stat-value {
   font-size: var(--font-ui-larger);
   font-weight: 500;
   color: var(--text-normal);
 }
 
-.skillspace-dash-stat-danger {
+.skillmanager-dash-stat-danger {
   color: #e0654f;
 }
 
-.skillspace-dash-stat-accent {
+.skillmanager-dash-stat-accent {
   color: var(--interactive-accent);
 }
 
-.skillspace-dash-divider {
-  margin-top: 16px;
+.skillmanager-dash-divider {
+  margin: 16px 0 24px;
   border-top: 1px solid var(--background-modifier-border);
 }
 
 /* ---- Cost by tool: clickable cards, a type legend, spans full width, scrolls if crowded ---- */
 
-.skillspace-dash-legend {
+.skillmanager-dash-legend {
   display: flex;
   flex-wrap: nowrap;
   gap: 14px;
 }
 
-.skillspace-dash-legend-entry {
+.skillmanager-dash-type-filter {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+
+.skillmanager-dash-type-pill {
+  padding: 3px 9px;
+  border-radius: 12px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.skillmanager-dash-type-pill:hover {
+  color: var(--text-normal);
+}
+
+.skillmanager-dash-type-pill.is-active {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+  font-weight: 600;
+}
+
+/* Extra room below the Ranked section's own head — the type-filter row sits right above the
+   list and reads as cramped at the default section-head margin. */
+.skillmanager-dash-ranked > .skillmanager-dash-section-head {
+  margin-bottom: 20px;
+}
+
+/* Top Skills & Agents' subtitle (unlike Ranked by cost, which has none) otherwise butts straight
+   into the list below it — .skillmanager-subtitle itself carries no margin. */
+.skillmanager-dash-ranked .skillmanager-subtitle {
+  margin-bottom: 16px;
+}
+
+.skillmanager-dash-legend-entry {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -2211,22 +2591,27 @@ input.skillspace-tag-add-input {
   color: var(--text-muted);
 }
 
-.skillspace-dash-legend-swatch {
+.skillmanager-dash-legend-swatch {
   display: inline-block;
   width: 9px;
   height: 9px;
   border-radius: 2px;
 }
 
-.skillspace-dash-tiles {
+.skillmanager-dash-tiles {
   display: flex;
   gap: 10px;
   overflow-x: auto;
   padding-bottom: 6px;
   margin-bottom: 20px;
+  /* Without this, a flex item with non-visible overflow gets an automatic min-height of 0
+     instead of its content size, so the parent column's default shrinking collapses this row
+     down to almost nothing instead of scrolling the page. Keeps its full content height and lets
+     .skillmanager-dash-body's own overflow-y handle the page-level scroll instead. */
+  flex-shrink: 0;
 }
 
-.skillspace-dash-tile {
+.skillmanager-dash-tile {
   /* Grows to fill the full row when there's room; never shrinks below its basis, so once tiles
      stop fitting the row scrolls instead of squeezing them. */
   flex: 1 1 160px;
@@ -2237,31 +2622,31 @@ input.skillspace-tag-add-input {
   cursor: pointer;
 }
 
-.skillspace-dash-tile.is-active {
+.skillmanager-dash-tile.is-active {
   border-color: var(--interactive-accent);
 }
 
-.skillspace-dash-tile-head {
+.skillmanager-dash-tile-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
 }
 
-.skillspace-dash-tile-name {
+.skillmanager-dash-tile-name {
   font-size: var(--font-ui-small);
   color: var(--text-muted);
   text-transform: capitalize;
 }
 
-.skillspace-dash-tile-value {
+.skillmanager-dash-tile-value {
   font-size: var(--font-ui-large);
   font-weight: 500;
   color: var(--text-normal);
   margin: 2px 0 8px;
 }
 
-.skillspace-dash-tile-dot {
+.skillmanager-dash-tile-dot {
   display: none;
   width: 7px;
   height: 7px;
@@ -2269,11 +2654,11 @@ input.skillspace-tag-add-input {
   flex-shrink: 0;
 }
 
-.skillspace-dash-tile.is-active .skillspace-dash-tile-dot {
+.skillmanager-dash-tile.is-active .skillmanager-dash-tile-dot {
   display: block;
 }
 
-.skillspace-dash-tile-bar {
+.skillmanager-dash-tile-bar {
   position: relative;
   height: 8px;
   border-radius: 3px;
@@ -2281,28 +2666,27 @@ input.skillspace-tag-add-input {
   overflow: hidden;
 }
 
-.skillspace-dash-stack-seg {
+.skillmanager-dash-stack-seg {
   position: absolute;
   top: 0;
   bottom: 0;
-  cursor: help;
 }
 
 /* ---- Ranked: card rows, collapsed to a handful by default ---- */
 
-.skillspace-dash-ranked-list {
+.skillmanager-dash-ranked-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.skillspace-dash-ranked-list .skillspace-dash-row {
+.skillmanager-dash-ranked-list .skillmanager-dash-row {
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   padding: 10px 12px;
 }
 
-.skillspace-dash-toggle {
+.skillmanager-dash-toggle {
   display: block;
   width: 100%;
   margin-top: 10px;
@@ -2317,21 +2701,21 @@ input.skillspace-tag-add-input {
   text-align: center;
 }
 
-.skillspace-dash-toggle:hover {
+.skillmanager-dash-toggle:hover {
   color: var(--text-normal);
-  border-color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
 }
 
 /* ---- Prune candidates / Possible overlaps, side by side, always matched in height ---- */
 
-.skillspace-dash-columns {
+.skillmanager-dash-columns {
   display: flex;
   flex-wrap: wrap;
   gap: 16px;
   margin-top: 28px;
 }
 
-.skillspace-dash-columns > .skillspace-dash-section {
+.skillmanager-dash-columns > .skillmanager-dash-section {
   /* No align-items override above means the default "stretch" applies, so whichever column is
      taller sets the height for both — wraps to its own full row below a certain width instead
      of squeezing, since flex-basis 280px won't shrink past min-width. */
@@ -2341,11 +2725,20 @@ input.skillspace-tag-add-input {
   flex-direction: column;
 }
 
-.skillspace-dash-callout-rows {
+.skillmanager-dash-callout .skillmanager-subtitle {
+  padding-bottom: 14px;
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.skillmanager-dash-callout-rows {
   /* Caps how tall either column can grow before it scrolls internally instead of pushing the
      other column (and the rest of the page) to match an unbounded height. */
   overflow-y: auto;
   max-height: 260px;
-  margin-top: 4px;
+  margin-top: 12px;
+  /* Same fix as .skillmanager-dash-tiles: a flex item with non-visible overflow otherwise gets an
+     automatic min-height of 0 and can collapse under the parent column's default shrinking. */
+  flex-shrink: 0;
 }
 

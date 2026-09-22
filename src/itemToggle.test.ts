@@ -27,14 +27,14 @@ describe("toggleItemEnabled / deleteItem", () => {
   let root: string;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "skillspace-test-"));
+    root = mkdtempSync(join(tmpdir(), "skillmanager-test-"));
   });
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("disables a flat file by moving it into a sibling .skillspace-disabled folder", () => {
+  it("disables a flat file by moving it into a sibling .skillmanager-disabled folder", () => {
     const filePath = join(root, "backend.md");
     writeFileSync(filePath, "content");
 
@@ -97,7 +97,7 @@ describe("toggleItemEnabled / deleteItem", () => {
   it("re-targets a relative symlink to an absolute path when moving a flat file, so it never dangles", () => {
     // Mirrors a project-scoped instance: a symlink one level under the project's tool folder
     // pointing back at a global skill via a relative "../../" path. Moving it into a nested
-    // .skillspace-disabled folder changes its depth, which would break a naive rename.
+    // .skillmanager-disabled folder changes its depth, which would break a naive rename.
     const globalTarget = join(root, "global-target.md");
     writeFileSync(globalTarget, "content");
 

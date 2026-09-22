@@ -17,7 +17,7 @@ function git(args: string[], cwd?: string): string {
 
 /** Resolves a repo's current commit for a given ref without cloning anything. Passing no ref
  *  checks "HEAD" — a symbolic ref every repo has — which is what lets a tracked skill follow
- *  "whatever the default branch is" without Skillspace ever needing to know its actual name. */
+ *  "whatever the default branch is" without Skillmanager ever needing to know its actual name. */
 export function remoteHeadCommit(repoUrl: string, ref?: string): string {
   const output = git(["ls-remote", repoUrl, ref || "HEAD"]);
   const sha = output.split(/\s+/)[0];
@@ -39,7 +39,7 @@ export interface ClonedRepo {
  *  not supporting arbitrary historical commits as a ref — acceptable since a tracked skill only
  *  ever needs "whatever's at the tip now". */
 export function shallowCloneRepo(repoUrl: string, ref?: string): ClonedRepo {
-  const dir = mkdtempSync(join(tmpdir(), "skillspace-clone-"));
+  const dir = mkdtempSync(join(tmpdir(), "skillmanager-clone-"));
   try {
     const args = ["clone", "--depth", "1", "--single-branch"];
     if (ref) args.push("--branch", ref);
@@ -60,7 +60,7 @@ export function shallowCloneRepo(repoUrl: string, ref?: string): ClonedRepo {
  *  host with uploadpack.allowReachableSHA1InWant enabled), which is the standard way to grab a
  *  single commit without cloning the repo's full history. */
 export function shallowCloneAtCommit(repoUrl: string, commitSha: string): ClonedRepo {
-  const dir = mkdtempSync(join(tmpdir(), "skillspace-clone-"));
+  const dir = mkdtempSync(join(tmpdir(), "skillmanager-clone-"));
   try {
     git(["init", "-q", dir]);
     git(["remote", "add", "origin", repoUrl], dir);

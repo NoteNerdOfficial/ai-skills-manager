@@ -1,4 +1,5 @@
-import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon } from "obsidian";
+import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon, setTooltip } from "obsidian";
+import { execFileSync } from "child_process";
 import { cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, join, sep } from "path";
 import {
@@ -7,9 +8,14 @@ import {
   EnabledFilter,
   ItemMetadata,
   ItemType,
+  McpServerEntry,
+  MORE_HORIZONTAL_ICON_ID,
+  MORE_ICON_ID,
   PLUGIN_ICON_ID,
   PluginSource,
-  SkillSpacePluginSettings,
+  ProjectWorkspace,
+  RulePathEntry,
+  SkillManagerPluginSettings,
   SortOrder,
   ToolConfig,
   TYPE_LABEL_SINGULAR,
@@ -20,16 +26,37 @@ import { addToProject, removeFromProject } from "../projectLink";
 import { deleteItem, toggleItemEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
 import { ShadowNoteStore } from "../store";
-import { upsertCollectionAndSync } from "../collections";
+import { deleteCollectionAndSync, upsertCollectionAndSync } from "../collections";
 import { CollectionEditModal } from "../modals/CollectionEditModal";
 import { AddToCollectionModal } from "../modals/AddToCollectionModal";
 import { ProjectPresenceModal } from "../modals/ProjectPresenceModal";
+import { ProjectEditModal } from "../modals/ProjectEditModal";
 import { InstallFromGitHubModal } from "../modals/InstallFromGitHubModal";
 import { AddDiscoverSourceModal } from "../modals/AddDiscoverSourceModal";
 import { ConfirmModal } from "../modals/ConfirmModal";
 import { AddToolModal } from "../modals/AddToolModal";
 import { ItemOverlapModal } from "../modals/ItemOverlapModal";
-import { computeDashboardMetrics, findOverlapPairs, findPruneCandidates, DashboardMetric, OverlapPair } from "../dashboard";
+import {
+  computeDashboardMetrics,
+  findOverlapPairs,
+  findPruneCandidates,
+  pairSimilarity,
+  isSameName,
+  DashboardMetric,
+  OverlapPair,
+  OVERLAP_THRESHOLD,
+} from "../dashboard";
+import {
+  CLAUDE_PROJECTS_DIR,
+  computeClaudeUsage,
+  findUsagePruneCandidates,
+  listTranscriptFiles,
+  rankTopUsedItems,
+  scanTranscriptFile,
+  ClaudeUsageStats,
+  USAGE_STALE_DAYS,
+  TOP_USED_WINDOW_DAYS,
+} from "../claude-usage";
 import {
   addDiscoverSource,
   dedupeDiscoverCatalog,
@@ -49,7 +76,7 @@ import { ClonedRepo, remoteHeadCommit, shallowCloneAtCommit, shallowCloneRepo } 
 import { renderDiffBody } from "../diff/renderDiff";
 import { computeCompanionChanges, CompanionRow } from "../diff/companions";
 
-export const LIBRARY_VIEW_TYPE = "skillspace-library-view";
+export const LIBRARY_VIEW_TYPE = "skillmanager-library-view";
 
 export type UpdateMode = "update" | "restore";
 
@@ -129,16 +156,16 @@ function dashboardRelativeAge(ms: number): string {
  *  brand-new user has something to click besides a blank "+ Add source" form. Clicking one runs
  *  the exact same addDiscoverSource() flow the modal uses, just without the form. */
 const STARTER_DISCOVER_SOURCES: { name: string; description: string; repoUrl: string }[] = [
+  {
+    name: "Obsidian Skills",
+    description: "Kepano's Agent Skills for Obsidian",
+    repoUrl: "https://github.com/kepano/obsidian-skills.git",
+  },
   { name: "Matt Pocock Skills", description: "Matt Pocock's public Agent Skills", repoUrl: "https://github.com/mattpocock/skills.git" },
   {
-    name: "Claude Code Plugins",
-    description: "Anthropic-managed directory of Claude Code plugins",
-    repoUrl: "https://github.com/anthropics/claude-plugins-official.git",
-  },
-  {
-    name: "Awesome Copilot",
-    description: "Community skills/agents for GitHub Copilot",
-    repoUrl: "https://github.com/github/awesome-copilot.git",
+    name: "Caveman",
+    description: "Julius Brussee's Agent Skills",
+    repoUrl: "https://github.com/juliusbrussee/caveman.git",
   },
   {
     name: "Superpowers",
@@ -173,6 +200,12 @@ export class LibraryView extends ItemView {
    *  you're already in, rather than being a scope of its own. Lives in the tagbar row (see
    *  renderSourceButton), not the sidebar. */
   private sourceFilter: "github" | "builtin" | "local" | null = null;
+  /** Same compounding, sticks-around-across-navigation shape as sourceFilter, but scoped to
+   *  ItemType "rule": "instructions" narrows to a tool's single loaded-every-session file (e.g.
+   *  Claude Code's CLAUDE.md, ToolConfig.singleFileRule), "granular" to a directory of many
+   *  separate rule files (e.g. Cursor's ~/.cursor/rules). Rendered only while typeFilter ===
+   *  "rule" (see renderRuleKindButton) since it's meaningless for any other type. */
+  private ruleKindFilter: "instructions" | "granular" | null = null;
   /** Per-session only (see silentUpdateItem/bulkCheckForUpdates) — whether a sourceRepo item was
    *  last confirmed current or behind. Absent (including for anything with no sourceRepo at all)
    *  reads as "unknown," the same muted dot as "not tracked from GitHub," until an explicit check
@@ -206,6 +239,12 @@ export class LibraryView extends ItemView {
   /** The tool currently open in the docked rail (see renderToolDetailRail) — mirrors
    *  selectedItem's role, kept entirely separate since a ToolConfig has no tree/file/edit state. */
   private selectedTool: ToolConfig | null = null;
+  /** Narrows the "All tools" page's grid to tools matching a given status — rendered via
+   *  renderToolStatusButton, next to the "Add tool" button. Deliberately doesn't affect the
+   *  stats row above it (see renderToolsPageContent), which always totals every configured tool
+   *  regardless of this filter — otherwise picking "Custom" would make "Detected"/"Enabled"
+   *  read as counts of custom tools only, silently changing what those numbers mean. */
+  private toolStatusFilter: "all" | "detected" | "not-detected" | "enabled" | "disabled" | "custom" = "all";
   /** True while the sidebar's "Dashboard" row is active — same swap-the-content-pane idea as
    *  discoverMode/toolsMode. Not a scope filter: it doesn't narrow this.items, it reports on it. */
   private dashboardMode = false;
@@ -213,17 +252,56 @@ export class LibraryView extends ItemView {
    *  within it), not on every render — each entry means a file read, and nothing in the dashboard
    *  changes just from typing in the search box or switching some other sidebar filter. */
   private dashboardMetrics: DashboardMetric[] | null = null;
+  /** Prune-candidate + overlap count, shown as the sidebar's Dashboard badge so "attention needed"
+   *  is visible without opening the Dashboard. Cached alongside dashboardMetrics and invalidated
+   *  the same places — the sidebar renders far more often than the Dashboard itself, so this must
+   *  stay a cache, not a recompute-on-every-render. */
+  private dashboardAttentionCount: number | null = null;
   /** Which "Cost by tool" card is selected — filters the ranked list below to just that tool;
    *  null means "All tools." */
   private dashboardActiveTool: string | null = null;
+  /** Which type pill is selected above the Ranked list — ANDs with dashboardActiveTool; null
+   *  means "All types." */
+  private dashboardTypeFilter: ItemType | null = null;
   /** Whether the ranked list is showing everything or just the top DASHBOARD_RANKED_COLLAPSED_COUNT. */
   private dashboardRankedExpanded = false;
+  /** Live-tracked scroll offset of the dashboard's scrollable body, restored on the next render
+   *  the same way libraryScrollTop/dockedScrollTop work for the main grid. */
+  private dashboardScrollTop = 0;
+  /** entryId -> real Claude Code invocation stats, computed only once the "Claude Code" tool tile
+   *  is selected (see getClaudeUsage/loadClaudeUsage) — unlike dashboardMetrics this means walking
+   *  every session transcript under ~/.claude/projects, so it's not just lazy, it's asynchronous:
+   *  loadClaudeUsage yields between files so a multi-second scan doesn't freeze the render thread.
+   *  Invalidated at the same sites as dashboardMetrics. */
+  private claudeUsage: Map<string, ClaudeUsageStats> | null = null;
+  /** True while loadClaudeUsage's file loop is running — guards against a second scan starting
+   *  before the first finishes, and lets the two Claude-Code-only sections show a loading state
+   *  instead of an empty one. */
+  private claudeUsageLoading = false;
+  /** Independent from dashboardRankedExpanded — Top Skills & Agents and Ranked by cost are
+   *  different lists and shouldn't share collapse state. */
+  private dashboardTopSkillsExpanded = false;
+  /** Set right before leaving dashboardMode to open an item clicked from the Ranked list, so
+   *  backToLibrary() knows to land back on the Dashboard (in the same scroll/filter state)
+   *  instead of the plain Library. Consumed (reset to false) the moment backToLibrary() runs. */
+  private detailReturnsToDashboard = false;
   private tagFilter: string | null = null;
   private untaggedOnly = false;
   private collapsedSections = new Set<string>();
   private draggedSectionKey: string | null = null;
   private dragHighlightEl: HTMLElement | null = null;
   private discoveredPlugins: PluginSource[] = [];
+  private mcpServers: McpServerEntry[] = [];
+  /** True while the sidebar's "MCP servers" row is active — same swap-the-content-pane idea as
+   *  discoverMode/toolsMode/dashboardMode. Read-only: no enable/disable here, see McpServerEntry. */
+  private mcpMode = false;
+  private mcpToolFilter: string | null = null;
+  /** Mirrors selectedItem/selectedTool's role for the docked detail rail, but for an
+   *  McpServerEntry — see renderMcpServerDetailRail. */
+  private selectedMcpServer: McpServerEntry | null = null;
+  /** Env var keys currently shown in plaintext in the open MCP detail rail — per-session only,
+   *  reset whenever a different server is selected (see renderMcpServerCard's click handler). */
+  private revealedMcpEnvKeys = new Set<string>();
 
   // Selection: which card is highlighted, and — for a folder-based skill with more than one
   // file — the file tree shown in the detail rail beside the grid. A single-file item skips the
@@ -279,7 +357,7 @@ export class LibraryView extends ItemView {
 
   constructor(
     leaf: WorkspaceLeaf,
-    private getSettings: () => SkillSpacePluginSettings,
+    private getSettings: () => SkillManagerPluginSettings,
     private store: ShadowNoteStore,
     private saveSettings: () => Promise<void>
   ) {
@@ -322,12 +400,13 @@ export class LibraryView extends ItemView {
   async rescan(): Promise<RescanResult> {
     const result = await performRescan(this.app, this.getSettings(), this.store);
     this.discoveredPlugins = result.plugins;
+    this.mcpServers = result.mcpServers;
     this.items = result.items;
     if (this.selectedItem) {
       const previousSourcePath = this.selectedItem.sourcePath;
       const updated = this.items.find((i) => i.entryId === this.selectedItem?.entryId) ?? null;
       // A toggle (or any other action that moves the underlying file/folder, e.g. into or out of
-      // .skillspace-disabled) changes sourcePath out from under the currently-open file. Without
+      // .skillmanager-disabled) changes sourcePath out from under the currently-open file. Without
       // remapping it here, selectedFilePath keeps pointing at the old, now-nonexistent location,
       // and the detail rail renders blank (loadFileContent's readFileSync throws and is swallowed
       // into an empty string).
@@ -353,6 +432,11 @@ export class LibraryView extends ItemView {
     // restore/update, an external edit) — invalidate the cached preview so renderFileContent
     // re-reads it instead of showing what was there before this rescan.
     this.detailLoadedFor = null;
+    // Items just changed underneath both caches — a stale dashboardMetrics/attention count would
+    // otherwise linger in the sidebar badge until the next Dashboard-specific action cleared it.
+    this.dashboardMetrics = null;
+    this.dashboardAttentionCount = null;
+    this.claudeUsage = null;
     this.render();
     return result;
   }
@@ -374,10 +458,80 @@ export class LibraryView extends ItemView {
     try {
       const result = await this.rescan();
       new Notice(`Rescan complete: ${result.items.length} item${result.items.length === 1 ? "" : "s"} found.`);
+    } catch (err) {
+      new Notice(`Scan failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       this.rescanningManually = false;
       this.render();
     }
+  }
+
+  /** Walks every Claude Code session transcript to compute real invocation counts — see
+   *  claude-usage.ts for the parsing itself. This is meaningfully more expensive than
+   *  dashboardMetrics (that's a handful of already-known item files; this is however many
+   *  sessions Claude Code has ever logged), so beyond being lazy it also yields between files
+   *  (an awaited zero-delay setTimeout) rather than blocking the render thread for one long
+   *  synchronous pass, and caps total bytes read so a very long history can't make the wait
+   *  unbounded — newest sessions first, so a cut-off drops the oldest, least-relevant history. */
+  /** Assumes claudeUsageLoading is already true (set by getClaudeUsage before scheduling this) —
+   *  started from a window.setTimeout, never called directly, so its first "await"-free lines
+   *  never run inside an in-progress render() call. Calling this.render() synchronously from
+   *  inside renderDashboardContent (which getClaudeUsage is called from) would re-enter render()
+   *  while the outer call is still writing to the DOM, tearing out what it had already built —
+   *  deferring the start of this method past the current render pass is what avoids that. */
+  private async loadClaudeUsage() {
+    try {
+      // No total-byte ceiling here on purpose — an earlier version capped this at 40MB, which
+      // silently excluded older transcripts and broke exactly the case this feature exists for
+      // (finding a *rarely* invoked skill, whose only invocation is likely to be in older
+      // history, not the most recent slice). Measured directly against this project's own
+      // ~124MB/91-file history: a full scan takes well under a second, so the per-file yield
+      // below is already enough to keep the UI responsive — a size ceiling wasn't buying
+      // anything a real user would notice, only breaking correctness. The per-file
+      // MAX_TRANSCRIPT_FILE_BYTES guard in scanTranscriptFile still protects against one
+      // pathologically large session file.
+      const projectsDir = expandHome(CLAUDE_PROJECTS_DIR);
+      const files = listTranscriptFiles(projectsDir);
+
+      // Windows the invocation *count* to TOP_USED_WINDOW_DAYS (for the "Top Skills & Agents"
+      // ranking) without touching lastUsedMs, which scanTranscriptFile always tracks all-time —
+      // see its sinceMs doc comment.
+      const sinceMs = Date.now() - TOP_USED_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+      const raw = new Map<string, ClaudeUsageStats>();
+      for (const f of files) {
+        scanTranscriptFile(f, raw, sinceMs);
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
+
+      this.claudeUsage = computeClaudeUsage(this.items, raw);
+    } catch (e) {
+      // Without this, a thrown error here was an unhandled rejection nobody could see — the tile
+      // just looked permanently empty with no way to tell "broken" from "genuinely no usage yet."
+      console.error("AI Skills Manager: failed to read Claude Code usage history", e);
+      new Notice(`Couldn't read Claude Code usage history: ${errorMessage(e)}`);
+      this.claudeUsage = new Map();
+    } finally {
+      // Runs even if something above threw, so a bad transcript can't leave the tile stuck
+      // showing "Scanning…" forever with getClaudeUsage refusing to ever retry.
+      this.claudeUsageLoading = false;
+      this.render();
+    }
+  }
+
+  /** Returns the cached usage map, or null while it's still being computed — kicks off
+   *  loadClaudeUsage as a side effect the first time this is called (from renderDashboardContent,
+   *  only when the Claude Code tile is active), same "getter triggers the lazy computation" shape
+   *  as getDashboardMetrics, just asynchronous. Sets the loading flag and schedules the load via
+   *  window.setTimeout rather than calling it directly — this getter runs mid-render, and
+   *  loadClaudeUsage's own this.render() call needs to land strictly after the current render()
+   *  call has finished, not inside it. */
+  private getClaudeUsage(): Map<string, ClaudeUsageStats> | null {
+    if (this.claudeUsage) return this.claudeUsage;
+    if (!this.claudeUsageLoading) {
+      this.claudeUsageLoading = true;
+      window.setTimeout(() => void this.loadClaudeUsage(), 0);
+    }
+    return null;
   }
 
   /** Actually enables/disables an item by moving its file — the tool only ever sees whatever
@@ -436,7 +590,7 @@ export class LibraryView extends ItemView {
   private renderProjectLinkButton(container: HTMLElement, globalItem: ItemMetadata) {
     const linkedSomewhere = this.items.some((i) => i.projectId && i.realPath === globalItem.realPath);
     const btn = container.createEl("button", {
-      cls: `skillspace-icon-btn${linkedSomewhere ? " is-present" : ""}`,
+      cls: `skillmanager-icon-btn${linkedSomewhere ? " is-present" : ""}`,
       attr: { "aria-label": linkedSomewhere ? "Manage project links" : "Link into a workspace" },
     });
     setIcon(btn, "link");
@@ -510,27 +664,27 @@ export class LibraryView extends ItemView {
    *  suggestions (STARTER_DISCOVER_SOURCES) so there's something to click besides opening the
    *  blank "+ Add source" form cold. */
   private renderDiscoverEmptyState(container: HTMLElement) {
-    const empty = container.createDiv({ cls: "skillspace-empty-state" });
-    const icon = empty.createDiv({ cls: "skillspace-empty-state-icon" });
+    const empty = container.createDiv({ cls: "skillmanager-empty-state" });
+    const icon = empty.createDiv({ cls: "skillmanager-empty-state-icon" });
     setIcon(icon, "compass");
-    empty.createEl("h3", { text: "Nothing here yet", cls: "skillspace-empty-state-title" });
+    empty.createEl("h3", { text: "Nothing here yet", cls: "skillmanager-empty-state-title" });
     empty.createEl("p", {
-      cls: "skillspace-empty-state-desc",
+      cls: "skillmanager-empty-state-desc",
       text: "Add a GitHub repo to find the skills, agents, commands, and rules inside it.",
     });
 
     const addBtn = empty.createEl("button", { text: "Add your own repo", cls: "mod-cta" });
     addBtn.addEventListener("click", () => this.openAddDiscoverSource());
 
-    empty.createEl("p", { cls: "skillspace-discover-starters-label", text: "Or add one of these" });
+    empty.createEl("p", { cls: "skillmanager-discover-starters-label", text: "Or add one of these" });
 
-    const starters = empty.createDiv({ cls: "skillspace-discover-starters" });
+    const starters = empty.createDiv({ cls: "skillmanager-discover-starters" });
     for (const source of STARTER_DISCOVER_SOURCES) {
-      const pill = starters.createEl("button", { cls: "skillspace-discover-starter" });
-      setIcon(pill.createSpan({ cls: "skillspace-discover-starter-icon" }), "github");
-      const text = pill.createDiv({ cls: "skillspace-discover-starter-text" });
-      text.createSpan({ text: source.name, cls: "skillspace-discover-starter-name" });
-      text.createSpan({ text: source.description, cls: "skillspace-discover-starter-desc" });
+      const pill = starters.createEl("button", { cls: "skillmanager-discover-starter" });
+      setIcon(pill.createSpan({ cls: "skillmanager-discover-starter-icon" }), "github");
+      const text = pill.createDiv({ cls: "skillmanager-discover-starter-text" });
+      text.createSpan({ text: source.name, cls: "skillmanager-discover-starter-name" });
+      text.createSpan({ text: source.description, cls: "skillmanager-discover-starter-desc" });
       pill.addEventListener("click", () => void this.addStarterDiscoverSource(source, pill));
     }
   }
@@ -539,7 +693,7 @@ export class LibraryView extends ItemView {
     if (pill.disabled) return;
     pill.disabled = true;
     pill.addClass("is-loading");
-    const nameEl = pill.querySelector<HTMLElement>(".skillspace-discover-starter-name");
+    const nameEl = pill.querySelector<HTMLElement>(".skillmanager-discover-starter-name");
     const originalText = nameEl?.textContent ?? source.name;
     if (nameEl) nameEl.textContent = "Adding…";
     try {
@@ -578,6 +732,11 @@ export class LibraryView extends ItemView {
     this.toolsMode = false;
     this.selectedTool = null;
     this.dashboardMode = false;
+    this.detailReturnsToDashboard = false;
+    this.mcpMode = false;
+    this.mcpToolFilter = null;
+    this.selectedMcpServer = null;
+    this.revealedMcpEnvKeys = new Set();
     this.cleanupReview();
     this.selectedItem = null;
     this.selectedFilePath = null;
@@ -596,7 +755,8 @@ export class LibraryView extends ItemView {
       this.favoritesOnly ||
       this.discoverMode ||
       this.toolsMode ||
-      this.dashboardMode
+      this.dashboardMode ||
+      this.mcpMode
     );
   }
 
@@ -617,6 +777,11 @@ export class LibraryView extends ItemView {
       if (this.collectionFilter && !item.collections.includes(this.collectionFilter)) return false;
       if (this.projectFilter && item.projectId !== this.projectFilter) return false;
       if (this.pluginFilter && item.pluginId !== this.pluginFilter) return false;
+      if (this.ruleKindFilter && item.type === "rule") {
+        const single = this.isSingleFileRuleTool(item.tool);
+        if (this.ruleKindFilter === "instructions" && !single) return false;
+        if (this.ruleKindFilter === "granular" && single) return false;
+      }
       if (this.sourceFilter === "github" && !item.sourceRepo) return false;
       if (this.sourceFilter === "builtin" && !this.isBuiltIn(item)) return false;
       if (this.sourceFilter === "local" && (item.sourceRepo || this.isBuiltIn(item))) return false;
@@ -687,7 +852,7 @@ export class LibraryView extends ItemView {
         skill: "Reusable capabilities your AI tools can invoke on demand.",
         agent: "Specialized sub-agents your tools can delegate tasks to.",
         command: "Slash commands and prompts your tools expose directly.",
-        rule: "Standing instructions and memories your tools always apply.",
+        rule: "Standing instructions your tools always apply: either one instructions file loaded every session (CLAUDE.md-style) or a directory of many individually-applied rule files.",
       };
       return descriptions[this.typeFilter];
     }
@@ -709,37 +874,144 @@ export class LibraryView extends ItemView {
     return "Every skill, agent, command, and rule across your configured tools and projects.";
   }
 
+  /** How many workspaces beyond the vault are currently tracked — every scanner (skills, agents,
+   *  commands, rules, MCP servers) only looks at the vault plus these, plus every tool's own
+   *  global directories, never the whole disk, so this number is what actually controls how much
+   *  of a given project shows up anywhere in the plugin. */
+  private workspaceCount(): number {
+    return this.getSettings().projectWorkspaces.length;
+  }
+
+  /** Shared prose for the tooltip/banner/menu copy below — kept in one place so "vault + global,
+   *  add a workspace for project-scoped stuff" is worded identically everywhere it appears.
+   *  Deliberately doesn't say "only this vault": global tool directories (~/.claude/skills,
+   *  ~/.claude.json's global mcpServers, etc.) are scanned regardless of workspaces, so saying
+   *  "only" undersold what's already covered. */
+  private workspaceScopeTooltip(): string {
+    const extra = this.workspaceCount();
+    return extra === 0
+      ? "Scanning this vault and every tool's own global skills, agents, and MCP servers. Add a workspace to also include a project's own."
+      : `Scanning this vault, ${extra} tracked workspace${extra === 1 ? "" : "s"}, and every tool's own global skills, agents, and MCP servers.`;
+  }
+
+  /** True while the one-time banner (see renderWorkspaceBanner) should show instead of the quiet
+   *  header chip (renderWorkspaceChip) — callers place each at the right spot themselves (the
+   *  banner belongs after the subtitle in the header; the chip belongs inline in the title row,
+   *  before any page-specific filter button), so this only decides which one, not where. The
+   *  persistent, always-on signal lives in the sidebar regardless of this (see
+   *  renderProjectsSection's heading badge and the "All"/"MCP servers" nav row tooltips, both
+   *  driven by workspaceScopeTooltip) — this is just the one-time nudge on top of that. */
+  private showWorkspaceBanner(): boolean {
+    return this.workspaceCount() === 0 && !this.getSettings().workspaceHintDismissed;
+  }
+
+  private renderWorkspaceBanner(container: HTMLElement) {
+    const banner = container.createDiv({ cls: "skillmanager-workspace-banner" });
+    const icon = banner.createSpan({ cls: "skillmanager-workspace-banner-icon" });
+    setIcon(icon, "info");
+    const body = banner.createDiv({ cls: "skillmanager-workspace-banner-body" });
+    body.createDiv({
+      text: "Also scanning every tool's global skills, agents, and MCP servers",
+      cls: "skillmanager-workspace-banner-title",
+    });
+    body.createDiv({
+      text: "This vault, and each tool's own global directories, are already covered. Add a project folder as a workspace to bring in its own skills, agents, and MCP servers too.",
+      cls: "skillmanager-workspace-banner-desc",
+    });
+    const addBtn = body.createEl("button", { cls: "mod-cta skillmanager-workspace-banner-add", text: "+ Add workspace" });
+    addBtn.addEventListener("click", () => {
+      new ProjectEditModal(this.app, null, (project) => this.upsertProject(project)).open();
+    });
+    const closeBtn = banner.createEl("button", {
+      cls: "skillmanager-icon-btn skillmanager-workspace-banner-close",
+      attr: { "aria-label": "Dismiss" },
+    });
+    setIcon(closeBtn, "x");
+    closeBtn.addEventListener("click", () => void this.dismissWorkspaceBanner());
+  }
+
+  private async dismissWorkspaceBanner() {
+    this.getSettings().workspaceHintDismissed = true;
+    await this.saveSettings();
+    this.render();
+  }
+
+  private renderWorkspaceChip(container: HTMLElement) {
+    const extra = this.workspaceCount();
+    const label = extra === 0 ? "Vault only" : `${extra} workspace${extra === 1 ? "" : "s"}`;
+    const chip = container.createEl("button", { cls: "skillmanager-workspace-chip", attr: { title: this.workspaceScopeTooltip() } });
+    const chipIcon = chip.createSpan({ cls: "skillmanager-workspace-chip-icon" });
+    setIcon(chipIcon, "folder-git-2");
+    chip.createSpan({ text: label });
+    chip.addEventListener("click", (evt) => this.openWorkspaceScopeMenu(evt));
+  }
+
+  /** Every tracked location listed for reference (not clickable — this menu is about visibility
+   *  and adding one, not navigation), plus the one real action. */
+  private openWorkspaceScopeMenu(evt: MouseEvent) {
+    const menu = new Menu();
+    for (const project of this.getAllProjects()) {
+      const count = this.items.filter((i) => i.projectId === project.id).length;
+      menu.addItem((menuItem) =>
+        menuItem
+          .setTitle(`${project.name} (${count})`)
+          .setIcon(projectIcon(project.id))
+          .setDisabled(true)
+      );
+    }
+    menu.addSeparator();
+    menu.addItem((menuItem) =>
+      menuItem.setTitle("Add workspace…").setIcon("plus").onClick(() => {
+        new ProjectEditModal(this.app, null, (project) => this.upsertProject(project)).open();
+      })
+    );
+    menu.showAtMouseEvent(evt);
+  }
+
   private render() {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
-    container.addClass("skillspace-view");
+    container.addClass("skillmanager-view");
 
-    this.renderSidebar(container.createDiv({ cls: "skillspace-sidebar" }));
-    this.renderContent(container.createDiv({ cls: "skillspace-content" }));
+    this.renderSidebar(container.createDiv({ cls: "skillmanager-sidebar" }));
+    this.renderContent(container.createDiv({ cls: "skillmanager-content" }));
   }
 
   // ---------- sidebar ----------
 
   private renderSidebar(sidebar: HTMLElement) {
-    const brand = sidebar.createDiv({ cls: "skillspace-brand" });
-    const brandLeft = brand.createDiv({ cls: "skillspace-brand-left" });
-    const brandIcon = brandLeft.createSpan({ cls: "skillspace-brand-icon" });
+    const brand = sidebar.createDiv({ cls: "skillmanager-brand" });
+    const brandLeft = brand.createDiv({ cls: "skillmanager-brand-left" });
+    const brandIcon = brandLeft.createSpan({ cls: "skillmanager-brand-icon" });
     setIcon(brandIcon, PLUGIN_ICON_ID);
-    brandLeft.createSpan({ text: "AI Skills Manager", cls: "skillspace-brand-name" });
+    brandLeft.createSpan({ text: "AI Skills Manager", cls: "skillmanager-brand-name" });
 
     const installBtn = brand.createEl("button", {
-      cls: "skillspace-icon-btn skillspace-install-btn",
+      cls: "skillmanager-icon-btn skillmanager-install-btn",
       attr: { "aria-label": "Install from GitHub" },
     });
     setIcon(installBtn, "plus");
     installBtn.addEventListener("click", () => this.openInstallFromGitHub());
 
     // Library — always first, not reorderable.
-    sidebar.createDiv({ cls: "skillspace-sidebar-heading", text: "Library" });
-    this.renderNavRow(sidebar, "library", "All", this.items.length, !this.isScoped(), () => {
-      this.clearScopeFilters();
-      this.render();
-    });
+    sidebar.createDiv({ cls: "skillmanager-sidebar-heading", text: "Library" });
+    this.renderNavRow(
+      sidebar,
+      "library",
+      "All",
+      this.items.length,
+      !this.isScoped(),
+      () => {
+        this.clearScopeFilters();
+        this.render();
+      },
+      undefined,
+      false,
+      "default",
+      undefined,
+      false,
+      this.workspaceScopeTooltip()
+    );
     this.renderNavRow(sidebar, "star", "Favourites", this.items.filter((i) => i.favorite).length, this.favoritesOnly, () => {
       this.clearScopeFilters();
       this.favoritesOnly = true;
@@ -752,18 +1024,50 @@ export class LibraryView extends ItemView {
     });
     this.renderNavRow(
       sidebar,
+      "plug",
+      "MCP servers",
+      this.mcpServers.length,
+      this.mcpMode,
+      () => {
+        this.clearScopeFilters();
+        this.mcpMode = true;
+        this.render();
+      },
+      undefined,
+      false,
+      "default",
+      undefined,
+      false,
+      this.workspaceScopeTooltip()
+    );
+    const attentionCount = this.getDashboardAttentionCount();
+    this.renderNavRow(
+      sidebar,
       "gauge",
       "Dashboard",
-      this.items.filter((i) => i.enabled).length,
+      null,
       this.dashboardMode,
       () => {
         this.clearScopeFilters();
         this.dashboardMode = true;
-        this.dashboardMetrics = null;
+        this.claudeUsage = null;
+        this.claudeUsageLoading = false;
         this.dashboardActiveTool = null;
+        this.dashboardTypeFilter = null;
         this.dashboardRankedExpanded = false;
-        this.render();
-      }
+        this.dashboardTopSkillsExpanded = false;
+        this.dashboardScrollTop = 0;
+        // A fresh disk rescan, not just a cache-clear — an item added or edited straight on disk
+        // (e.g. a new skill dropped in outside the plugin) should be reflected in prune/overlap
+        // stats the moment Dashboard opens, not only after an explicit "Rescan tools" first.
+        // rescan() already nulls dashboardMetrics/dashboardAttentionCount and re-renders.
+        void this.rescan();
+      },
+      undefined,
+      false,
+      "danger",
+      undefined,
+      attentionCount > 0
     );
 
     const sectionRenderers: Record<string, (sidebar: HTMLElement) => void> = {
@@ -777,7 +1081,7 @@ export class LibraryView extends ItemView {
       if (this.isSectionVisible(key)) sectionRenderers[key]?.(sidebar);
     }
 
-    const footer = sidebar.createDiv({ cls: "skillspace-sidebar-footer" });
+    const footer = sidebar.createDiv({ cls: "skillmanager-sidebar-footer" });
     this.renderNavRow(
       footer,
       "refresh-cw",
@@ -786,7 +1090,9 @@ export class LibraryView extends ItemView {
       false,
       () => void this.manualRescan(),
       undefined,
-      this.rescanningManually
+      this.rescanningManually,
+      "default",
+      "skillmanager-nav-item-accent"
     );
 
     this.wireSectionDragTargets(sidebar);
@@ -799,7 +1105,7 @@ export class LibraryView extends ItemView {
    *  direction-dependent the way duplicated per-heading listeners did. */
   private wireSectionDragTargets(sidebar: HTMLElement) {
     const headingAt = (evt: DragEvent) =>
-      (evt.target as HTMLElement).closest<HTMLElement>(".skillspace-sidebar-heading-collapsible");
+      (evt.target as HTMLElement).closest<HTMLElement>(".skillmanager-sidebar-heading-collapsible");
 
     sidebar.addEventListener("dragover", (evt) => {
       const target = headingAt(evt);
@@ -879,20 +1185,75 @@ export class LibraryView extends ItemView {
   }
 
   private renderProjectsSection(sidebar: HTMLElement) {
-    if (!this.renderCollapsibleHeading(sidebar, "projects", "Workspaces")) return;
+    const total = this.getAllProjects().length;
+    const expanded = this.renderCollapsibleHeading(
+      sidebar,
+      "projects",
+      "Workspaces",
+      (actionWrap) => {
+        const addBtn = actionWrap.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "New workspace" } });
+        setIcon(addBtn, "plus");
+        addBtn.addEventListener("click", (evt) => {
+          evt.stopPropagation();
+          new ProjectEditModal(this.app, null, (project) => this.upsertProject(project)).open();
+        });
+      },
+      // Persistent signal (visible whether this section is expanded or collapsed, unlike the
+      // one-time banner/chip in the content pane) that scanning covers more than just the vault
+      // once a workspace is tracked — see workspaceScopeTooltip. Sits right next to the
+      // "Workspaces" label itself, not over by the "+" button.
+      { text: total === 1 ? "1 vault" : `${total} tracked`, tooltip: this.workspaceScopeTooltip() }
+    );
+    if (!expanded) return;
+
     const showEmpty = this.getSettings().showEmptySidebarRows;
     const projects = this.getAllProjects();
     for (const project of projects) {
       const count = this.items.filter((i) => i.projectId === project.id).length;
-      if (!showEmpty && count === 0) continue;
-      this.renderNavRow(sidebar, projectIcon(project.id), project.name, count, this.projectFilter === project.id, () => {
+      if (!showEmpty && count === 0 && project.id !== VAULT_PROJECT_ID) continue;
+
+      const row = sidebar.createDiv({ cls: "skillmanager-nav-item" });
+      if (this.projectFilter === project.id) row.addClass("is-active");
+      const iconEl = row.createSpan({ cls: "skillmanager-nav-icon" });
+      setIcon(iconEl, projectIcon(project.id));
+      row.createSpan({ text: project.name, cls: "skillmanager-nav-label" });
+      row.createSpan({ text: String(count), cls: "skillmanager-nav-count" });
+
+      if (project.id !== VAULT_PROJECT_ID) {
+        const actions = row.createDiv({ cls: "skillmanager-nav-actions" });
+        const moreBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More" } });
+        setIcon(moreBtn, MORE_ICON_ID);
+        moreBtn.addEventListener("click", (evt) => {
+          evt.stopPropagation();
+          const menu = new Menu();
+          menu.addItem((menuItem) =>
+            menuItem
+              .setTitle("Edit")
+              .setIcon("pencil")
+              .onClick(() => new ProjectEditModal(this.app, project, (updated) => this.upsertProject(updated)).open())
+          );
+          menu.addItem((menuItem) =>
+            menuItem
+              .setTitle("Remove")
+              .setIcon("trash-2")
+              .setWarning(true)
+              .onClick(() => void this.deleteProject(project))
+          );
+          menu.showAtMouseEvent(evt as MouseEvent);
+        });
+      }
+
+      row.addEventListener("click", () => {
         this.clearScopeFilters();
         this.projectFilter = this.projectFilter === project.id ? null : project.id;
         this.render();
       });
     }
     if (projects.length <= 1) {
-      sidebar.createDiv({ cls: "skillspace-sidebar-empty", text: "Add more project folders in settings" });
+      sidebar.createDiv({
+        cls: "skillmanager-sidebar-empty",
+        text: "No extra workspaces yet. Add one to scan its own skills, agents, and MCP servers too.",
+      });
     }
   }
 
@@ -916,7 +1277,7 @@ export class LibraryView extends ItemView {
   private renderCollectionsSection(sidebar: HTMLElement) {
     const settings = this.getSettings();
     const expanded = this.renderCollapsibleHeading(sidebar, "collections", "Collections", (actionWrap) => {
-      const addBtn = actionWrap.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "New collection" } });
+      const addBtn = actionWrap.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "New collection" } });
       setIcon(addBtn, "plus");
       addBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
@@ -926,22 +1287,22 @@ export class LibraryView extends ItemView {
     if (!expanded) return;
 
     if (settings.collections.length === 0) {
-      sidebar.createDiv({ cls: "skillspace-sidebar-empty", text: "No collections yet" });
+      sidebar.createDiv({ cls: "skillmanager-sidebar-empty", text: "No collections yet" });
     }
 
     for (const collection of settings.collections) {
-      const row = sidebar.createDiv({ cls: "skillspace-nav-item" });
-      const icon = row.createSpan({ cls: "skillspace-nav-icon" });
+      const row = sidebar.createDiv({ cls: "skillmanager-nav-item" });
+      const icon = row.createSpan({ cls: "skillmanager-nav-icon" });
       setIcon(icon, "folder");
-      row.createSpan({ text: collection.name, cls: "skillspace-nav-label" });
+      row.createSpan({ text: collection.name, cls: "skillmanager-nav-label" });
       if (this.collectionFilter === collection.id) row.addClass("is-active");
 
-      const actions = row.createDiv({ cls: "skillspace-nav-actions" });
+      const actions = row.createDiv({ cls: "skillmanager-nav-actions" });
       const members = this.items.filter((item) => collection.itemIds.includes(item.entryId));
       const allOn = members.length > 0 && members.every((item) => item.enabled);
 
       const toggle = actions.createEl("button", {
-        cls: `skillspace-toggle skillspace-toggle-sm${allOn ? " is-on" : ""}`,
+        cls: `skillmanager-toggle skillmanager-toggle-sm${allOn ? " is-on" : ""}`,
         attr: { "aria-label": "Enable or disable every item in this collection" },
       });
       toggle.addEventListener("click", (evt) => {
@@ -949,11 +1310,25 @@ export class LibraryView extends ItemView {
         void this.toggleCollection(collection.id);
       });
 
-      const editBtn = actions.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Edit collection" } });
-      setIcon(editBtn, "pencil");
-      editBtn.addEventListener("click", (evt) => {
+      const moreBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More" } });
+      setIcon(moreBtn, MORE_ICON_ID);
+      moreBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
-        new CollectionEditModal(this.app, collection, this.items, (updated) => this.upsertCollection(updated)).open();
+        const menu = new Menu();
+        menu.addItem((menuItem) =>
+          menuItem
+            .setTitle("Edit")
+            .setIcon("pencil")
+            .onClick(() => new CollectionEditModal(this.app, collection, this.items, (updated) => this.upsertCollection(updated)).open())
+        );
+        menu.addItem((menuItem) =>
+          menuItem
+            .setTitle("Delete")
+            .setIcon("trash-2")
+            .setWarning(true)
+            .onClick(() => void this.deleteCollection(collection))
+        );
+        menu.showAtMouseEvent(evt as MouseEvent);
       });
 
       row.addEventListener("click", () => {
@@ -969,17 +1344,25 @@ export class LibraryView extends ItemView {
     sidebar: HTMLElement,
     key: string,
     title: string,
-    renderAction?: (container: HTMLElement) => void
+    renderAction?: (container: HTMLElement) => void,
+    titleBadge?: { text: string; tooltip?: string }
   ): boolean {
     const isCollapsed = this.collapsedSections.has(key);
-    const heading = sidebar.createDiv({ cls: "skillspace-sidebar-heading skillspace-sidebar-heading-collapsible" });
+    const heading = sidebar.createDiv({ cls: "skillmanager-sidebar-heading skillmanager-sidebar-heading-collapsible" });
     heading.dataset.sectionKey = key;
 
-    const left = heading.createDiv({ cls: "skillspace-sidebar-heading-left" });
+    const left = heading.createDiv({ cls: "skillmanager-sidebar-heading-left" });
     left.setAttr("draggable", "true");
-    const chevron = left.createSpan({ cls: "skillspace-chevron" });
+    const chevron = left.createSpan({ cls: "skillmanager-chevron" });
     setIcon(chevron, isCollapsed ? "chevron-right" : "chevron-down");
     left.createSpan({ text: title });
+    if (titleBadge) {
+      left.createSpan({
+        cls: "skillmanager-sidebar-heading-badge",
+        text: titleBadge.text,
+        attr: titleBadge.tooltip ? { title: titleBadge.tooltip } : undefined,
+      });
+    }
     left.addEventListener("click", () => {
       if (isCollapsed) this.collapsedSections.delete(key);
       else this.collapsedSections.add(key);
@@ -1001,7 +1384,7 @@ export class LibraryView extends ItemView {
     });
 
     if (renderAction) {
-      renderAction(heading.createDiv({ cls: "skillspace-sidebar-heading-action" }));
+      renderAction(heading.createDiv({ cls: "skillmanager-sidebar-heading-action" }));
     }
 
     return !isCollapsed;
@@ -1028,15 +1411,28 @@ export class LibraryView extends ItemView {
     active: boolean,
     onClick: () => void,
     svgIcon?: string,
-    spinning?: boolean
+    spinning?: boolean,
+    countVariant: "default" | "danger" = "default",
+    extraCls?: string,
+    dot?: boolean,
+    tooltip?: string
   ) {
-    const row = parent.createDiv({ cls: "skillspace-nav-item" });
+    const row = parent.createDiv({ cls: "skillmanager-nav-item" });
+    if (extraCls) row.addClass(extraCls);
     if (active) row.addClass("is-active");
-    const iconEl = row.createSpan({ cls: "skillspace-nav-icon" });
+    if (tooltip) row.title = tooltip;
+    const iconEl = row.createSpan({ cls: "skillmanager-nav-icon" });
     this.renderIcon(iconEl, icon, svgIcon);
     if (spinning) iconEl.addClass("is-syncing");
-    row.createSpan({ text: label, cls: "skillspace-nav-label" });
-    if (count !== null) row.createSpan({ text: String(count), cls: "skillspace-nav-count" });
+    row.createSpan({ text: label, cls: "skillmanager-nav-label" });
+    if (count !== null) {
+      const cls = countVariant === "danger" ? "skillmanager-nav-count-danger" : "skillmanager-nav-count";
+      row.createSpan({ text: String(count), cls });
+    } else if (dot) {
+      // "Needs a look" indicator that doesn't compete with the label for attention the way a
+      // number does — see getDashboardAttentionCount's callers.
+      row.createSpan({ cls: "skillmanager-nav-dot" });
+    }
     row.addEventListener("click", onClick);
   }
 
@@ -1072,6 +1468,10 @@ export class LibraryView extends ItemView {
 
   private isToolDisabled(toolId: string): boolean {
     return !!this.getSettings().tools.find((t) => t.id === toolId)?.disabled;
+  }
+
+  private isSingleFileRuleTool(toolId: string): boolean {
+    return !!this.getSettings().tools.find((t) => t.id === toolId)?.singleFileRule;
   }
 
   private syncStatusFor(item: ItemMetadata): "current" | "stale" | "unknown" {
@@ -1115,6 +1515,41 @@ export class LibraryView extends ItemView {
     this.render();
   }
 
+  private async deleteCollection(collection: Collection) {
+    const settings = this.getSettings();
+    await deleteCollectionAndSync(this.store, settings, this.saveSettings, this.items, collection.id);
+
+    this.items = this.items.map((item) =>
+      item.collections.includes(collection.id)
+        ? { ...item, collections: item.collections.filter((c) => c !== collection.id) }
+        : item
+    );
+    if (this.collectionFilter === collection.id) this.collectionFilter = null;
+    if (this.selectedItem) {
+      this.selectedItem = this.items.find((i) => i.entryId === this.selectedItem?.entryId) ?? null;
+    }
+    new Notice(`Deleted collection "${collection.name}".`);
+    this.render();
+  }
+
+  private async upsertProject(project: ProjectWorkspace) {
+    const settings = this.getSettings();
+    const idx = settings.projectWorkspaces.findIndex((p) => p.id === project.id);
+    if (idx >= 0) settings.projectWorkspaces[idx] = project;
+    else settings.projectWorkspaces.push(project);
+    await this.saveSettings();
+    await this.rescan();
+  }
+
+  private async deleteProject(project: ProjectWorkspace) {
+    const settings = this.getSettings();
+    settings.projectWorkspaces = settings.projectWorkspaces.filter((p) => p.id !== project.id);
+    await this.saveSettings();
+    if (this.projectFilter === project.id) this.projectFilter = null;
+    new Notice(`Removed workspace "${project.name}".`);
+    await this.rescan();
+  }
+
   // ---------- content ----------
 
   private renderContent(content: HTMLElement) {
@@ -1130,36 +1565,42 @@ export class LibraryView extends ItemView {
       this.renderDashboardContent(content);
       return;
     }
+    if (this.mcpMode) {
+      this.renderMcpServersContent(content);
+      return;
+    }
 
     const items = this.filteredItems();
 
-    const header = content.createDiv({ cls: "skillspace-content-header" });
-    const titleRow = header.createDiv({ cls: "skillspace-title-row" });
-    titleRow.createEl("h2", { text: this.scopeTitle(), cls: "skillspace-title" });
-    titleRow.createSpan({ text: String(items.length), cls: "skillspace-count-pill" });
-    header.createDiv({ text: this.scopeDescription(), cls: "skillspace-subtitle" });
+    const header = content.createDiv({ cls: "skillmanager-content-header" });
+    const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
+    titleRow.createEl("h2", { text: this.scopeTitle(), cls: "skillmanager-title" });
+    titleRow.createSpan({ text: String(items.length), cls: "skillmanager-count-pill" });
+    if (!this.isScoped() && !this.showWorkspaceBanner()) this.renderWorkspaceChip(titleRow);
+    header.createDiv({ text: this.scopeDescription(), cls: "skillmanager-subtitle" });
+    if (!this.isScoped() && this.showWorkspaceBanner()) this.renderWorkspaceBanner(header);
 
-    const toolbar = content.createDiv({ cls: "skillspace-toolbar" });
+    const toolbar = content.createDiv({ cls: "skillmanager-toolbar" });
 
-    const searchWrap = toolbar.createDiv({ cls: "skillspace-search-wrap" });
-    const searchIcon = searchWrap.createSpan({ cls: "skillspace-search-icon" });
+    const searchWrap = toolbar.createDiv({ cls: "skillmanager-search-wrap" });
+    const searchIcon = searchWrap.createSpan({ cls: "skillmanager-search-icon" });
     setIcon(searchIcon, "search");
     const searchInput = searchWrap.createEl("input", {
       type: "text",
       placeholder: "Search skills, agents, commands…",
-      cls: "skillspace-search",
+      cls: "skillmanager-search",
     });
     searchInput.value = this.search;
 
     const clearBtn = searchWrap.createEl("button", {
-      cls: "skillspace-icon-btn skillspace-search-clear",
+      cls: "skillmanager-icon-btn skillmanager-search-clear",
       attr: { "aria-label": "Clear search" },
     });
     setIcon(clearBtn, "x");
     const updateClearBtn = () => clearBtn.toggle(searchInput.value.length > 0);
     updateClearBtn();
 
-    const segmented = toolbar.createDiv({ cls: "skillspace-segmented" });
+    const segmented = toolbar.createDiv({ cls: "skillmanager-segmented" });
     this.renderSegment(segmented, "All", this.enabledFilter === "all", () => {
       this.enabledFilter = "all";
       this.render();
@@ -1176,11 +1617,18 @@ export class LibraryView extends ItemView {
     // Bulk sync actions only make sense against the whole library, so only the true unscoped
     // "All" page offers them — a filtered/scoped view (a type, a tool, a project, …) doesn't.
     if (!this.isScoped()) {
-      const syncActions = toolbar.createDiv({ cls: "skillspace-toolbar-actions" });
-      const checkBtn = syncActions.createEl("button", { text: "Check for updates" });
+      const syncActions = toolbar.createDiv({ cls: "skillmanager-toolbar-actions" });
+      const staleCount = [...this.syncStatus.values()].filter((s) => s === "stale").length;
+
+      // Only one of these two ever holds the solid accent fill at a time: "Check for updates" is
+      // the primary action until a check turns up stale items, at which point "Update all"
+      // becomes the more consequential action and takes the fill, demoting Check to a stroke.
+      const checkBtn = syncActions.createEl("button", {
+        text: "Check for updates",
+        cls: staleCount > 0 ? "skillmanager-btn-accent-stroke" : "mod-cta",
+      });
       checkBtn.addEventListener("click", () => void this.bulkCheckForUpdates(checkBtn));
 
-      const staleCount = [...this.syncStatus.values()].filter((s) => s === "stale").length;
       if (staleCount > 0) {
         const updateAllBtn = syncActions.createEl("button", { text: `Update all (${staleCount})`, cls: "mod-cta" });
         updateAllBtn.addEventListener("click", () => void this.bulkUpdateAll(updateAllBtn));
@@ -1192,15 +1640,15 @@ export class LibraryView extends ItemView {
     if (this.toolFilter) {
       const tool = this.getSettings().tools.find((t) => t.id === this.toolFilter);
       if (tool) {
-        const installActions = toolbar.createDiv({ cls: "skillspace-toolbar-actions" });
+        const installActions = toolbar.createDiv({ cls: "skillmanager-toolbar-actions" });
         const installBtn = installActions.createEl("button", { cls: "mod-cta", text: `Install into ${tool.name}` });
         installBtn.addEventListener("click", () => this.openInstallFromGitHub(tool.id));
       }
     }
 
-    this.renderTagBar(content.createDiv({ cls: "skillspace-tagbar" }));
+    this.renderTagBar(content.createDiv({ cls: "skillmanager-tagbar" }));
 
-    const body = content.createDiv({ cls: "skillspace-body" });
+    const body = content.createDiv({ cls: "skillmanager-body" });
 
     // The grid is always on screen and always the same width once something's selected — it
     // never gets replaced by a tree or narrowed further to make room for a file. The one thing
@@ -1211,7 +1659,7 @@ export class LibraryView extends ItemView {
     const animation = this.pendingDetailAnimation;
     this.pendingDetailAnimation = null;
 
-    const grid = body.createDiv({ cls: `skillspace-items${this.selectedItem ? " is-docked" : ""}` });
+    const grid = body.createDiv({ cls: `skillmanager-items${this.selectedItem ? " is-docked" : ""}` });
     const itemsEl = grid;
     this.renderItems(grid, items);
     if (this.selectedItem) {
@@ -1222,8 +1670,11 @@ export class LibraryView extends ItemView {
         grid.scrollTop = this.dockedScrollTop;
       } else {
         // Just became docked (coming from the full, wider grid): the column layout changed, so
-        // scroll the newly selected card into view since we don't know where it landed.
-        grid.querySelector(".skillspace-card.is-selected")?.scrollIntoView({ block: "nearest" });
+        // scroll the newly selected card into view since we don't know where it landed. "start"
+        // (not "nearest") so it always lands at the top of the grid rather than wherever the
+        // minimal scroll happens to leave it — e.g. pinned to the bottom edge when it was below
+        // the fold.
+        grid.querySelector(".skillmanager-card.is-selected")?.scrollIntoView({ block: "start" });
       }
       grid.addEventListener("scroll", () => {
         this.dockedScrollTop = grid.scrollTop;
@@ -1240,7 +1691,7 @@ export class LibraryView extends ItemView {
     }
 
     if (this.selectedItem) {
-      const rail = body.createDiv({ cls: `skillspace-detail${animation ? ` skillspace-panel-enter-${animation}` : ""}` });
+      const rail = body.createDiv({ cls: `skillmanager-detail${animation ? ` skillmanager-panel-enter-${animation}` : ""}` });
       this.renderDetailRail(rail, this.selectedItem);
     }
 
@@ -1249,7 +1700,7 @@ export class LibraryView extends ItemView {
     searchInput.addEventListener("input", () => {
       this.search = searchInput.value;
       updateClearBtn();
-      header.querySelector(".skillspace-count-pill")?.setText(String(this.filteredItems().length));
+      header.querySelector(".skillmanager-count-pill")?.setText(String(this.filteredItems().length));
       if (itemsEl) this.renderItems(itemsEl, this.filteredItems());
     });
 
@@ -1257,14 +1708,14 @@ export class LibraryView extends ItemView {
       searchInput.value = "";
       this.search = "";
       updateClearBtn();
-      header.querySelector(".skillspace-count-pill")?.setText(String(this.filteredItems().length));
+      header.querySelector(".skillmanager-count-pill")?.setText(String(this.filteredItems().length));
       if (itemsEl) this.renderItems(itemsEl, this.filteredItems());
       searchInput.focus();
     });
   }
 
   private renderSegment(container: HTMLElement, label: string, active: boolean, onClick: () => void) {
-    const btn = container.createEl("button", { text: label, cls: "skillspace-segment" });
+    const btn = container.createEl("button", { text: label, cls: "skillmanager-segment" });
     if (active) btn.addClass("is-active");
     btn.addEventListener("click", onClick);
   }
@@ -1315,31 +1766,31 @@ export class LibraryView extends ItemView {
 
     const totalCount = this.getSettings().discoverCatalog.length;
 
-    const header = content.createDiv({ cls: "skillspace-content-header" });
-    const titleRow = header.createDiv({ cls: "skillspace-title-row" });
-    titleRow.createEl("h2", { text: "Discover", cls: "skillspace-title" });
+    const header = content.createDiv({ cls: "skillmanager-content-header" });
+    const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
+    titleRow.createEl("h2", { text: "Discover", cls: "skillmanager-title" });
     const countPill = titleRow.createSpan({
       text: String(this.filteredDiscoverEntries().length),
-      cls: "skillspace-count-pill",
+      cls: "skillmanager-count-pill",
     });
     header.createDiv({
       text: "Skills, agents, commands, and rules found in GitHub repos you've pointed at. Browse the real content, install whenever.",
-      cls: "skillspace-subtitle",
+      cls: "skillmanager-subtitle",
     });
 
-    const toolbar = content.createDiv({ cls: "skillspace-toolbar" });
+    const toolbar = content.createDiv({ cls: "skillmanager-toolbar" });
 
-    const searchWrap = toolbar.createDiv({ cls: "skillspace-search-wrap" });
-    const searchIcon = searchWrap.createSpan({ cls: "skillspace-search-icon" });
+    const searchWrap = toolbar.createDiv({ cls: "skillmanager-search-wrap" });
+    const searchIcon = searchWrap.createSpan({ cls: "skillmanager-search-icon" });
     setIcon(searchIcon, "search");
     const searchInput = searchWrap.createEl("input", {
       type: "text",
       placeholder: "Search discovered skills…",
-      cls: "skillspace-search",
+      cls: "skillmanager-search",
     });
     searchInput.value = this.discoverSearch;
     const clearBtn = searchWrap.createEl("button", {
-      cls: "skillspace-icon-btn skillspace-search-clear",
+      cls: "skillmanager-icon-btn skillmanager-search-clear",
       attr: { "aria-label": "Clear search" },
     });
     setIcon(clearBtn, "x");
@@ -1353,12 +1804,12 @@ export class LibraryView extends ItemView {
     const addBtn = toolbar.createEl("button", { cls: "mod-cta", text: "+ Add source" });
     addBtn.addEventListener("click", () => this.openAddDiscoverSource());
 
-    if (totalCount > 0) this.renderDiscoverTypeFilterBar(content.createDiv({ cls: "skillspace-tagbar" }));
+    if (totalCount > 0) this.renderDiscoverTypeFilterBar(content.createDiv({ cls: "skillmanager-tagbar" }));
 
-    const body = content.createDiv({ cls: "skillspace-body" });
+    const body = content.createDiv({ cls: "skillmanager-body" });
     const grouped = this.discoverSortOrder === "source";
     const grid = body.createDiv({
-      cls: `skillspace-items${this.selectedDiscoverEntry ? " is-docked" : ""}${grouped ? " is-grouped" : ""}`,
+      cls: `skillmanager-items${this.selectedDiscoverEntry ? " is-docked" : ""}${grouped ? " is-grouped" : ""}`,
     });
 
     const renderGrid = () => {
@@ -1368,7 +1819,7 @@ export class LibraryView extends ItemView {
         if (totalCount === 0) {
           this.renderDiscoverEmptyState(grid);
         } else {
-          grid.createDiv({ cls: "skillspace-empty", text: "Nothing discovered matches your search." });
+          grid.createDiv({ cls: "skillmanager-empty", text: "Nothing discovered matches your search." });
         }
         return;
       }
@@ -1384,7 +1835,7 @@ export class LibraryView extends ItemView {
           // scrollIntoView on every render caused a visible jump.
           grid.scrollTop = this.dockedDiscoverScrollTop;
         } else {
-          grid.querySelector(".skillspace-card.is-selected")?.scrollIntoView({ block: "nearest" });
+          grid.querySelector(".skillmanager-card.is-selected")?.scrollIntoView({ block: "start" });
         }
       }
     };
@@ -1396,7 +1847,7 @@ export class LibraryView extends ItemView {
 
     if (this.selectedDiscoverEntry) {
       const rail = body.createDiv({
-        cls: `skillspace-detail skillspace-discover-rail${animation ? ` skillspace-panel-enter-${animation}` : ""}`,
+        cls: `skillmanager-detail skillmanager-discover-rail${animation ? ` skillmanager-panel-enter-${animation}` : ""}`,
       });
       this.renderDiscoverRail(rail, this.selectedDiscoverEntry);
     }
@@ -1423,7 +1874,7 @@ export class LibraryView extends ItemView {
    *  like it's fighting whatever you just typed. */
   private renderDiscoverTypeFilterBar(bar: HTMLElement) {
     const catalog = this.getSettings().discoverCatalog;
-    const allChip = bar.createEl("button", { text: `All (${catalog.length})`, cls: "skillspace-chip" });
+    const allChip = bar.createEl("button", { text: `All (${catalog.length})`, cls: "skillmanager-chip" });
     if (!this.discoverTypeFilter) allChip.addClass("is-active");
     allChip.addEventListener("click", () => {
       this.discoverTypeFilter = null;
@@ -1432,7 +1883,7 @@ export class LibraryView extends ItemView {
     for (const type of Object.keys(TYPE_LABELS) as ItemType[]) {
       const count = catalog.filter((e) => e.type === type).length;
       if (count === 0) continue;
-      const chip = bar.createEl("button", { text: `${TYPE_LABELS[type]} (${count})`, cls: "skillspace-chip" });
+      const chip = bar.createEl("button", { text: `${TYPE_LABELS[type]} (${count})`, cls: "skillmanager-chip" });
       if (this.discoverTypeFilter === type) chip.addClass("is-active");
       chip.addEventListener("click", () => {
         this.discoverTypeFilter = this.discoverTypeFilter === type ? null : type;
@@ -1443,11 +1894,11 @@ export class LibraryView extends ItemView {
 
   private renderDiscoverSortButton(toolbar: HTMLElement) {
     const current = DISCOVER_SORT_OPTIONS.find((o) => o.key === this.discoverSortOrder) ?? DISCOVER_SORT_OPTIONS[0];
-    const btn = toolbar.createEl("button", { cls: "skillspace-sort-btn", attr: { "aria-label": "Sort by" } });
-    const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
+    const btn = toolbar.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Sort by" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
     setIcon(icon, "arrow-up-down");
-    btn.createSpan({ text: current.label, cls: "skillspace-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillspace-sort-btn-chevron" });
+    btn.createSpan({ text: current.label, cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
     setIcon(chevron, "chevron-down");
     btn.addEventListener("click", (evt) => {
       const menu = new Menu();
@@ -1468,12 +1919,12 @@ export class LibraryView extends ItemView {
 
   private renderDiscoverRefreshAllButton(toolbar: HTMLElement) {
     const btn = toolbar.createEl("button", {
-      cls: "skillspace-sort-btn skillspace-discover-refresh-all-btn",
+      cls: "skillmanager-sort-btn skillmanager-discover-refresh-all-btn",
       attr: { "aria-label": "Re-search every repo already in Discover for anything new or changed" },
     });
-    const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
     setIcon(icon, "refresh-cw");
-    btn.createSpan({ text: "Refresh all", cls: "skillspace-sort-btn-label" });
+    btn.createSpan({ text: "Refresh all", cls: "skillmanager-sort-btn-label" });
     if (this.refreshingAllDiscover) {
       btn.disabled = true;
       btn.addClass("is-syncing");
@@ -1491,10 +1942,10 @@ export class LibraryView extends ItemView {
     if (keys.size < 2) return;
     const allCollapsed = Array.from(keys).every((key) => this.collapsedDiscoverSources.has(key));
 
-    const btn = toolbar.createEl("button", { cls: "skillspace-sort-btn" });
-    const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
+    const btn = toolbar.createEl("button", { cls: "skillmanager-sort-btn" });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
     setIcon(icon, allCollapsed ? "chevrons-down-up" : "chevrons-up-down");
-    btn.createSpan({ text: allCollapsed ? "Expand all" : "Collapse all", cls: "skillspace-sort-btn-label" });
+    btn.createSpan({ text: allCollapsed ? "Expand all" : "Collapse all", cls: "skillmanager-sort-btn-label" });
     btn.addEventListener("click", () => {
       if (allCollapsed) {
         for (const key of keys) this.collapsedDiscoverSources.delete(key);
@@ -1617,15 +2068,15 @@ export class LibraryView extends ItemView {
     const isCollapsed = this.collapsedDiscoverSources.has(groupKey);
 
     const section = container.createDiv({
-      cls: `skillspace-discover-source-group${isCollapsed ? " is-collapsed" : ""}`,
+      cls: `skillmanager-discover-source-group${isCollapsed ? " is-collapsed" : ""}`,
     });
-    const header = section.createDiv({ cls: "skillspace-discover-source-group-header" });
+    const header = section.createDiv({ cls: "skillmanager-discover-source-group-header" });
 
     // Dedicated toggle, separate from the header's own click handler below (scroll-to-top) —
     // collapsing a section with hundreds of cards is the whole point of this control, so it
     // shouldn't be at the mercy of "did the click also land on the sticky-scroll logic."
     const chevron = header.createSpan({
-      cls: "skillspace-chevron",
+      cls: "skillmanager-chevron",
       attr: { "aria-label": isCollapsed ? `Expand ${group.repoUrl}` : `Collapse ${group.repoUrl}` },
     });
     setIcon(chevron, isCollapsed ? "chevron-right" : "chevron-down");
@@ -1638,15 +2089,15 @@ export class LibraryView extends ItemView {
 
     const parsed = parseOwnerRepo(group.repoUrl);
     const label = parsed ? `${parsed.owner}/${parsed.repo}` : group.repoUrl;
-    const repoLine = header.createDiv({ cls: "skillspace-card-discover-repo" });
+    const repoLine = header.createDiv({ cls: "skillmanager-card-discover-repo" });
     if (parsed) {
       repoLine.createEl("img", { attr: { src: `https://github.com/${parsed.owner}.png?size=32` } });
     }
-    repoLine.createSpan({ text: label, cls: "skillspace-card-discover-repo-name" });
-    header.createSpan({ text: String(group.entries.length), cls: "skillspace-count-pill" });
+    repoLine.createSpan({ text: label, cls: "skillmanager-card-discover-repo-name" });
+    header.createSpan({ text: String(group.entries.length), cls: "skillmanager-count-pill" });
 
     const removeBtn = header.createEl("button", {
-      cls: "skillspace-icon-btn",
+      cls: "skillmanager-icon-btn",
       attr: { "aria-label": `Remove all ${group.entries.length} items from ${label}` },
     });
     setIcon(removeBtn, "trash-2");
@@ -1656,12 +2107,12 @@ export class LibraryView extends ItemView {
     });
 
     // The header stays pinned at the top of the scroll area for as long as any of this
-    // section's cards are still in view (see .skillspace-discover-source-group-header's
+    // section's cards are still in view (see .skillmanager-discover-source-group-header's
     // position: sticky) — clicking it while stuck jumps back to this section's own top,
     // rather than scrolling to wherever the sticky header's own box currently reports (which,
     // being sticky, is always "already at the top" and wouldn't move anything).
     header.addEventListener("click", () => {
-      const scrollContainer = section.closest<HTMLElement>(".skillspace-items");
+      const scrollContainer = section.closest<HTMLElement>(".skillmanager-items");
       if (!scrollContainer) return;
       // getBoundingClientRect rather than offsetTop — offsetTop is relative to whichever
       // ancestor happens to be positioned, not necessarily the scroll container itself.
@@ -1673,7 +2124,7 @@ export class LibraryView extends ItemView {
     // than rendering it and hiding it with CSS — the point is to make a huge source cheap to
     // skip past, not just invisible.
     if (!isCollapsed) {
-      const grid = section.createDiv({ cls: "skillspace-discover-source-group-grid" });
+      const grid = section.createDiv({ cls: "skillmanager-discover-source-group-grid" });
       for (const entry of group.entries) this.renderDiscoverCard(grid, entry);
     }
   }
@@ -1706,21 +2157,21 @@ export class LibraryView extends ItemView {
    *  favourite/sourcePath semantics renderCard is built around, and clicking one must never touch
    *  selectItem's tree/file/edit state machine, which is entirely file-on-disk-oriented. */
   private renderDiscoverCard(container: HTMLElement, entry: DiscoverEntry) {
-    const card = container.createDiv({ cls: "skillspace-card skillspace-card-discover" });
+    const card = container.createDiv({ cls: "skillmanager-card skillmanager-card-discover" });
     if (this.selectedDiscoverEntry?.id === entry.id) card.addClass("is-selected");
 
-    const head = card.createDiv({ cls: "skillspace-card-head" });
-    head.createSpan({ text: entry.name, cls: "skillspace-card-name" });
+    const head = card.createDiv({ cls: "skillmanager-card-head" });
+    head.createSpan({ text: entry.name, cls: "skillmanager-card-name" });
 
-    const actions = head.createDiv({ cls: "skillspace-card-discover-actions" });
-    const linkBtn = actions.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Open on GitHub" } });
+    const actions = head.createDiv({ cls: "skillmanager-card-discover-actions" });
+    const linkBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Open on GitHub" } });
     setIcon(linkBtn, "external-link");
     linkBtn.addEventListener("click", (evt) => {
       evt.stopPropagation();
       window.open(this.discoverEntryUrl(entry), "_blank");
     });
     const installBtn = actions.createEl("button", {
-      cls: "skillspace-icon-btn skillspace-install-btn",
+      cls: "skillmanager-icon-btn skillmanager-install-btn",
       attr: { "aria-label": "Install" },
     });
     setIcon(installBtn, "plus");
@@ -1730,22 +2181,22 @@ export class LibraryView extends ItemView {
     });
 
     if (entry.description) {
-      card.createDiv({ text: entry.description, cls: "skillspace-card-desc" });
+      card.createDiv({ text: entry.description, cls: "skillmanager-card-desc" });
     }
     if (entry.tags.length > 0) {
-      const tags = card.createDiv({ cls: "skillspace-card-tags" });
+      const tags = card.createDiv({ cls: "skillmanager-card-tags" });
       for (const tag of entry.tags) {
-        tags.createSpan({ text: tag, cls: `skillspace-chip skillspace-tag-c${tagColorIndex(tag)}` });
+        tags.createSpan({ text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
       }
     }
 
-    const footer = card.createDiv({ cls: "skillspace-card-footer" });
+    const footer = card.createDiv({ cls: "skillmanager-card-footer" });
     this.renderDiscoverRepoLine(footer, entry);
 
-    const rightGroup = footer.createDiv({ cls: "skillspace-card-footer-right" });
-    rightGroup.createSpan({ text: TYPE_LABEL_SINGULAR[entry.type], cls: "skillspace-card-type" });
-    const menuBtn = rightGroup.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "More actions" } });
-    setIcon(menuBtn, "more-vertical");
+    const rightGroup = footer.createDiv({ cls: "skillmanager-card-footer-right" });
+    rightGroup.createSpan({ text: TYPE_LABEL_SINGULAR[entry.type], cls: "skillmanager-card-type" });
+    const menuBtn = rightGroup.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More actions" } });
+    setIcon(menuBtn, MORE_HORIZONTAL_ICON_ID);
     menuBtn.addEventListener("click", (evt) => {
       evt.stopPropagation();
       this.openDiscoverCardMenu(evt, entry);
@@ -1761,16 +2212,16 @@ export class LibraryView extends ItemView {
   /** Repo avatar + owner/repo + star count, all one inline group — shared between the card
    *  footer and the rail header so "which repo this came from" reads identically in both. */
   private renderDiscoverRepoLine(container: HTMLElement, entry: DiscoverEntry) {
-    const repo = container.createDiv({ cls: "skillspace-card-discover-repo" });
+    const repo = container.createDiv({ cls: "skillmanager-card-discover-repo" });
     const parsed = parseOwnerRepo(entry.repoUrl);
     if (parsed) {
       repo.createEl("img", { attr: { src: `https://github.com/${parsed.owner}.png?size=32` } });
-      repo.createSpan({ text: `${parsed.owner}/${parsed.repo}`, cls: "skillspace-card-discover-repo-name" });
+      repo.createSpan({ text: `${parsed.owner}/${parsed.repo}`, cls: "skillmanager-card-discover-repo-name" });
     } else {
-      repo.createSpan({ text: entry.repoUrl, cls: "skillspace-card-discover-repo-name" });
+      repo.createSpan({ text: entry.repoUrl, cls: "skillmanager-card-discover-repo-name" });
     }
     if (entry.starCount !== null) {
-      const stars = repo.createDiv({ cls: "skillspace-card-discover-stars" });
+      const stars = repo.createDiv({ cls: "skillmanager-card-discover-stars" });
       setIcon(stars.createSpan(), "star");
       stars.createSpan({ text: String(entry.starCount) });
     }
@@ -1852,8 +2303,8 @@ export class LibraryView extends ItemView {
    *  tags-editing, frontmatter box, or tree — this is a read-only look at someone else's skill,
    *  not a file on disk. */
   private renderDiscoverRail(panel: HTMLElement, entry: DiscoverEntry) {
-    const crumbs = panel.createDiv({ cls: "skillspace-crumbs" });
-    const backBtn = crumbs.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Back" } });
+    const crumbs = panel.createDiv({ cls: "skillmanager-crumbs" });
+    const backBtn = crumbs.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Back" } });
     setIcon(backBtn, "arrow-left");
     const back = () => {
       this.selectedDiscoverEntry = null;
@@ -1861,39 +2312,329 @@ export class LibraryView extends ItemView {
       this.render();
     };
     backBtn.addEventListener("click", back);
-    const discoverCrumb = crumbs.createEl("button", { cls: "skillspace-crumb", text: "Discover" });
+    const discoverCrumb = crumbs.createEl("button", { cls: "skillmanager-crumb", text: "Discover" });
     discoverCrumb.addEventListener("click", back);
-    crumbs.createSpan({ cls: "skillspace-crumb-sep", text: "/" });
-    crumbs.createEl("button", { cls: "skillspace-crumb is-current", text: entry.name });
+    crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+    crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: entry.name });
 
-    const header = panel.createDiv({ cls: "skillspace-detail-header" });
-    header.createEl("h3", { text: entry.name, cls: "skillspace-detail-title" });
-    header.createSpan({ text: TYPE_LABEL_SINGULAR[entry.type], cls: "skillspace-card-type" });
-    header.createSpan({ text: "Not installed", cls: "skillspace-detail-tool-pill skillspace-discover-pill" });
-    const actions = header.createDiv({ cls: "skillspace-detail-actions" });
-    const linkBtn = actions.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Open on GitHub" } });
+    const header = panel.createDiv({ cls: "skillmanager-detail-header" });
+    header.createEl("h3", { text: entry.name, cls: "skillmanager-detail-title" });
+    header.createSpan({ text: TYPE_LABEL_SINGULAR[entry.type], cls: "skillmanager-card-type" });
+    header.createSpan({ text: "Not installed", cls: "skillmanager-detail-tool-pill skillmanager-discover-pill" });
+    const actions = header.createDiv({ cls: "skillmanager-detail-actions" });
+    const linkBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Open on GitHub" } });
     setIcon(linkBtn, "external-link");
     linkBtn.addEventListener("click", () => window.open(this.discoverEntryUrl(entry), "_blank"));
-    const installBtn = actions.createEl("button", { cls: "mod-cta skillspace-discover-rail-install-btn", text: "+ Install" });
+    const installBtn = actions.createEl("button", { cls: "mod-cta skillmanager-discover-rail-install-btn", text: "+ Install" });
     installBtn.addEventListener("click", () => this.installDiscoverEntry(entry));
 
     this.renderDiscoverRepoLine(panel, entry);
     if (entry.subpath) {
-      panel.createDiv({ cls: "skillspace-detail-path", text: entry.subpath });
+      panel.createDiv({ cls: "skillmanager-detail-path", text: entry.subpath });
     }
     if (entry.tags.length > 0) {
-      const tags = panel.createDiv({ cls: "skillspace-card-tags skillspace-discover-rail-tags" });
+      const tags = panel.createDiv({ cls: "skillmanager-card-tags skillmanager-discover-rail-tags" });
       for (const tag of entry.tags) {
-        tags.createSpan({ text: tag, cls: `skillspace-chip skillspace-tag-c${tagColorIndex(tag)}` });
+        tags.createSpan({ text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
       }
     }
 
-    const body = panel.createDiv({ cls: "skillspace-detail-body" });
+    const body = panel.createDiv({ cls: "skillmanager-detail-body" });
     const readingView = body.createDiv({
-      cls: "markdown-preview-view markdown-rendered node-insert-event is-readable-line-width allow-fold-headings allow-fold-lists show-indentation-guide skillspace-markdown-preview",
+      cls: "markdown-preview-view markdown-rendered node-insert-event is-readable-line-width allow-fold-headings allow-fold-lists show-indentation-guide skillmanager-markdown-preview",
     });
     const sizer = readingView.createDiv({ cls: "markdown-preview-sizer markdown-preview-section" });
     void MarkdownRenderer.render(this.app, stripFrontmatter(entry.manifestText), sizer, entry.name, this.markdownComponent);
+  }
+
+  // ---------- MCP servers ----------
+
+  /** Read-only visibility into every MCP server found in a tool's own config files (see
+   *  mcpScanners.ts) — no enable/disable/delete/start: this is an audit view, not a config
+   *  editor, since mutating an MCP server from outside its owning tool would be too destructive
+   *  to safely support here. Clicking a card opens a read-only preview (renderMcpServerDetailRail);
+   *  the only mutating-adjacent actions are "Open config file" (hands off to the OS's own editor)
+   *  and "Copy command" — see openMcpServerCardMenu. */
+  private renderMcpServersContent(content: HTMLElement) {
+    const header = content.createDiv({ cls: "skillmanager-content-header" });
+    const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
+    titleRow.createEl("h2", { text: "MCP servers", cls: "skillmanager-title" });
+    titleRow.createSpan({ text: String(this.mcpServers.length), cls: "skillmanager-count-pill" });
+    const showBanner = this.showWorkspaceBanner();
+    if (!showBanner) this.renderWorkspaceChip(titleRow);
+    const subtitleRow = header.createDiv({ cls: "skillmanager-subtitle-row" });
+    subtitleRow.createDiv({
+      text: "Every MCP server found in a tool's config files, across your tools and projects. Enable or disable one from its owning tool, not here.",
+      cls: "skillmanager-subtitle",
+    });
+    this.renderMcpToolFilterButton(subtitleRow);
+    if (showBanner) this.renderWorkspaceBanner(header);
+
+    const servers = this.mcpToolFilter ? this.mcpServers.filter((s) => s.tool === this.mcpToolFilter) : this.mcpServers;
+
+    const body = content.createDiv({ cls: "skillmanager-body" });
+    const animation = this.pendingDetailAnimation;
+    this.pendingDetailAnimation = null;
+
+    const grid = body.createDiv({ cls: `skillmanager-items${this.selectedMcpServer ? " is-docked" : ""}` });
+    if (servers.length === 0) {
+      grid.createDiv({ text: "No MCP servers found in any configured tool.", cls: "skillmanager-empty" });
+    }
+    for (const server of servers) this.renderMcpServerCard(grid, server);
+
+    if (this.selectedMcpServer) {
+      const rail = body.createDiv({ cls: `skillmanager-detail${animation ? ` skillmanager-panel-enter-${animation}` : ""}` });
+      this.renderMcpServerDetailRail(rail, this.selectedMcpServer);
+    }
+  }
+
+  /** Mirrors renderToolStatusButton's Menu-based dropdown (same classes/shape), scoped to just
+   *  the tools that actually have an MCP server rather than every configured tool. */
+  private renderMcpToolFilterButton(container: HTMLElement) {
+    const tools = this.getSettings().tools.filter((t) => this.mcpServers.some((s) => s.tool === t.id));
+    if (tools.length < 2) return;
+
+    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by tool" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    setIcon(icon, "filter");
+    btn.createSpan({
+      text: this.mcpToolFilter ? (tools.find((t) => t.id === this.mcpToolFilter)?.name ?? "Tool") : "All tools",
+      cls: "skillmanager-sort-btn-label",
+    });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new Menu();
+      menu.addItem((menuItem) =>
+        menuItem
+          .setTitle("All tools")
+          .setChecked(this.mcpToolFilter === null)
+          .onClick(() => {
+            this.mcpToolFilter = null;
+            this.render();
+          })
+      );
+      for (const tool of tools) {
+        menu.addItem((menuItem) =>
+          menuItem
+            .setTitle(tool.name)
+            .setChecked(this.mcpToolFilter === tool.id)
+            .onClick(() => {
+              this.mcpToolFilter = tool.id;
+              this.render();
+            })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
+  }
+
+  /** Footer-left scope badge, shared verbatim between the card and the detail rail's header so
+   *  "Global" vs. "Project: X" reads identically in both — same DOM shape as originLabel's badge
+   *  on a real item card (LibraryView.ts's renderCard). */
+  private renderMcpScopeBadge(container: HTMLElement, server: McpServerEntry) {
+    const badge = container.createDiv({ cls: "skillmanager-card-source" });
+    const icon = badge.createSpan({ cls: "skillmanager-card-source-icon" });
+    if (server.scope === "global") {
+      // Same "globe" icon originLabel uses for a real item's Global badge (sourceLabel.ts) — not
+      // "share-2", which is the "Shared" tool's own identity icon (a different concept).
+      setIcon(icon, "globe");
+      badge.createSpan({ text: "Global", cls: "skillmanager-card-source-text" });
+    } else {
+      setIcon(icon, projectIcon(server.scope.projectId));
+      badge.createSpan({ text: `Project: ${server.scope.projectName}`, cls: "skillmanager-card-source-text" });
+    }
+  }
+
+  private renderMcpServerCard(container: HTMLElement, server: McpServerEntry) {
+    const tool = this.getSettings().tools.find((t) => t.id === server.tool);
+    const card = container.createDiv({ cls: "skillmanager-card" });
+    if (this.selectedMcpServer?.entryId === server.entryId) card.addClass("is-selected");
+
+    const head = card.createDiv({ cls: "skillmanager-card-head" });
+    head.createSpan({ text: server.name, cls: "skillmanager-card-name" });
+
+    if (tool) {
+      const toolCaption = card.createDiv({ cls: "skillmanager-card-tool" });
+      const toolIcon = toolCaption.createSpan({ cls: "skillmanager-card-tool-icon" });
+      this.renderIcon(toolIcon, tool.icon, tool.svgIcon);
+      toolCaption.createSpan({ text: tool.name });
+    }
+
+    const detail = server.config.command
+      ? [server.config.command, ...(server.config.args ?? [])].join(" ")
+      : server.config.url ?? "";
+    if (detail) card.createDiv({ cls: "skillmanager-card-desc skillmanager-mcp-card-command", text: detail });
+
+    const footer = card.createDiv({ cls: "skillmanager-card-footer" });
+    this.renderMcpScopeBadge(footer, server);
+    const rightGroup = footer.createDiv({ cls: "skillmanager-card-footer-right" });
+    const menuBtn = rightGroup.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More actions" } });
+    setIcon(menuBtn, MORE_HORIZONTAL_ICON_ID);
+    menuBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      this.openMcpServerCardMenu(evt, server);
+    });
+
+    card.addEventListener("click", () => {
+      this.selectedMcpServer = server;
+      this.revealedMcpEnvKeys = new Set();
+      this.pendingDetailAnimation = "forward";
+      this.render();
+    });
+  }
+
+  private openMcpServerCardMenu(evt: MouseEvent, server: McpServerEntry) {
+    const menu = new Menu();
+    menu.addItem((menuItem) =>
+      menuItem
+        .setTitle("Open config file")
+        .setIcon("external-link")
+        .onClick(() => void this.openMcpConfigFile(server))
+    );
+    if (server.config.command) {
+      menu.addItem((menuItem) =>
+        menuItem
+          .setTitle("Copy command")
+          .setIcon("copy")
+          .onClick(() => void this.copyMcpCommand(server))
+      );
+    }
+    menu.showAtMouseEvent(evt);
+  }
+
+  /** Obsidian desktop runs on Electron with Node integration enabled for plugins, so its own
+   *  `window.require` reaches Electron's `shell` without adding an `electron` devDependency just
+   *  for type declarations (the package itself is already external — see esbuild.config.mjs —
+   *  but has no types installed). Undefined on a build without Node integration (e.g. mobile). */
+  private electronShell(): { openPath(path: string): Promise<string> } | null {
+    const req = (window as unknown as { require?: (id: string) => { shell: { openPath(path: string): Promise<string> } } })
+      .require;
+    return req ? req("electron").shell : null;
+  }
+
+  /** Hands off to the OS's own editor rather than writing to the config ourselves — see the plan
+   *  notes on why this plugin doesn't parse-and-rewrite a tool's live MCP config. `shell.openPath`
+   *  alone uses the OS's default-app association for the file's extension, which for something
+   *  like .json or .toml can land on an unexpected app (e.g. Xcode) if the user never set one —
+   *  Settings' "Open config file with" lets them force a specific app instead (macOS only, via
+   *  `open -a`, the same execFileSync pattern git.ts already uses for shelling out safely). */
+  private async openMcpConfigFile(server: McpServerEntry) {
+    const preferredApp = this.getSettings().mcpConfigEditorApp.trim();
+    if (preferredApp && process.platform === "darwin") {
+      try {
+        execFileSync("open", ["-a", preferredApp, server.sourcePath]);
+      } catch (e) {
+        new Notice(`Couldn't open with "${preferredApp}": ${errorMessage(e)}`);
+      }
+      return;
+    }
+
+    const shell = this.electronShell();
+    if (!shell) {
+      new Notice("Can't open files from this device, try Obsidian's desktop app.");
+      return;
+    }
+    const errorText = await shell.openPath(server.sourcePath);
+    if (errorText) new Notice(`Couldn't open ${server.sourcePath}: ${errorText}`);
+  }
+
+  private async copyMcpCommand(server: McpServerEntry) {
+    if (!server.config.command) return;
+    await navigator.clipboard.writeText([server.config.command, ...(server.config.args ?? [])].join(" "));
+    new Notice("Command copied to clipboard.");
+  }
+
+  private renderMcpServerDetailRail(panel: HTMLElement, server: McpServerEntry) {
+    const tool = this.getSettings().tools.find((t) => t.id === server.tool);
+
+    const crumbs = panel.createDiv({ cls: "skillmanager-crumbs" });
+    const backBtn = crumbs.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Back" } });
+    setIcon(backBtn, "arrow-left");
+    const back = () => {
+      this.selectedMcpServer = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    backBtn.addEventListener("click", back);
+    const mcpCrumb = crumbs.createEl("button", { cls: "skillmanager-crumb", text: "MCP servers" });
+    mcpCrumb.addEventListener("click", back);
+    crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+    crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: server.name });
+
+    const header = panel.createDiv({ cls: "skillmanager-detail-header" });
+    if (tool) {
+      const headerIcon = header.createSpan({ cls: "skillmanager-tool-card-icon" });
+      this.renderIcon(headerIcon, tool.icon, tool.svgIcon);
+    }
+    header.createEl("h3", { text: server.name, cls: "skillmanager-detail-title" });
+
+    const body = panel.createDiv({ cls: "skillmanager-detail-body" });
+    this.renderMcpScopeBadge(body, server);
+
+    const configBox = body.createDiv({ cls: "skillmanager-detail-frontmatter" });
+    if (server.config.command) {
+      this.renderFrontmatterRow(configBox, "command", [server.config.command, ...(server.config.args ?? [])].join(" "));
+    }
+    if (server.config.url) this.renderFrontmatterRow(configBox, "url", server.config.url);
+    if (server.config.type) this.renderFrontmatterRow(configBox, "type", server.config.type);
+
+    const envEntries = Object.entries(server.config.env ?? {});
+    if (envEntries.length > 0) {
+      body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Environment variables" });
+      const envBox = body.createDiv({ cls: "skillmanager-detail-frontmatter" });
+      for (const [key, value] of envEntries) this.renderMcpEnvRow(envBox, key, value);
+    }
+
+    body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Config file" });
+    body.createDiv({ cls: "skillmanager-card-desc skillmanager-mcp-card-command", text: server.sourcePath });
+
+    const actions = body.createDiv({ cls: "skillmanager-mcp-detail-actions" });
+    const openBtn = actions.createEl("button", { cls: "skillmanager-sort-btn" });
+    const openIcon = openBtn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    setIcon(openIcon, "external-link");
+    openBtn.createSpan({ cls: "skillmanager-sort-btn-label", text: "Open config file" });
+    openBtn.addEventListener("click", () => void this.openMcpConfigFile(server));
+
+    if (server.config.command) {
+      const copyBtn = actions.createEl("button", { cls: "skillmanager-sort-btn" });
+      const copyIcon = copyBtn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+      setIcon(copyIcon, "copy");
+      copyBtn.createSpan({ cls: "skillmanager-sort-btn-label", text: "Copy command" });
+      copyBtn.addEventListener("click", () => void this.copyMcpCommand(server));
+    }
+  }
+
+  /** Env values are masked by default and revealed one at a time (revealedMcpEnvKeys) — most
+   *  MCP servers carry an API key/token in here, so this follows the same "hidden until you ask"
+   *  convention as a password field rather than the plaintext frontmatter rows above it.
+   *
+   *  .skillmanager-fm-row is `display: contents` (its children become direct items of the parent
+   *  2-column grid — see renderFrontmatterRow) — so the value and its reveal toggle are wrapped
+   *  together in one .skillmanager-mcp-env-value div, kept as the row's single second child,
+   *  rather than added as a third direct child that would wrap onto its own grid row. */
+  private renderMcpEnvRow(container: HTMLElement, key: string, value: string) {
+    const revealed = this.revealedMcpEnvKeys.has(key);
+    const row = container.createDiv({ cls: "skillmanager-fm-row" });
+    const label = row.createSpan({ cls: "skillmanager-fm-label" });
+    label.createSpan({ text: key, cls: "skillmanager-fm-key" });
+    label.createSpan({ text: ":", cls: "skillmanager-fm-colon" });
+
+    const valueWrap = row.createDiv({ cls: "skillmanager-mcp-env-value" });
+    valueWrap.createSpan({
+      text: revealed ? value : "••••••••",
+      cls: `skillmanager-fm-value${revealed ? "" : " is-masked"}`,
+    });
+    const toggle = valueWrap.createEl("button", {
+      cls: "skillmanager-icon-btn skillmanager-mcp-reveal-btn",
+      attr: { "aria-label": revealed ? `Hide ${key}` : `Reveal ${key}` },
+    });
+    setIcon(toggle, revealed ? "eye-off" : "eye");
+    toggle.addEventListener("click", () => {
+      if (revealed) this.revealedMcpEnvKeys.delete(key);
+      else this.revealedMcpEnvKeys.add(key);
+      this.render();
+    });
   }
 
   // ---------- "All tools" page ----------
@@ -1902,36 +2643,42 @@ export class LibraryView extends ItemView {
     const settings = this.getSettings();
     const tools = this.sortedToolsForPage();
 
-    const header = content.createDiv({ cls: "skillspace-content-header" });
-    const titleRow = header.createDiv({ cls: "skillspace-title-row" });
-    titleRow.createEl("h2", { text: "All tools", cls: "skillspace-title" });
+    const header = content.createDiv({ cls: "skillmanager-content-header" });
+    const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
+    titleRow.createEl("h2", { text: "All tools", cls: "skillmanager-title" });
     header.createDiv({
       text: "Every configured tool. Enable or disable one, edit its scanned paths, or add your own.",
-      cls: "skillspace-subtitle",
+      cls: "skillmanager-subtitle",
     });
 
-    const stats = header.createDiv({ cls: "skillspace-tool-stats" });
+    const stats = header.createDiv({ cls: "skillmanager-tool-stats" });
     const statValues: [string, number][] = [
       ["Detected", tools.filter((t) => this.toolIsDetected(t)).length],
       ["Enabled", tools.filter((t) => !t.disabled).length],
       ["Custom", tools.filter((t) => t.custom).length],
     ];
     for (const [label, value] of statValues) {
-      const stat = stats.createDiv({ cls: "skillspace-tool-stat" });
-      stat.createSpan({ text: String(value), cls: "skillspace-tool-stat-value" });
-      stat.createSpan({ text: label, cls: "skillspace-tool-stat-label" });
+      const stat = stats.createDiv({ cls: "skillmanager-tool-stat" });
+      stat.createSpan({ text: String(value), cls: "skillmanager-tool-stat-value" });
+      stat.createSpan({ text: label, cls: "skillmanager-tool-stat-label" });
     }
-    const addBtn = stats.createEl("button", { cls: "mod-cta skillspace-add-tool-btn", text: "+ Add tool" });
+    const actions = stats.createDiv({ cls: "skillmanager-tool-actions" });
+    this.renderToolStatusButton(actions);
+    const addBtn = actions.createEl("button", { cls: "mod-cta skillmanager-add-tool-btn", text: "+ Add tool" });
     addBtn.addEventListener("click", () => {
       new AddToolModal(this.app, settings, this.saveSettings, () => this.rescan()).open();
     });
 
-    const body = content.createDiv({ cls: "skillspace-body" });
-    const grid = body.createDiv({ cls: `skillspace-items${this.selectedTool ? " is-docked" : ""}` });
-    for (const tool of tools) this.renderToolCard(grid, tool);
+    const visibleTools = tools.filter((t) => this.toolMatchesStatusFilter(t));
+    const body = content.createDiv({ cls: "skillmanager-body" });
+    const grid = body.createDiv({ cls: `skillmanager-items${this.selectedTool ? " is-docked" : ""}` });
+    if (visibleTools.length === 0) {
+      grid.createDiv({ text: "Nothing matches this filter.", cls: "skillmanager-empty" });
+    }
+    for (const tool of visibleTools) this.renderToolCard(grid, tool);
 
     if (this.selectedTool) {
-      const rail = body.createDiv({ cls: "skillspace-detail" });
+      const rail = body.createDiv({ cls: "skillmanager-detail" });
       this.renderToolDetailRail(rail, this.selectedTool);
     }
   }
@@ -1941,6 +2688,66 @@ export class LibraryView extends ItemView {
    *  correctly-configured tool with zero skills yet is still "detected." */
   private toolIsDetected(tool: ToolConfig): boolean {
     return Object.values(tool.paths).some((p) => p && existsSync(expandHome(p)));
+  }
+
+  private toolMatchesStatusFilter(tool: ToolConfig): boolean {
+    switch (this.toolStatusFilter) {
+      case "all":
+        return true;
+      case "detected":
+        return this.toolIsDetected(tool);
+      case "not-detected":
+        return !this.toolIsDetected(tool);
+      case "enabled":
+        return !tool.disabled;
+      case "disabled":
+        return !!tool.disabled;
+      case "custom":
+        return !!tool.custom;
+    }
+  }
+
+  private renderToolStatusButton(container: HTMLElement) {
+    const labels: Record<Exclude<typeof this.toolStatusFilter, "all">, string> = {
+      detected: "Detected",
+      "not-detected": "Not detected",
+      enabled: "Enabled",
+      disabled: "Disabled",
+      custom: "Custom",
+    };
+    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter tools" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    setIcon(icon, "filter");
+    btn.createSpan({
+      text: this.toolStatusFilter === "all" ? "All tools" : labels[this.toolStatusFilter],
+      cls: "skillmanager-sort-btn-label",
+    });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new Menu();
+      menu.addItem((menuItem) =>
+        menuItem
+          .setTitle("All tools")
+          .setChecked(this.toolStatusFilter === "all")
+          .onClick(() => {
+            this.toolStatusFilter = "all";
+            this.render();
+          })
+      );
+      for (const key of Object.keys(labels) as (keyof typeof labels)[]) {
+        menu.addItem((menuItem) =>
+          menuItem
+            .setTitle(labels[key])
+            .setChecked(this.toolStatusFilter === key)
+            .onClick(() => {
+              this.toolStatusFilter = key;
+              this.render();
+            })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
   }
 
   /** Enabled-with-content first, then enabled-and-detected-but-empty, then enabled-but-not-even-
@@ -1965,25 +2772,25 @@ export class LibraryView extends ItemView {
   }
 
   private renderToolCard(container: HTMLElement, tool: ToolConfig) {
-    const card = container.createDiv({ cls: "skillspace-card skillspace-tool-card" });
+    const card = container.createDiv({ cls: "skillmanager-card skillmanager-tool-card" });
     if (tool.disabled) card.addClass("is-off");
     if (this.selectedTool?.id === tool.id) card.addClass("is-selected");
 
-    const head = card.createDiv({ cls: "skillspace-card-head" });
+    const head = card.createDiv({ cls: "skillmanager-card-head" });
     const detected = this.toolIsDetected(tool);
     head.createSpan({
-      cls: `skillspace-card-dot${detected ? " is-detected" : ""}`,
+      cls: `skillmanager-card-dot${detected ? " is-detected" : ""}`,
       attr: { "aria-label": detected ? "Detected on disk" : "Not detected: check its paths" },
     });
-    const icon = head.createSpan({ cls: "skillspace-tool-card-icon" });
+    const icon = head.createSpan({ cls: "skillmanager-tool-card-icon" });
     this.renderIcon(icon, tool.icon, tool.svgIcon);
-    head.createSpan({ text: tool.name, cls: "skillspace-card-name" });
+    head.createSpan({ text: tool.name, cls: "skillmanager-card-name" });
     if (tool.custom) {
-      head.createSpan({ text: "Custom", cls: "skillspace-card-type skillspace-card-type-sm" });
+      head.createSpan({ text: "Custom", cls: "skillmanager-card-type skillmanager-card-type-sm" });
     }
 
     const toggle = head.createEl("button", {
-      cls: `skillspace-toggle${!tool.disabled ? " is-on" : ""}`,
+      cls: `skillmanager-toggle${!tool.disabled ? " is-on" : ""}`,
       attr: { "aria-label": tool.disabled ? "Enable" : "Disable" },
     });
     toggle.addEventListener("click", (evt) => {
@@ -1993,7 +2800,7 @@ export class LibraryView extends ItemView {
 
     const count = this.items.filter((i) => i.tool === tool.id).length;
     card.createDiv({
-      cls: "skillspace-card-desc",
+      cls: "skillmanager-card-desc",
       text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " (disabled)" : ""}`,
     });
 
@@ -2018,29 +2825,108 @@ export class LibraryView extends ItemView {
     resolve: (raw: string) => string | null,
     onChange: (value: string) => void
   ) {
-    const row = container.createDiv({ cls: "skillspace-toolpath-row" });
-    row.createSpan({ text: label, cls: "skillspace-toolpath-label" });
-    const input = row.createEl("input", { type: "text", cls: "skillspace-toolpath-input", attr: { placeholder } });
+    const row = container.createDiv({ cls: "skillmanager-toolpath-row" });
+    row.createSpan({ text: label, cls: "skillmanager-toolpath-label" });
+    const input = row.createEl("input", { type: "text", cls: "skillmanager-toolpath-input", attr: { placeholder } });
     input.value = value;
-    const status = row.createSpan({ cls: "skillspace-path-status" });
+    const status = row.createSpan({ cls: "skillmanager-path-status" });
     const updateStatus = (raw: string) => {
       const trimmed = raw.trim();
       if (!trimmed) {
         status.setText("");
         status.title = "";
-        status.className = "skillspace-path-status";
+        status.className = "skillmanager-path-status";
         return;
       }
       const resolved = resolve(trimmed);
       const found = resolved !== null && existsSync(resolved);
       status.setText(found ? "found" : "not found");
       status.title = resolved ?? "";
-      status.className = `skillspace-path-status ${found ? "is-found" : "is-missing"}`;
+      status.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
     };
     updateStatus(value);
     input.addEventListener("change", () => {
       onChange(input.value);
       updateStatus(input.value);
+    });
+  }
+
+  /** Repeatable extra path rows shown right under the Rules field's one renderToolPathField row
+   *  (see renderToolDetailRail) — lets a tool that genuinely reads rules from more than one place
+   *  list all of them, e.g. Cursor's legacy single ".cursorrules" file alongside its current
+   *  ".cursor/rules/" directory. Each row carries its own "Single file" checkbox (RulePathEntry)
+   *  rather than inferring the shape from disk, since a toggled-off single file doesn't exist at
+   *  its own path any more (see itemToggle.ts) and would be indistinguishable from an
+   *  as-yet-uncreated directory. */
+  private renderRuleAdditionalPaths(container: HTMLElement, tool: ToolConfig, scope: "global" | "project") {
+    const entries = (scope === "global" ? tool.ruleAdditionalPaths : tool.ruleAdditionalProjectPaths) ?? [];
+    const vaultPath = this.vaultPath();
+    const resolve = (raw: string) => (scope === "global" ? expandHome(raw) : vaultPath ? join(vaultPath, raw) : null);
+
+    // Drops any row left blank (e.g. a "+ Add path" click nobody filled in) rather than
+    // persisting a dangling entry — same spirit as renderToolPathField deleting an emptied field.
+    const commit = (next: RulePathEntry[]) => {
+      const trimmed = next.filter((e) => e.path.trim());
+      if (scope === "global") {
+        if (trimmed.length) tool.ruleAdditionalPaths = trimmed;
+        else delete tool.ruleAdditionalPaths;
+      } else {
+        if (trimmed.length) tool.ruleAdditionalProjectPaths = trimmed;
+        else delete tool.ruleAdditionalProjectPaths;
+      }
+      void this.saveSettings().then(() => this.rescan());
+    };
+
+    entries.forEach((entry, i) => {
+      const row = container.createDiv({ cls: "skillmanager-toolpath-row" });
+      row.createSpan({ cls: "skillmanager-toolpath-label" });
+      const input = row.createEl("input", {
+        type: "text",
+        cls: "skillmanager-toolpath-input",
+        attr: { placeholder: scope === "global" ? "~/.example/extra-rules" : "extra-rules" },
+      });
+      input.value = entry.path;
+      const fileLabel = row.createEl("label", { cls: "skillmanager-toolpath-checkbox" });
+      const checkbox = fileLabel.createEl("input", { type: "checkbox" });
+      checkbox.checked = entry.singleFile;
+      fileLabel.createSpan({ text: "Single file" });
+      const status = row.createSpan({ cls: "skillmanager-path-status" });
+      const updateStatus = () => {
+        const trimmedVal = input.value.trim();
+        if (!trimmedVal) {
+          status.setText("");
+          status.className = "skillmanager-path-status";
+          return;
+        }
+        const resolved = resolve(trimmedVal);
+        const found = resolved !== null && existsSync(resolved);
+        status.setText(found ? "found" : "not found");
+        status.title = resolved ?? "";
+        status.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
+      };
+      updateStatus();
+      input.addEventListener("change", () => {
+        entry.path = input.value.trim();
+        updateStatus();
+        commit(entries);
+      });
+      checkbox.addEventListener("change", () => {
+        entry.singleFile = checkbox.checked;
+        commit(entries);
+      });
+      const removeBtn = row.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Remove path" } });
+      setIcon(removeBtn, "x");
+      removeBtn.addEventListener("click", () => commit(entries.filter((_, j) => j !== i)));
+    });
+
+    const addRow = container.createDiv({ cls: "skillmanager-toolpath-row" });
+    addRow.createSpan({ cls: "skillmanager-toolpath-label" });
+    const addBtn = addRow.createEl("button", { cls: "skillmanager-toolpath-add-btn", text: "+ Add rule path" });
+    addBtn.addEventListener("click", () => {
+      const next = [...entries, { path: "", singleFile: false }];
+      if (scope === "global") tool.ruleAdditionalPaths = next;
+      else tool.ruleAdditionalProjectPaths = next;
+      this.render();
     });
   }
 
@@ -2050,8 +2936,8 @@ export class LibraryView extends ItemView {
   }
 
   private renderToolDetailRail(panel: HTMLElement, tool: ToolConfig) {
-    const crumbs = panel.createDiv({ cls: "skillspace-crumbs" });
-    const backBtn = crumbs.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Back" } });
+    const crumbs = panel.createDiv({ cls: "skillmanager-crumbs" });
+    const backBtn = crumbs.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Back" } });
     setIcon(backBtn, "arrow-left");
     const back = () => {
       this.selectedTool = null;
@@ -2059,27 +2945,27 @@ export class LibraryView extends ItemView {
       this.render();
     };
     backBtn.addEventListener("click", back);
-    const toolsCrumb = crumbs.createEl("button", { cls: "skillspace-crumb", text: "All tools" });
+    const toolsCrumb = crumbs.createEl("button", { cls: "skillmanager-crumb", text: "All tools" });
     toolsCrumb.addEventListener("click", back);
-    crumbs.createSpan({ cls: "skillspace-crumb-sep", text: "/" });
-    crumbs.createEl("button", { cls: "skillspace-crumb is-current", text: tool.name });
+    crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+    crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: tool.name });
 
-    const header = panel.createDiv({ cls: "skillspace-detail-header" });
-    const headerIcon = header.createSpan({ cls: "skillspace-tool-card-icon" });
+    const header = panel.createDiv({ cls: "skillmanager-detail-header" });
+    const headerIcon = header.createSpan({ cls: "skillmanager-tool-card-icon" });
     this.renderIcon(headerIcon, tool.icon, tool.svgIcon);
-    header.createEl("h3", { text: tool.name, cls: "skillspace-detail-title" });
+    header.createEl("h3", { text: tool.name, cls: "skillmanager-detail-title" });
     if (tool.custom) {
-      const removeBtn = header.createDiv({ cls: "skillspace-detail-actions" }).createEl("button", {
-        cls: "skillspace-icon-btn",
+      const removeBtn = header.createDiv({ cls: "skillmanager-detail-actions" }).createEl("button", {
+        cls: "skillmanager-icon-btn",
         attr: { "aria-label": "Remove tool" },
       });
       setIcon(removeBtn, "trash-2");
       removeBtn.addEventListener("click", () => void this.removeCustomTool(tool));
     }
 
-    const body = panel.createDiv({ cls: "skillspace-detail-body" });
+    const body = panel.createDiv({ cls: "skillmanager-detail-body" });
 
-    body.createDiv({ cls: "skillspace-sidebar-heading", text: "Global paths" });
+    body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Global paths" });
     for (const type of Object.keys(TYPE_LABELS) as ItemType[]) {
       this.renderToolPathField(
         body,
@@ -2096,9 +2982,10 @@ export class LibraryView extends ItemView {
           void this.saveSettings().then(() => this.rescan());
         }
       );
+      if (type === "rule") this.renderRuleAdditionalPaths(body, tool, "global");
     }
 
-    body.createDiv({ cls: "skillspace-sidebar-heading", text: "Project-scoped paths" });
+    body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Project-scoped paths" });
     body.createDiv({
       cls: "setting-item-description",
       text: "Optional override for this tool's layout inside a project folder. Leave blank to use the global path above with the home directory stripped.",
@@ -2123,7 +3010,60 @@ export class LibraryView extends ItemView {
           void this.saveSettings().then(() => this.rescan());
         }
       );
+      if (type === "rule") this.renderRuleAdditionalPaths(body, tool, "project");
     }
+
+    body.createDiv({ cls: "skillmanager-sidebar-heading", text: "MCP servers" });
+    body.createDiv({
+      cls: "setting-item-description",
+      text: "Optional: point at this tool's MCP server config file(s) so they show up on the MCP servers page. Leave blank if not applicable.",
+    });
+    this.renderToolPathField(
+      body,
+      "Global config",
+      tool.mcpConfigPath ?? "",
+      "~/.example/mcp.json",
+      (raw) => expandHome(raw),
+      (value) => {
+        if (value.trim()) tool.mcpConfigPath = value.trim();
+        else delete tool.mcpConfigPath;
+        void this.saveSettings().then(() => this.rescan());
+      }
+    );
+    this.renderToolPathField(
+      body,
+      "Project config",
+      tool.projectMcpConfigPath ?? "",
+      ".example/mcp.json",
+      (raw) => (vaultPath ? join(vaultPath, raw) : null),
+      (value) => {
+        if (value.trim()) tool.projectMcpConfigPath = value.trim();
+        else delete tool.projectMcpConfigPath;
+        void this.saveSettings().then(() => this.rescan());
+      }
+    );
+    this.renderToolTextField(
+      body,
+      "Server list key (advanced)",
+      tool.mcpConfigKey ?? "",
+      "mcpServers",
+      (value) => {
+        if (value.trim()) tool.mcpConfigKey = value.trim();
+        else delete tool.mcpConfigKey;
+        void this.saveSettings().then(() => this.rescan());
+      }
+    );
+  }
+
+  /** Same row shape as renderToolPathField, minus the found/not-found status pill — for a field
+   *  that isn't a filesystem path (e.g. the JSON key a tool's MCP config nests its server map
+   *  under), where that pill would misleadingly read "not found" for every valid value. */
+  private renderToolTextField(container: HTMLElement, label: string, value: string, placeholder: string, onChange: (value: string) => void) {
+    const row = container.createDiv({ cls: "skillmanager-toolpath-row" });
+    row.createSpan({ text: label, cls: "skillmanager-toolpath-label" });
+    const input = row.createEl("input", { type: "text", cls: "skillmanager-toolpath-input", attr: { placeholder } });
+    input.value = value;
+    input.addEventListener("change", () => onChange(input.value));
   }
 
   private async removeCustomTool(tool: ToolConfig) {
@@ -2148,7 +3088,7 @@ export class LibraryView extends ItemView {
     // Toggling the active chip back off works, but it's not a visible affordance — this is the
     // dedicated "clear" chip so getting out of a tag filter doesn't mean hunting for whichever
     // chip is currently selected.
-    const allChip = tagbar.createEl("button", { text: "All", cls: "skillspace-chip skillspace-tagbar-anchor" });
+    const allChip = tagbar.createEl("button", { text: "All", cls: "skillmanager-chip skillmanager-tagbar-anchor" });
     if (!this.tagFilter && !this.untaggedOnly) allChip.addClass("is-active");
     allChip.addEventListener("click", () => {
       this.tagFilter = null;
@@ -2157,13 +3097,13 @@ export class LibraryView extends ItemView {
       this.render();
     });
 
-    const scroll = tagbar.createDiv({ cls: "skillspace-tagbar-scroll" });
+    const scroll = tagbar.createDiv({ cls: "skillmanager-tagbar-scroll" });
     scroll.scrollLeft = this.tagbarScrollLeft;
     scroll.addEventListener("scroll", () => {
       this.tagbarScrollLeft = scroll.scrollLeft;
     });
 
-    const untagged = scroll.createEl("button", { text: "Untagged", cls: "skillspace-chip skillspace-chip-untagged" });
+    const untagged = scroll.createEl("button", { text: "Untagged", cls: "skillmanager-chip skillmanager-chip-untagged" });
     if (this.untaggedOnly) untagged.addClass("is-active");
     untagged.addEventListener("click", () => {
       this.untaggedOnly = !this.untaggedOnly;
@@ -2172,7 +3112,7 @@ export class LibraryView extends ItemView {
     });
 
     for (const tag of allTags) {
-      const chip = scroll.createEl("button", { text: tag, cls: `skillspace-chip skillspace-tag-c${tagColorIndex(tag)}` });
+      const chip = scroll.createEl("button", { text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
       if (this.tagFilter === tag) chip.addClass("is-active");
       chip.addEventListener("click", () => {
         this.tagFilter = this.tagFilter === tag ? null : tag;
@@ -2181,9 +3121,50 @@ export class LibraryView extends ItemView {
       });
     }
 
-    const controls = tagbar.createDiv({ cls: "skillspace-tagbar-controls" });
+    const controls = tagbar.createDiv({ cls: "skillmanager-tagbar-controls" });
+    if (this.typeFilter === "rule") this.renderRuleKindButton(controls);
     this.renderSourceButton(controls);
     this.renderSortButton(controls);
+  }
+
+  /** Only rendered while typeFilter === "rule" (see renderTagBar) — lets a mixed Rules list (a
+   *  tool's single CLAUDE.md-style instructions file alongside another tool's directory of many
+   *  granular rule files) narrow to just one kind. See ruleKindFilter/isSingleFileRuleTool. */
+  private renderRuleKindButton(container: HTMLElement) {
+    const labels: Record<"instructions" | "granular", string> = {
+      instructions: "Instructions files",
+      granular: "Individual rules",
+    };
+    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by rule kind" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    setIcon(icon, "filter");
+    btn.createSpan({ text: this.ruleKindFilter ? labels[this.ruleKindFilter] : "All rules", cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new Menu();
+      menu.addItem((menuItem) =>
+        menuItem
+          .setTitle("All rules")
+          .setChecked(this.ruleKindFilter === null)
+          .onClick(() => {
+            this.ruleKindFilter = null;
+            this.render();
+          })
+      );
+      for (const key of Object.keys(labels) as (keyof typeof labels)[]) {
+        menu.addItem((menuItem) =>
+          menuItem
+            .setTitle(labels[key])
+            .setChecked(this.ruleKindFilter === key)
+            .onClick(() => {
+              this.ruleKindFilter = key;
+              this.render();
+            })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
   }
 
   private renderSourceButton(container: HTMLElement) {
@@ -2192,11 +3173,11 @@ export class LibraryView extends ItemView {
       builtin: "Built-in",
       local: "Local",
     };
-    const btn = container.createEl("button", { cls: "skillspace-sort-btn", attr: { "aria-label": "Filter by source" } });
-    const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
+    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by source" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
     setIcon(icon, "filter");
-    btn.createSpan({ text: this.sourceFilter ? labels[this.sourceFilter] : "All sources", cls: "skillspace-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillspace-sort-btn-chevron" });
+    btn.createSpan({ text: this.sourceFilter ? labels[this.sourceFilter] : "All sources", cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
     setIcon(chevron, "chevron-down");
     btn.addEventListener("click", (evt) => {
       const menu = new Menu();
@@ -2226,11 +3207,11 @@ export class LibraryView extends ItemView {
 
   private renderSortButton(tagbar: HTMLElement) {
     const current = SORT_OPTIONS.find((o) => o.key === this.sortOrder) ?? SORT_OPTIONS[0];
-    const btn = tagbar.createEl("button", { cls: "skillspace-sort-btn", attr: { "aria-label": "Sort by" } });
-    const icon = btn.createSpan({ cls: "skillspace-sort-btn-icon" });
+    const btn = tagbar.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Sort by" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
     setIcon(icon, "arrow-up-down");
-    btn.createSpan({ text: current.label, cls: "skillspace-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillspace-sort-btn-chevron" });
+    btn.createSpan({ text: current.label, cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
     setIcon(chevron, "chevron-down");
     btn.addEventListener("click", (evt) => {
       const menu = new Menu();
@@ -2279,7 +3260,7 @@ export class LibraryView extends ItemView {
         return;
       }
       container.createDiv({
-        cls: "skillspace-empty",
+        cls: "skillmanager-empty",
         text: "Nothing here yet. Rescan tools, or check the paths in plugin settings.",
       });
       return;
@@ -2297,15 +3278,15 @@ export class LibraryView extends ItemView {
    *  star icon's not the point, the search itself came up empty) so it gets plain text instead. */
   private renderFavoritesEmptyState(container: HTMLElement, isSearchMiss: boolean) {
     if (isSearchMiss) {
-      container.createDiv({ cls: "skillspace-empty", text: "No favourites match your search." });
+      container.createDiv({ cls: "skillmanager-empty", text: "No favourites match your search." });
       return;
     }
-    const empty = container.createDiv({ cls: "skillspace-empty-state" });
-    const icon = empty.createDiv({ cls: "skillspace-empty-state-icon" });
+    const empty = container.createDiv({ cls: "skillmanager-empty-state" });
+    const icon = empty.createDiv({ cls: "skillmanager-empty-state-icon" });
     setIcon(icon, "star");
-    empty.createEl("h3", { text: "No favourites yet", cls: "skillspace-empty-state-title" });
+    empty.createEl("h3", { text: "No favourites yet", cls: "skillmanager-empty-state-title" });
     empty.createEl("p", {
-      cls: "skillspace-empty-state-desc",
+      cls: "skillmanager-empty-state-desc",
       text: "Star the skills, agents, and commands you reach for most and they'll show up here for quick access.",
     });
     const browseBtn = empty.createEl("button", { text: "Browse library", cls: "mod-cta" });
@@ -2316,11 +3297,11 @@ export class LibraryView extends ItemView {
   }
 
   private renderCard(container: HTMLElement, item: ItemMetadata) {
-    const card = container.createDiv({ cls: "skillspace-card" });
+    const card = container.createDiv({ cls: "skillmanager-card" });
     if (!item.enabled) card.addClass("is-off");
     if (this.selectedItem?.entryId === item.entryId) card.addClass("is-selected");
 
-    const head = card.createDiv({ cls: "skillspace-card-head" });
+    const head = card.createDiv({ cls: "skillmanager-card-head" });
     const syncStatus = this.syncStatusFor(item);
     const dotLabel =
       syncStatus === "current"
@@ -2331,22 +3312,19 @@ export class LibraryView extends ItemView {
             ? 'Not checked yet this session: click "Check for updates"'
             : "Not tracked from GitHub: install via Discover to enable update checks";
     head.createSpan({
-      cls: `skillspace-card-dot${syncStatus === "current" ? " is-current" : syncStatus === "stale" ? " is-stale" : ""}`,
+      cls: `skillmanager-card-dot${syncStatus === "current" ? " is-current" : syncStatus === "stale" ? " is-stale" : ""}`,
       attr: { "aria-label": dotLabel },
     });
-    head.createSpan({ text: item.name, cls: "skillspace-card-name" });
-    head.createSpan({ text: TYPE_LABEL_SINGULAR[item.type], cls: "skillspace-card-type skillspace-card-type-sm" });
+    head.createSpan({ text: item.name, cls: "skillmanager-card-name" });
+    head.createSpan({ text: TYPE_LABEL_SINGULAR[item.type], cls: "skillmanager-card-type skillmanager-card-type-sm" });
 
-    // realPath !== sourcePath is exactly what fs.realpathSync resolving through a symlink looks
-    // like (same check the detail pane already uses for "→ symlinked from ..."), so it doubles
-    // as "is this actually a symlink." Surfaced in the footer-right as the link icon — same slot
-    // whether the card is global or a Linked project instance, so both states read from the same
-    // place on the card.
-    const isLinked = item.projectId !== null && item.realPath !== item.sourcePath;
+    // Surfaced in the footer-right as the link icon — same slot whether the card is global or a
+    // Linked project instance, so both states read from the same place on the card.
+    const isLinked = item.projectId !== null && this.isSymlinkedItem(item);
 
     if (item.sourceRepo) {
       const syncBtn = head.createEl("button", {
-        cls: "skillspace-icon-btn skillspace-card-sync-btn",
+        cls: "skillmanager-icon-btn skillmanager-card-sync-btn",
         attr: { "aria-label": "Check for updates" },
       });
       setIcon(syncBtn, "refresh-cw");
@@ -2357,7 +3335,7 @@ export class LibraryView extends ItemView {
     }
 
     const toggle = head.createEl("button", {
-      cls: `skillspace-toggle${item.enabled ? " is-on" : ""}`,
+      cls: `skillmanager-toggle${item.enabled ? " is-on" : ""}`,
       attr: { "aria-label": item.enabled ? "Disable" : "Enable" },
     });
     toggle.addEventListener("click", (evt) => {
@@ -2370,30 +3348,30 @@ export class LibraryView extends ItemView {
     // scoped (Global vs. this one project/vault) lives in the footer instead, next to the link
     // icon that actually answers "where's it linked" on click. See the footer-left block below.
     const toolInfo = this.toolLabel(item);
-    const toolCaption = card.createDiv({ cls: "skillspace-card-tool" });
-    const toolIcon = toolCaption.createSpan({ cls: "skillspace-card-tool-icon" });
+    const toolCaption = card.createDiv({ cls: "skillmanager-card-tool" });
+    const toolIcon = toolCaption.createSpan({ cls: "skillmanager-card-tool-icon" });
     this.renderIcon(toolIcon, toolInfo.icon, toolInfo.svgIcon);
     toolCaption.createSpan({ text: toolInfo.text });
 
     if (item.description) {
-      card.createDiv({ text: item.description, cls: "skillspace-card-desc" });
+      card.createDiv({ text: item.description, cls: "skillmanager-card-desc" });
     }
 
     if (item.tags.length > 0) {
-      const tags = card.createDiv({ cls: "skillspace-card-tags" });
+      const tags = card.createDiv({ cls: "skillmanager-card-tags" });
       for (const tag of item.tags) {
-        tags.createSpan({ text: tag, cls: `skillspace-chip skillspace-tag-c${tagColorIndex(tag)}` });
+        tags.createSpan({ text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
       }
     }
 
-    const footer = card.createDiv({ cls: "skillspace-card-footer" });
+    const footer = card.createDiv({ cls: "skillmanager-card-footer" });
     const originInfo = this.originLabel(item);
-    const origin = footer.createDiv({ cls: "skillspace-card-source" });
-    const originIcon = origin.createSpan({ cls: "skillspace-card-source-icon" });
+    const origin = footer.createDiv({ cls: "skillmanager-card-source" });
+    const originIcon = origin.createSpan({ cls: "skillmanager-card-source-icon" });
     this.renderIcon(originIcon, originInfo.icon);
-    origin.createSpan({ text: originInfo.text, cls: "skillspace-card-source-text" });
+    origin.createSpan({ text: originInfo.text, cls: "skillmanager-card-source-text" });
 
-    const rightGroup = footer.createDiv({ cls: "skillspace-card-footer-right" });
+    const rightGroup = footer.createDiv({ cls: "skillmanager-card-footer-right" });
     if (item.projectId === null) {
       this.renderProjectLinkButton(rightGroup, item);
     } else if (isLinked) {
@@ -2409,7 +3387,7 @@ export class LibraryView extends ItemView {
         // being scanned (e.g. sitting outside any configured tool path), so there's nothing to
         // open a picker on. Offer a direct unlink instead, previewed on hover.
         const unlinkBtn = rightGroup.createEl("button", {
-          cls: "skillspace-icon-btn skillspace-card-link-btn",
+          cls: "skillmanager-icon-btn skillmanager-card-link-btn",
           attr: { "aria-label": "Linked, but its library source can't be found. Click to unlink from this project" },
         });
         setIcon(unlinkBtn, "link");
@@ -2422,15 +3400,15 @@ export class LibraryView extends ItemView {
       }
     }
     if (item.favorite) {
-      const star = rightGroup.createSpan({ cls: "skillspace-card-star" });
+      const star = rightGroup.createSpan({ cls: "skillmanager-card-star" });
       setIcon(star, "star");
     }
 
-    const menuBtn = rightGroup.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "More actions" } });
-    setIcon(menuBtn, "more-vertical");
+    const menuBtn = rightGroup.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More actions" } });
+    setIcon(menuBtn, MORE_HORIZONTAL_ICON_ID);
     menuBtn.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      this.openCardMenu(evt, item, isLinked);
+      this.openCardMenu(evt, item);
     });
 
     card.addEventListener("click", () => this.selectItem(item));
@@ -2464,7 +3442,9 @@ export class LibraryView extends ItemView {
     }
   }
 
-  private openCardMenu(evt: MouseEvent, item: ItemMetadata, isLinked: boolean) {
+  private openCardMenu(evt: MouseEvent, item: ItemMetadata) {
+    const isSymlink = this.isSymlinkedItem(item);
+    const isProjectLinked = isSymlink && item.projectId !== null;
     const menu = new Menu();
     menu.addItem((menuItem) =>
       menuItem
@@ -2491,10 +3471,10 @@ export class LibraryView extends ItemView {
     menu.addSeparator();
     menu.addItem((menuItem) =>
       menuItem
-        .setTitle(isLinked ? "Unlink from project" : "Delete")
-        .setIcon(isLinked ? "unlink" : "trash-2")
+        .setTitle(isSymlink ? (isProjectLinked ? "Unlink from project" : "Unlink") : "Delete")
+        .setIcon(isSymlink ? "unlink" : "trash-2")
         .setWarning(true)
-        .onClick(() => this.confirmDelete(item, isLinked))
+        .onClick(() => this.confirmDelete(item))
     );
     menu.showAtMouseEvent(evt);
   }
@@ -2540,15 +3520,26 @@ export class LibraryView extends ItemView {
     ).open();
   }
 
-  private confirmDelete(item: ItemMetadata, isLinked: boolean) {
+  /** deleteItem only ever removes what's at sourcePath — for a symlink, that's the link itself,
+   *  never the real file it resolves to (see deleteItem's own comment). That's true whether the
+   *  symlink is a project's local link into the shared library (isProjectLinked below) or a
+   *  tool's own global symlink out to some other store (e.g. a skill kept outside the library and
+   *  symlinked into ~/.claude/skills) — so both get the safe "unlink" wording, not the "permanent
+   *  delete" one, which previously only applied to the project case even though the global case
+   *  is equally non-destructive. */
+  private confirmDelete(item: ItemMetadata) {
     const unitPath = linkableUnit(item.sourcePath).path;
+    const isSymlink = this.isSymlinkedItem(item);
+    const isProjectLinked = isSymlink && item.projectId !== null;
     new ConfirmModal(
       this.app,
-      isLinked ? "Unlink from project?" : `Delete "${item.name}"?`,
-      isLinked
-        ? `This removes the project's symlink to "${item.name}". The skill itself stays in your library.`
+      isSymlink ? (isProjectLinked ? "Unlink from project?" : "Unlink?") : `Delete "${item.name}"?`,
+      isSymlink
+        ? isProjectLinked
+          ? `This removes the project's symlink to "${item.name}". The skill itself stays in your library.`
+          : `This removes the symlink to "${item.name}" at ${unitPath}. The file it points to, at ${item.realPath}, isn't touched.`
         : `This permanently deletes "${item.name}" from disk at ${unitPath}. This can't be undone from Obsidian.`,
-      isLinked ? "Unlink" : "Delete",
+      isSymlink ? "Unlink" : "Delete",
       async () => {
         try {
           deleteItem(item);
@@ -2562,77 +3553,245 @@ export class LibraryView extends ItemView {
 
   // ---------- Dashboard: context cost, ranked, plus prune/overlap flags ----------
 
-  private renderDashboardContent(content: HTMLElement) {
+  /** realPath !== sourcePath is exactly what fs.realpathSync resolving through a symlink looks
+   *  like (same check the detail pane uses for "→ symlinked from ..."), so it doubles as "is this
+   *  actually a symlink" — regardless of scope, unlike the project-card's isLinked which also
+   *  requires projectId !== null. A global item can be a symlink too (e.g. a tool's skills folder
+   *  symlinked to an external store), and that's exactly the case the dashboard needs to flag. */
+  private isSymlinkedItem(item: ItemMetadata): boolean {
+    return item.realPath !== item.sourcePath;
+  }
+
+  /** A small inline "link" icon for a dashboard row's name, only rendered when the item is a
+   *  symlink — lets Prune/Overlap rows (and the overlap Compare modal) tell two identically-named
+   *  items apart instead of looking like plain duplicates. */
+  private renderSymlinkIcon(parent: HTMLElement, item: ItemMetadata) {
+    if (!this.isSymlinkedItem(item)) return;
+    const icon = parent.createSpan({
+      cls: "skillmanager-dash-row-icon",
+      attr: { "aria-label": `Symlinked from ${item.realPath}` },
+    });
+    setIcon(icon, "link");
+  }
+
+  /** "A ↔ B" for an overlap row's name, with a link icon in front of either side that's a
+   *  symlink — otherwise two rows can read as plain duplicates of each other when they're
+   *  actually distinct files (e.g. a plugin's bundled copy vs. the user's own, symlinked one). */
+  private renderOverlapPairName(parent: HTMLElement, a: ItemMetadata, b: ItemMetadata) {
+    this.renderSymlinkIcon(parent, a);
+    parent.createSpan({ text: a.name });
+    parent.createSpan({ text: " ↔ " });
+    this.renderSymlinkIcon(parent, b);
+    parent.createSpan({ text: b.name });
+  }
+
+  private getDashboardMetrics(): DashboardMetric[] {
     if (!this.dashboardMetrics) {
       this.dashboardMetrics = computeDashboardMetrics(this.items.filter((i) => i.enabled));
     }
-    const metrics = this.dashboardMetrics;
-    const pruneCandidates = findPruneCandidates(metrics);
-    const overlapPairs = findOverlapPairs(metrics.map((m) => m.item));
+    return this.dashboardMetrics;
+  }
 
-    const header = content.createDiv({ cls: "skillspace-content-header" });
-    const headerTop = header.createDiv({ cls: "skillspace-dash-header-top" });
-    const headerLeft = headerTop.createDiv({ cls: "skillspace-dash-header-left" });
-    const titleRow = headerLeft.createDiv({ cls: "skillspace-title-row" });
-    titleRow.createEl("h2", { text: "Dashboard", cls: "skillspace-title" });
+  /** Cached count behind the sidebar's Dashboard dot — see dashboardAttentionCount. Excludes
+   *  anything the user has already disregarded, same as the Dashboard's own lists. Reads
+   *  whatever Claude Code usage happens to already be cached but never triggers a load itself
+   *  (`triggerUsageLoad: false`) — renderSidebar calls this on every render, so it must not be
+   *  what kicks off the transcript-directory scan the "Claude Code" tile is meant to gate. */
+  private getDashboardAttentionCount(): number {
+    if (this.dashboardAttentionCount === null) {
+      const metrics = this.getDashboardMetrics();
+      const { usagePrune, mtimePrune } = this.getDashboardPruneSplit(metrics, false);
+      const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
+      this.dashboardAttentionCount = usagePrune.length + mtimePrune.length + overlapPairs.length;
+    }
+    return this.dashboardAttentionCount;
+  }
+
+  /** The Prune candidates section's actual split — Claude Code skills/agents by real invocation
+   *  history once it's loaded (falling back to mtime while still loading), everything else by
+   *  mtime. Single source of truth for the header "Prune" stat, the sidebar attention badge, and
+   *  the section itself, so all three always agree (findPruneCandidates alone undercounts, since
+   *  it knows nothing about the usage-based candidates that replace part of its own output).
+   *  `triggerUsageLoad` defaults to true (the Dashboard section itself, where selecting the
+   *  Claude Code tile is exactly what should start the scan); the sidebar badge passes false so
+   *  it only ever reflects usage that's already loaded, never starts loading it. */
+  private getDashboardPruneSplit(
+    metrics: DashboardMetric[],
+    triggerUsageLoad = true
+  ): {
+    usagePrune: { item: ItemMetadata; stats: ClaudeUsageStats }[];
+    mtimePrune: DashboardMetric[];
+  } {
+    const disregarded = this.getSettings().dashboardDisregarded;
+    const pruneCandidates = findPruneCandidates(metrics).filter((m) => !disregarded[m.item.entryId]);
+    const usage = triggerUsageLoad ? this.getClaudeUsage() : this.claudeUsage;
+    const isClaudeSkillOrAgent = (m: DashboardMetric) =>
+      m.item.tool === "claude-code" && (m.item.type === "skill" || m.item.type === "agent");
+    const claudeSkillAgentItems = metrics.filter(isClaudeSkillOrAgent).map((m) => m.item);
+    const usagePrune = usage ? findUsagePruneCandidates(claudeSkillAgentItems, usage).filter((u) => !disregarded[u.item.entryId]) : [];
+    const mtimePrune = pruneCandidates.filter((m) => !usage || !isClaudeSkillOrAgent(m));
+    return { usagePrune, mtimePrune };
+  }
+
+  /** Stable, order-independent key for an overlap pair, used as its dashboardDisregarded entry —
+   *  entryId order out of findOverlapPairs isn't guaranteed to stay a/b vs b/a across rescans. */
+  private overlapPairKey(a: ItemMetadata, b: ItemMetadata): string {
+    return [a.entryId, b.entryId].sort().join("::");
+  }
+
+  /** findOverlapPairs, with instructions files (ToolConfig.singleFileRule) excluded first. A
+   *  CLAUDE.md-style file has no frontmatter name/description of its own (see scanSingleFile),
+   *  so every scope of it falls back to the same filename and would otherwise score 100%
+   *  "overlap" against its own project-scoped copies — but a global instructions file and a
+   *  project one are meant to coexist, not compete, so instructions files never enter this
+   *  comparison at all. */
+  private overlapPairsFor(items: ItemMetadata[]): OverlapPair[] {
+    const eligible = items.filter((item) => !(item.type === "rule" && this.isSingleFileRuleTool(item.tool)));
+    const disregarded = this.getSettings().dashboardDisregarded;
+    return findOverlapPairs(eligible).filter((p) => !disregarded[this.overlapPairKey(p.a, p.b)]);
+  }
+
+  /** Marks a specific Prune candidate (entryId) or Possible overlap (overlapPairKey) as "not
+   *  relevant" — unlike disableFromDashboard this never touches the item itself and never
+   *  expires, since disregarding is a deliberate call, not something to auto-undo. */
+  private async disregardDashboardRecommendation(key: string) {
+    const settings = this.getSettings();
+    settings.dashboardDisregarded = { ...settings.dashboardDisregarded, [key]: Date.now() };
+    await this.saveSettings();
+    this.dashboardAttentionCount = null;
+    this.render();
+  }
+
+  private renderDashboardContent(content: HTMLElement) {
+    const metrics = this.getDashboardMetrics();
+    // Claude Code's skills and agents get judged by real invocation history (the only tool this
+    // plugin can read one for, see claude-usage.ts) instead of the mtime heuristic everything
+    // else uses. Merged into one always-visible Prune candidates list — real usage is a better
+    // signal whenever it's available, not just once someone happens to click the Claude Code
+    // tool card — with each row tagged "Usage" or "File age" so the mixed methodology is never
+    // ambiguous (see renderDashboardPruneRow). getDashboardPruneSplit is the single source of
+    // truth for this count so the header stat below can't drift from what the section renders.
+    const { usagePrune, mtimePrune } = this.getDashboardPruneSplit(metrics);
+    const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
+    const pruneCount = usagePrune.length + mtimePrune.length;
+
+    const header = content.createDiv({ cls: "skillmanager-content-header" });
+    const headerTop = header.createDiv({ cls: "skillmanager-dash-header-top" });
+    const headerLeft = headerTop.createDiv({ cls: "skillmanager-dash-header-left" });
+    const titleRow = headerLeft.createDiv({ cls: "skillmanager-title-row" });
+    titleRow.createEl("h2", { text: "Dashboard", cls: "skillmanager-title" });
     headerLeft.createDiv({
       text: "Context usage across enabled skills, agents, commands, and rules. Calibrate for optimal performance.",
-      cls: "skillspace-subtitle",
+      cls: "skillmanager-subtitle",
     });
-    const headerStats = headerTop.createDiv({ cls: "skillspace-dash-header-stats" });
+    const headerStats = headerTop.createDiv({ cls: "skillmanager-dash-header-stats" });
     const totalChars = metrics.reduce((sum, m) => sum + m.charCount, 0);
     this.renderDashboardStat(headerStats, "Enabled", String(metrics.length));
     this.renderDashboardStat(headerStats, "Est. tokens", formatTokens(totalChars).replace("~", ""));
-    this.renderDashboardStat(headerStats, "Prune", String(pruneCandidates.length), pruneCandidates.length ? "skillspace-dash-stat-danger" : "");
-    this.renderDashboardStat(headerStats, "Overlaps", String(overlapPairs.length), overlapPairs.length ? "skillspace-dash-stat-accent" : "");
-    header.createDiv({ cls: "skillspace-dash-divider" });
+    this.renderDashboardStat(headerStats, "Prune", String(pruneCount), pruneCount ? "skillmanager-dash-stat-danger" : "");
+    this.renderDashboardStat(headerStats, "Overlaps", String(overlapPairs.length), overlapPairs.length ? "skillmanager-dash-stat-accent" : "");
+    header.createDiv({ cls: "skillmanager-dash-divider" });
 
-    const body = content.createDiv({ cls: "skillspace-body skillspace-dash-body" });
+    const body = content.createDiv({ cls: "skillmanager-body skillmanager-dash-body" });
     if (metrics.length === 0) {
-      body.createDiv({ text: "No enabled items yet.", cls: "skillspace-empty" });
+      body.createDiv({ text: "No enabled items yet.", cls: "skillmanager-empty" });
       return;
     }
 
     this.renderDashboardToolCards(body, metrics);
     this.renderDashboardRanked(body, metrics);
-    const columns = body.createDiv({ cls: "skillspace-dash-columns" });
-    this.renderDashboardPruneCandidates(columns, pruneCandidates);
-    this.renderDashboardOverlaps(columns, overlapPairs);
+
+    if (this.dashboardActiveTool === "claude-code") {
+      // Top Skills & Agents stays contextual to the Claude Code tool card — it's a usage lens on
+      // one tool's items specifically, not something every other tool has an equivalent of.
+      // Unlike getDashboardPruneSplit's claudeSkillAgentItems (enabled-only, since "prune" is
+      // meaningless for an already-disabled item), it draws from every matching item regardless
+      // of enabled state so a real invocation of a since-disabled skill still shows up. Cached
+      // after getDashboardPruneSplit's own call above, so this doesn't re-trigger a scan.
+      const usage = this.getClaudeUsage();
+      const allClaudeSkillAgentItems = this.items.filter(
+        (i) => i.tool === "claude-code" && (i.type === "skill" || i.type === "agent")
+      );
+      const topUsed = usage ? rankTopUsedItems(allClaudeSkillAgentItems, usage) : [];
+      this.renderDashboardTopUsed(body, topUsed, !usage);
+    }
+    const columns = body.createDiv({ cls: "skillmanager-dash-columns" });
+    this.renderDashboardPruneCandidates(columns, usagePrune, mtimePrune);
+    this.renderDashboardOverlaps(columns, overlapPairs, metrics.map((m) => m.item));
+
+    // Restores wherever the user was (e.g. returning here via a Ranked row's "Back") and keeps
+    // tracking live, same pattern as libraryScrollTop for the main grid.
+    body.scrollTop = this.dashboardScrollTop;
+    body.addEventListener("scroll", () => {
+      this.dashboardScrollTop = body.scrollTop;
+    });
   }
 
   private renderDashboardStat(parent: HTMLElement, label: string, value: string, accentCls = "") {
-    const stat = parent.createDiv({ cls: "skillspace-dash-stat" });
-    stat.createDiv({ text: label, cls: "skillspace-dash-stat-label" });
-    stat.createDiv({ text: value, cls: `skillspace-dash-stat-value ${accentCls}`.trim() });
+    const stat = parent.createDiv({ cls: "skillmanager-dash-stat" });
+    stat.createDiv({ text: label, cls: "skillmanager-dash-stat-label" });
+    stat.createDiv({ text: value, cls: `skillmanager-dash-stat-value ${accentCls}`.trim() });
   }
 
   private renderDashboardSectionHead(parent: HTMLElement, title: string, buildRight?: (right: HTMLElement) => void) {
-    const head = parent.createDiv({ cls: "skillspace-dash-section-head" });
-    head.createDiv({ text: title, cls: "skillspace-dash-section-title" });
-    if (buildRight) buildRight(head.createDiv({ cls: "skillspace-dash-section-right" }));
+    const head = parent.createDiv({ cls: "skillmanager-dash-section-head" });
+    head.createDiv({ text: title, cls: "skillmanager-dash-section-title" });
+    if (buildRight) buildRight(head.createDiv({ cls: "skillmanager-dash-section-right" }));
   }
 
   private renderDashboardTypeLegend(parent: HTMLElement) {
-    const legend = parent.createDiv({ cls: "skillspace-dash-legend" });
+    const legend = parent.createDiv({ cls: "skillmanager-dash-legend" });
     for (const type of Object.keys(DASHBOARD_TYPE_COLORS) as ItemType[]) {
-      const entry = legend.createDiv({ cls: "skillspace-dash-legend-entry" });
-      const swatch = entry.createSpan({ cls: "skillspace-dash-legend-swatch" });
+      const entry = legend.createDiv({ cls: "skillmanager-dash-legend-entry" });
+      const swatch = entry.createSpan({ cls: "skillmanager-dash-legend-swatch" });
       swatch.style.background = DASHBOARD_TYPE_COLORS[type];
       entry.createSpan({ text: TYPE_LABEL_SINGULAR[type] });
     }
   }
 
-  /** A stacked bar of colored segments, one per item, each carrying a native title tooltip
-   *  since the colors alone don't say what they mean. */
+  /** Clickable "All / Skill / Agent / Command / Rule" pills above Ranked by cost — same type
+   *  vocabulary as renderDashboardTypeLegend, but selectable rather than just a color key. */
+  private renderDashboardTypeFilter(parent: HTMLElement) {
+    const setType = (type: ItemType | null) => {
+      this.dashboardTypeFilter = type;
+      this.dashboardRankedExpanded = false;
+      this.render();
+    };
+
+    const filter = parent.createDiv({ cls: "skillmanager-dash-type-filter" });
+    const allPill = filter.createSpan({ text: "All", cls: "skillmanager-dash-type-pill" });
+    if (!this.dashboardTypeFilter) allPill.addClass("is-active");
+    allPill.addEventListener("click", () => setType(null));
+
+    for (const type of Object.keys(DASHBOARD_TYPE_COLORS) as ItemType[]) {
+      const pill = filter.createSpan({ text: TYPE_LABELS[type], cls: "skillmanager-dash-type-pill" });
+      if (this.dashboardTypeFilter === type) pill.addClass("is-active");
+      pill.addEventListener("click", () => setType(type));
+    }
+  }
+
+  /** A stacked bar of colored segments, one per type (skill/agent/command/rule) rather than one
+   *  per item — a tool with dozens of items would otherwise render an unreadable sliver per item.
+   *  Each segment carries a native title tooltip with its type's item count and combined cost. */
   private renderDashboardStackedBar(track: HTMLElement, list: DashboardMetric[], maxTotal: number) {
-    let offset = 0;
+    const totals = new Map<ItemType, { charCount: number; count: number }>();
     for (const m of list) {
-      const seg = track.createDiv({ cls: "skillspace-dash-stack-seg" });
-      seg.style.width = `${(m.charCount / maxTotal) * 100}%`;
+      const entry = totals.get(m.item.type) ?? { charCount: 0, count: 0 };
+      entry.charCount += m.charCount;
+      entry.count += 1;
+      totals.set(m.item.type, entry);
+    }
+    let offset = 0;
+    for (const type of Object.keys(DASHBOARD_TYPE_COLORS) as ItemType[]) {
+      const entry = totals.get(type);
+      if (!entry) continue;
+      const seg = track.createDiv({ cls: "skillmanager-dash-stack-seg" });
+      seg.style.width = `${(entry.charCount / maxTotal) * 100}%`;
       seg.style.left = `${(offset / maxTotal) * 100}%`;
-      seg.style.background = DASHBOARD_TYPE_COLORS[m.item.type];
-      seg.setAttr("title", `${m.item.name} — ${TYPE_LABEL_SINGULAR[m.item.type]} · ${formatTokens(m.charCount)}`);
-      offset += m.charCount;
+      seg.style.background = DASHBOARD_TYPE_COLORS[type];
+      const countLabel = entry.count === 1 ? "1 item" : `${entry.count} items`;
+      setTooltip(seg, `${TYPE_LABEL_SINGULAR[type]} · ${countLabel} · ${formatTokens(entry.charCount)}`, { placement: "top" });
+      offset += entry.charCount;
     }
   }
 
@@ -2648,7 +3807,7 @@ export class LibraryView extends ItemView {
    *  there's room; falls back to horizontal scroll once there are too many tools to fit. */
   private renderDashboardToolCards(body: HTMLElement, metrics: DashboardMetric[]) {
     this.renderDashboardSectionHead(body, "Cost by tool", (right) => this.renderDashboardTypeLegend(right));
-    const tileGrid = body.createDiv({ cls: "skillspace-dash-tiles" });
+    const tileGrid = body.createDiv({ cls: "skillmanager-dash-tiles" });
 
     const byType = (list: DashboardMetric[]) => [...list].sort((a, b) => a.item.type.localeCompare(b.item.type));
     const groups = new Map<string, DashboardMetric[]>();
@@ -2662,46 +3821,56 @@ export class LibraryView extends ItemView {
     const selectTool = (tool: string | null) => {
       this.dashboardActiveTool = tool;
       this.dashboardRankedExpanded = false;
+      this.dashboardTopSkillsExpanded = false;
       this.render();
     };
 
-    const allTile = tileGrid.createDiv({ cls: "skillspace-dash-tile" });
+    const allTile = tileGrid.createDiv({ cls: "skillmanager-dash-tile" });
     if (!this.dashboardActiveTool) allTile.addClass("is-active");
-    allTile.createDiv({ text: "All tools", cls: "skillspace-dash-tile-name" });
-    allTile.createDiv({ text: formatTokens(grandTotal), cls: "skillspace-dash-tile-value" });
-    this.renderDashboardStackedBar(allTile.createDiv({ cls: "skillspace-dash-tile-bar" }), byType(metrics), grandTotal);
+    allTile.createDiv({ text: "All tools", cls: "skillmanager-dash-tile-name" });
+    allTile.createDiv({ text: formatTokens(grandTotal), cls: "skillmanager-dash-tile-value" });
+    this.renderDashboardStackedBar(allTile.createDiv({ cls: "skillmanager-dash-tile-bar" }), byType(metrics), grandTotal);
     allTile.addEventListener("click", () => selectTool(null));
 
+    const toolName = (toolId: string) => this.getSettings().tools.find((t) => t.id === toolId)?.name ?? toolId;
     for (const [tool, list] of groups) {
       const total = list.reduce((s, m) => s + m.charCount, 0);
-      const tile = tileGrid.createDiv({ cls: "skillspace-dash-tile" });
+      const tile = tileGrid.createDiv({ cls: "skillmanager-dash-tile" });
       if (this.dashboardActiveTool === tool) tile.addClass("is-active");
-      const tileHead = tile.createDiv({ cls: "skillspace-dash-tile-head" });
-      tileHead.createDiv({ text: tool, cls: "skillspace-dash-tile-name" });
-      tileHead.createSpan({ cls: "skillspace-dash-tile-dot" }).style.background = DASHBOARD_TYPE_COLORS[this.dashboardDominantType(list)];
-      tile.createDiv({ text: formatTokens(total), cls: "skillspace-dash-tile-value" });
-      this.renderDashboardStackedBar(tile.createDiv({ cls: "skillspace-dash-tile-bar" }), byType(list), grandTotal);
+      const tileHead = tile.createDiv({ cls: "skillmanager-dash-tile-head" });
+      tileHead.createDiv({ text: toolName(tool), cls: "skillmanager-dash-tile-name" });
+      tileHead.createSpan({ cls: "skillmanager-dash-tile-dot" }).style.background = DASHBOARD_TYPE_COLORS[this.dashboardDominantType(list)];
+      tile.createDiv({ text: formatTokens(total), cls: "skillmanager-dash-tile-value" });
+      this.renderDashboardStackedBar(tile.createDiv({ cls: "skillmanager-dash-tile-bar" }), byType(list), grandTotal);
       tile.addEventListener("click", () => selectTool(tool));
     }
   }
 
-  /** Collapsed to a handful by default, filtered by whichever tool card is active. */
+  /** Collapsed to a handful by default, filtered by whichever tool card is active and/or type
+   *  pill is selected (the two AND together — e.g. "Claude Code" + "Command"). */
   private renderDashboardRanked(body: HTMLElement, metrics: DashboardMetric[]) {
-    const section = body.createDiv({ cls: "skillspace-dash-ranked" });
-    this.renderDashboardSectionHead(section, "Ranked by cost");
+    const section = body.createDiv({ cls: "skillmanager-dash-ranked" });
+    this.renderDashboardSectionHead(section, "Ranked by cost", (right) => this.renderDashboardTypeFilter(right));
 
-    const filtered = this.dashboardActiveTool ? metrics.filter((m) => m.item.tool === this.dashboardActiveTool) : metrics;
+    const filtered = metrics.filter(
+      (m) =>
+        (!this.dashboardActiveTool || m.item.tool === this.dashboardActiveTool) &&
+        (!this.dashboardTypeFilter || m.item.type === this.dashboardTypeFilter)
+    );
     const sorted = [...filtered].sort((a, b) => b.charCount - a.charCount);
     const maxCharCount = Math.max(...metrics.map((m) => m.charCount), 1);
     const shown = this.dashboardRankedExpanded ? sorted : sorted.slice(0, DASHBOARD_RANKED_COLLAPSED_COUNT);
 
-    const list = section.createDiv({ cls: "skillspace-dash-ranked-list" });
+    const list = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
+    if (shown.length === 0) {
+      list.createDiv({ text: "Nothing matches this filter.", cls: "skillmanager-empty" });
+    }
     for (const metric of shown) this.renderDashboardRow(list, metric, maxCharCount);
 
     if (sorted.length > DASHBOARD_RANKED_COLLAPSED_COUNT) {
       const toggleBtn = section.createEl("button", {
         text: this.dashboardRankedExpanded ? "Show fewer" : `Show all (${sorted.length})`,
-        cls: "skillspace-dash-toggle",
+        cls: "skillmanager-dash-toggle",
       });
       toggleBtn.addEventListener("click", () => {
         this.dashboardRankedExpanded = !this.dashboardRankedExpanded;
@@ -2712,24 +3881,22 @@ export class LibraryView extends ItemView {
 
   private renderDashboardRow(container: HTMLElement, metric: DashboardMetric, maxCharCount: number) {
     const { item, charCount } = metric;
-    const row = container.createDiv({ cls: "skillspace-dash-row" });
-    row.addEventListener("click", () => {
-      this.dashboardMode = false;
-      this.selectItem(item);
-    });
+    const row = container.createDiv({ cls: "skillmanager-dash-row" });
+    row.addEventListener("click", () => this.openItemFromDashboard(item));
 
-    const info = row.createDiv({ cls: "skillspace-dash-row-info" });
-    const nameRow = info.createDiv({ cls: "skillspace-dash-row-name" });
-    const iconEl = nameRow.createSpan({ cls: "skillspace-dash-row-icon" });
+    const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
+    const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
+    const iconEl = nameRow.createSpan({ cls: "skillmanager-dash-row-icon" });
     setIcon(iconEl, TYPE_ICONS[item.type]);
     nameRow.createSpan({ text: item.name });
-    info.createDiv({ text: `${item.tool} · ${TYPE_LABELS[item.type]}`, cls: "skillspace-dash-row-meta" });
+    info.createDiv({ text: `${this.toolLabel(item).text} · ${TYPE_LABELS[item.type]}`, cls: "skillmanager-dash-row-meta" });
 
-    const barTrack = row.createDiv({ cls: "skillspace-dash-bar-track" });
-    const barFill = barTrack.createDiv({ cls: "skillspace-dash-bar-fill" });
+    const barTrack = row.createDiv({ cls: "skillmanager-dash-bar-track" });
+    const barFill = barTrack.createDiv({ cls: "skillmanager-dash-bar-fill" });
     barFill.style.width = `${Math.max(2, (charCount / maxCharCount) * 100)}%`;
+    barFill.style.background = DASHBOARD_TYPE_COLORS[item.type];
 
-    row.createDiv({ text: formatTokens(charCount), cls: "skillspace-dash-row-cost" });
+    row.createDiv({ text: formatTokens(charCount), cls: "skillmanager-dash-row-cost" });
   }
 
   /** entryId -> the moment it was disabled from this list, dropped once the item's been enabled
@@ -2744,12 +3911,258 @@ export class LibraryView extends ItemView {
     return kept;
   }
 
-  private renderDashboardPruneCandidates(columns: HTMLElement, candidates: DashboardMetric[]) {
-    const section = columns.createDiv({ cls: "skillspace-dash-section skillspace-dash-callout" });
+  /** Disabling from anywhere in the Dashboard (Prune candidates' own button, or the overlap
+   *  modal's) goes through here, so every entry point gets the same restore window. */
+  private async disableFromDashboard(item: ItemMetadata) {
+    const settings = this.getSettings();
+    settings.dashboardRecentlyDisabled = { ...this.pruneExpiredDashboardRestores(), [item.entryId]: Date.now() };
+    await this.saveSettings();
+    this.dashboardMetrics = null;
+    this.dashboardAttentionCount = null;
+    this.claudeUsage = null;
+    await this.toggleEnabled(item);
+  }
+
+  private async restoreFromDashboard(item: ItemMetadata) {
+    const settings = this.getSettings();
+    const kept = this.pruneExpiredDashboardRestores();
+    delete kept[item.entryId];
+    settings.dashboardRecentlyDisabled = kept;
+    await this.saveSettings();
+    this.dashboardMetrics = null;
+    this.dashboardAttentionCount = null;
+    this.claudeUsage = null;
+    await this.toggleEnabled(item);
+  }
+
+  /** Opens an item's file preview from anywhere in the Dashboard (a Ranked card, a Prune
+   *  candidate row, the overlap modal's name), marking that the eventual "Back" should land on
+   *  the Dashboard again rather than the plain Library. */
+  private openItemFromDashboard(item: ItemMetadata) {
+    this.detailReturnsToDashboard = true;
+    this.dashboardMode = false;
+    // clearScopeFilters ran when Dashboard was entered, but it only resets the "scope" group
+    // (tool/project/type/plugin/collection) — a stray search query, tag filter, or Enabled/
+    // Disabled tab left over from browsing before Dashboard was opened can still exclude the
+    // clicked item from the docked grid underneath the detail rail, leaving no card to highlight
+    // even though the preview on the right correctly shows it. Clear those too so the item is
+    // always present (and selected) in the grid it's opened into.
+    this.search = "";
+    this.enabledFilter = "all";
+    this.tagFilter = null;
+    this.untaggedOnly = false;
+    this.sourceFilter = null;
+    this.ruleKindFilter = null;
+    // Dashboard's own content branch never touches the grid, so wasDocked is left at whatever it
+    // was the last time the plain Library was rendered — if that happened to be true, renderContent
+    // would think the grid is "already docked" and restore the old dockedScrollTop instead of
+    // scrolling the newly selected card into view, leaving it selected but off-screen. Forcing
+    // false here always takes the "just became docked" branch, which does scroll it into view.
+    this.wasDocked = false;
+    this.selectItem(item);
+  }
+
+  /** Shared "Disregard" + one primary action button pair, used by every dismissible Dashboard
+   *  recommendation row (Prune candidates, usage-based Prune candidates, Possible overlaps).
+   *  Disregard only records the key in dashboardDisregarded; the primary action is whatever that
+   *  section's row actually does (Disable, Compare, …). */
+  private renderDashboardDisregardableActions(row: HTMLElement, disregardKey: string, primaryLabel: string, onPrimary: () => void) {
+    const actions = row.createDiv({ cls: "skillmanager-dash-row-actions" });
+    const disregardBtn = actions.createEl("button", { text: "Disregard", cls: "skillmanager-dash-action-btn" });
+    disregardBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      void this.disregardDashboardRecommendation(disregardKey);
+    });
+    const primaryBtn = actions.createEl("button", { text: primaryLabel, cls: primaryLabel === "Disable" ? "mod-warning" : "skillmanager-dash-action-btn" });
+    primaryBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      onPrimary();
+    });
+  }
+
+  /** Shared by renderDashboardPruneCandidates and renderDashboardOverlaps — both flag
+   *  a list of "still flagged" rows above a "was flagged, disabled from here recently" list, and
+   *  the restore-row shape (name, "Disabled Xd ago," a Restore button) is identical either way. */
+  private renderDashboardRestoreRows(rows: HTMLElement, now: number, restoreRows: { item: ItemMetadata; disabledAt: number }[]) {
+    for (const { item, disabledAt } of restoreRows) {
+      const row = rows.createDiv({ cls: "skillmanager-dash-flag-row is-clickable" });
+      row.addEventListener("click", () => this.openItemFromDashboard(item));
+      const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
+      const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
+      this.renderSymlinkIcon(nameRow, item);
+      nameRow.createSpan({ text: item.name });
+      info.createDiv({
+        text: `Disabled ${dashboardRelativeAge(now - disabledAt)} ago`,
+        cls: "skillmanager-dash-row-meta",
+      });
+      const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
+      restoreBtn.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        void this.restoreFromDashboard(item);
+      });
+    }
+  }
+
+  /** For a recently-disabled item, finds the still-enabled item it used to overlap with (that
+   *  pair no longer comes out of findOverlapPairs once one side is disabled) so the "Possible
+   *  overlaps" list can keep showing a restore row instead of the pair just vanishing. */
+  private findDashboardOverlapRestoreMatch(disabledItem: ItemMetadata, enabledItems: ItemMetadata[]): ItemMetadata | null {
+    if (this.isSingleFileRuleTool(disabledItem.tool)) return null;
+    let best: ItemMetadata | null = null;
+    let bestSameName = false;
+    let bestScore = OVERLAP_THRESHOLD;
+    for (const candidate of enabledItems) {
+      if (candidate.realPath === disabledItem.realPath) continue;
+      const sameName = isSameName(disabledItem, candidate);
+      const score = pairSimilarity(disabledItem, candidate);
+      if (!sameName && score < OVERLAP_THRESHOLD) continue;
+      // A name match always outranks a description-only match; within the same kind, prefer the
+      // higher score.
+      if (!best || (sameName && !bestSameName) || (sameName === bestSameName && score > bestScore)) {
+        best = candidate;
+        bestSameName = sameName;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  private renderDashboardOverlaps(columns: HTMLElement, pairs: OverlapPair[], enabledItems: ItemMetadata[]) {
+    const section = columns.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-callout" });
+    this.renderDashboardSectionHead(section, "Possible overlaps");
+    section.createDiv({
+      text: "Not usage-based: enabled items that share an identical name, or have near-duplicate descriptions, likely fighting over the same trigger conditions.",
+      cls: "skillmanager-subtitle",
+    });
+
+    const now = Date.now();
+    const restoreRows = Object.entries(this.pruneExpiredDashboardRestores())
+      .map(([entryId, disabledAt]) => ({ item: this.items.find((i) => i.entryId === entryId), disabledAt }))
+      .filter((r): r is { item: ItemMetadata; disabledAt: number } => !!r.item && !r.item.enabled)
+      .map((r) => ({ ...r, match: this.findDashboardOverlapRestoreMatch(r.item, enabledItems) }))
+      .filter((r): r is { item: ItemMetadata; disabledAt: number; match: ItemMetadata } => !!r.match);
+
+    const rows = section.createDiv({ cls: "skillmanager-dash-callout-rows" });
+    if (pairs.length === 0 && restoreRows.length === 0) {
+      rows.createDiv({ text: "No overlapping descriptions found.", cls: "skillmanager-empty" });
+      return;
+    }
+    for (const pair of pairs) {
+      const row = rows.createDiv({ cls: "skillmanager-dash-flag-row" });
+      const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
+      const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
+      this.renderOverlapPairName(nameRow, pair.a, pair.b);
+      info.createDiv({
+        text: pair.sameName ? "Same name" : `${Math.round(pair.score * 100)}% description overlap`,
+        cls: "skillmanager-dash-row-meta",
+      });
+      this.renderDashboardDisregardableActions(row, this.overlapPairKey(pair.a, pair.b), "Compare", () => {
+        new ItemOverlapModal(
+          this.app,
+          pair.a,
+          pair.b,
+          pair.score,
+          pair.sameName,
+          (item) => void this.disableFromDashboard(item),
+          (item) => this.confirmDelete(item),
+          (item) => this.openItemFromDashboard(item)
+        ).open();
+      });
+    }
+    for (const { item, disabledAt, match } of restoreRows) {
+      const row = rows.createDiv({ cls: "skillmanager-dash-flag-row" });
+      const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
+      const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
+      this.renderOverlapPairName(nameRow, item, match);
+      info.createDiv({
+        text: `"${item.name}" disabled ${dashboardRelativeAge(now - disabledAt)} ago`,
+        cls: "skillmanager-dash-row-meta",
+      });
+      const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
+      restoreBtn.addEventListener("click", () => void this.restoreFromDashboard(item));
+    }
+  }
+
+  /** Ranked-by-invocation-count sibling to renderDashboardRanked — only rendered when
+   *  dashboardActiveTool === "claude-code". Skills and agents combined into one list (a product
+   *  decision, not an oversight — see claude-usage.ts's rankTopUsedItems). */
+  private renderDashboardTopUsed(body: HTMLElement, ranked: { item: ItemMetadata; stats: ClaudeUsageStats }[], loading: boolean) {
+    const section = body.createDiv({ cls: "skillmanager-dash-ranked" });
+    this.renderDashboardSectionHead(section, "Top Skills & Agents");
+    section.createDiv({
+      text: `Based on real Claude Code invocations across all projects in ~/.claude/projects, last ${TOP_USED_WINDOW_DAYS} days.`,
+      cls: "skillmanager-subtitle",
+    });
+
+    const list = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
+    if (loading) {
+      list.createDiv({ text: "Scanning Claude Code history…", cls: "skillmanager-empty" });
+      return;
+    }
+    if (ranked.length === 0) {
+      list.createDiv({ text: "No skill or agent invocations recorded yet.", cls: "skillmanager-empty" });
+      return;
+    }
+    const maxCount = Math.max(...ranked.map((r) => r.stats.count), 1);
+    const shown = this.dashboardTopSkillsExpanded ? ranked : ranked.slice(0, DASHBOARD_RANKED_COLLAPSED_COUNT);
+    for (const { item, stats } of shown) this.renderDashboardUsageRow(list, item, stats, maxCount);
+
+    if (ranked.length > DASHBOARD_RANKED_COLLAPSED_COUNT) {
+      const toggleBtn = section.createEl("button", {
+        text: this.dashboardTopSkillsExpanded ? "Show fewer" : `Show all (${ranked.length})`,
+        cls: "skillmanager-dash-toggle",
+      });
+      toggleBtn.addEventListener("click", () => {
+        this.dashboardTopSkillsExpanded = !this.dashboardTopSkillsExpanded;
+        this.render();
+      });
+    }
+  }
+
+  /** Mirrors renderDashboardRow's chrome (icon, name, meta line, bar, right-hand value) — reuses
+   *  every skillmanager-dash-row* class as-is, just driven by invocation count instead of cost. */
+  private renderDashboardUsageRow(container: HTMLElement, item: ItemMetadata, stats: ClaudeUsageStats, maxCount: number) {
+    const row = container.createDiv({ cls: "skillmanager-dash-row" });
+    row.addEventListener("click", () => this.openItemFromDashboard(item));
+
+    const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
+    const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
+    const iconEl = nameRow.createSpan({ cls: "skillmanager-dash-row-icon" });
+    setIcon(iconEl, TYPE_ICONS[item.type]);
+    this.renderSymlinkIcon(nameRow, item);
+    nameRow.createSpan({ text: item.name });
+    const lastUsedText = stats.lastUsedMs ? `Last used ${dashboardRelativeAge(Date.now() - stats.lastUsedMs)} ago` : "Never invoked";
+    info.createDiv({
+      text: item.enabled ? lastUsedText : `${lastUsedText} · disabled`,
+      cls: "skillmanager-dash-row-meta",
+    });
+
+    const barTrack = row.createDiv({ cls: "skillmanager-dash-bar-track" });
+    const barFill = barTrack.createDiv({ cls: "skillmanager-dash-bar-fill" });
+    barFill.style.width = `${Math.max(2, (stats.count / maxCount) * 100)}%`;
+    barFill.style.background = DASHBOARD_TYPE_COLORS[item.type];
+
+    row.createDiv({ text: stats.count === 1 ? "1 run" : `${stats.count} runs`, cls: "skillmanager-dash-row-cost" });
+  }
+
+  /** The Dashboard's one Prune candidates section, always visible (not gated behind selecting the
+   *  Claude Code tool card) — mixes two methods in one list, per product decision: Claude Code
+   *  skills/agents by real invocation data (usageCandidates, the only tool this plugin can read
+   *  one for — see claude-usage.ts), everything else by the mtime heuristic (mtimeCandidates:
+   *  other tools' items, plus Claude Code's own commands/rules, which have no usage signal — and,
+   *  transiently, Claude Code skills/agents themselves while usage history is still loading, so
+   *  the list isn't empty on first open). Each row is tagged "Usage" or "File age" with which
+   *  method produced it so the mix is never ambiguous. */
+  private renderDashboardPruneCandidates(
+    body: HTMLElement,
+    usageCandidates: { item: ItemMetadata; stats: ClaudeUsageStats }[],
+    mtimeCandidates: DashboardMetric[]
+  ) {
+    const section = body.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-callout" });
     this.renderDashboardSectionHead(section, "Prune candidates");
     section.createDiv({
-      text: "Large and untouched for 90+ days, probably not earning their context cost.",
-      cls: "skillspace-subtitle",
+      text: `Claude Code skills and agents by real invocation history (never invoked, or not invoked in ${USAGE_STALE_DAYS}+ days); everything else (other tools, plus Claude Code commands and rules) by file edit history, since there's no usage signal for those.`,
+      cls: "skillmanager-subtitle",
     });
 
     const now = Date.now();
@@ -2758,84 +4171,33 @@ export class LibraryView extends ItemView {
       .map(([entryId, disabledAt]) => ({ item: this.items.find((i) => i.entryId === entryId), disabledAt }))
       .filter((r): r is { item: ItemMetadata; disabledAt: number } => !!r.item && !r.item.enabled);
 
-    const rows = section.createDiv({ cls: "skillspace-dash-callout-rows" });
-    if (candidates.length === 0 && restoreRows.length === 0) {
-      rows.createDiv({ text: "Nothing flagged. Nice.", cls: "skillspace-empty" });
+    const rows = section.createDiv({ cls: "skillmanager-dash-callout-rows" });
+    if (usageCandidates.length === 0 && mtimeCandidates.length === 0 && restoreRows.length === 0) {
+      rows.createDiv({ text: "Nothing flagged. Nice.", cls: "skillmanager-empty" });
       return;
     }
-    for (const metric of candidates) {
-      const { item, charCount, mtimeMs } = metric;
-      const row = rows.createDiv({ cls: "skillspace-dash-flag-row" });
-      const info = row.createDiv({ cls: "skillspace-dash-row-info" });
-      info.createDiv({ text: item.name, cls: "skillspace-dash-row-name" });
-      info.createDiv({
-        text: `${formatTokens(charCount)} · last touched ${mtimeMs ? formatDate(mtimeMs) : "unknown"}`,
-        cls: "skillspace-dash-row-meta",
-      });
-      const disableBtn = row.createEl("button", { text: "Disable", cls: "mod-warning" });
-      disableBtn.addEventListener("click", () => {
-        void (async () => {
-          const settings = this.getSettings();
-          settings.dashboardRecentlyDisabled = { ...this.pruneExpiredDashboardRestores(), [item.entryId]: Date.now() };
-          await this.saveSettings();
-          this.dashboardMetrics = null;
-          await this.toggleEnabled(item);
-        })();
-      });
+    for (const { item, stats } of usageCandidates) {
+      const metaText = stats.lastUsedMs === 0 ? "Never invoked" : `Not invoked in ${dashboardRelativeAge(now - stats.lastUsedMs)}`;
+      this.renderDashboardPruneRow(rows, item, metaText, "Usage");
     }
-    for (const { item, disabledAt } of restoreRows) {
-      const row = rows.createDiv({ cls: "skillspace-dash-flag-row" });
-      const info = row.createDiv({ cls: "skillspace-dash-row-info" });
-      info.createDiv({ text: item.name, cls: "skillspace-dash-row-name" });
-      info.createDiv({
-        text: `Disabled ${dashboardRelativeAge(now - disabledAt)} ago`,
-        cls: "skillspace-dash-row-meta",
-      });
-      const restoreBtn = row.createEl("button", { text: "Restore" });
-      restoreBtn.addEventListener("click", () => {
-        void (async () => {
-          const settings = this.getSettings();
-          const kept = this.pruneExpiredDashboardRestores();
-          delete kept[item.entryId];
-          settings.dashboardRecentlyDisabled = kept;
-          await this.saveSettings();
-          this.dashboardMetrics = null;
-          await this.toggleEnabled(item);
-        })();
-      });
+    for (const { item, charCount, mtimeMs } of mtimeCandidates) {
+      const metaText = `${formatTokens(charCount)} · last touched ${mtimeMs ? formatDate(mtimeMs) : "unknown"}`;
+      this.renderDashboardPruneRow(rows, item, metaText, "File age");
     }
+    this.renderDashboardRestoreRows(rows, now, restoreRows);
   }
 
-  private renderDashboardOverlaps(columns: HTMLElement, pairs: OverlapPair[]) {
-    const section = columns.createDiv({ cls: "skillspace-dash-section skillspace-dash-callout" });
-    this.renderDashboardSectionHead(section, "Possible overlaps");
-    section.createDiv({
-      text: "Enabled items with near-duplicate names and descriptions, likely fighting over the same trigger conditions.",
-      cls: "skillspace-subtitle",
-    });
-    const rows = section.createDiv({ cls: "skillspace-dash-callout-rows" });
-    if (pairs.length === 0) {
-      rows.createDiv({ text: "No overlapping descriptions found.", cls: "skillspace-empty" });
-      return;
-    }
-    for (const pair of pairs) {
-      const row = rows.createDiv({ cls: "skillspace-dash-flag-row" });
-      const info = row.createDiv({ cls: "skillspace-dash-row-info" });
-      info.createDiv({ text: `${pair.a.name} ↔ ${pair.b.name}`, cls: "skillspace-dash-row-name" });
-      info.createDiv({
-        text: `${Math.round(pair.score * 100)}% description overlap`,
-        cls: "skillspace-dash-row-meta",
-      });
-      const compareBtn = row.createEl("button", { text: "Compare" });
-      compareBtn.addEventListener("click", () => {
-        new ItemOverlapModal(this.app, pair.a, pair.b, pair.score, (item) => {
-          void (async () => {
-            this.dashboardMetrics = null;
-            await this.toggleEnabled(item);
-          })();
-        }).open();
-      });
-    }
+  private renderDashboardPruneRow(rows: HTMLElement, item: ItemMetadata, metaText: string, methodLabel: string) {
+    const row = rows.createDiv({ cls: "skillmanager-dash-flag-row is-clickable" });
+    row.addEventListener("click", () => this.openItemFromDashboard(item));
+    const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
+    const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
+    this.renderSymlinkIcon(nameRow, item);
+    nameRow.createSpan({ text: item.name });
+    const metaRow = info.createDiv({ cls: "skillmanager-dash-row-meta" });
+    metaRow.createSpan({ text: metaText });
+    metaRow.createSpan({ text: methodLabel, cls: "skillmanager-dash-method-tag" });
+    this.renderDashboardDisregardableActions(row, item.entryId, "Disable", () => void this.disableFromDashboard(item));
   }
 
   // ---------- selection: one detail rail, breadcrumbed between the file list and a file ----------
@@ -2874,12 +4236,15 @@ export class LibraryView extends ItemView {
 
   private backToLibrary() {
     this.cleanupReview();
+    const returnToDashboard = this.detailReturnsToDashboard;
+    this.detailReturnsToDashboard = false;
     this.selectedItem = null;
     this.selectedFilePath = null;
     this.detailLoadedFor = null;
     this.addingTagFor = null;
     this.moreFieldsExpanded = false;
     this.pendingDetailAnimation = "back";
+    if (returnToDashboard) this.dashboardMode = true;
     this.render();
   }
 
@@ -2910,9 +4275,9 @@ export class LibraryView extends ItemView {
     if (this.review && this.review.entryId === item.entryId) {
       this.renderDiffReview(panel);
     } else if (tree && !this.selectedFilePath) {
-      const list = panel.createDiv({ cls: "skillspace-tree" });
+      const list = panel.createDiv({ cls: "skillmanager-tree" });
       this.renderTreeNodes(list, tree, 0);
-      panel.createDiv({ cls: "skillspace-tree-hint", text: "Click a file to open it." });
+      panel.createDiv({ cls: "skillmanager-tree-hint", text: "Click a file to open it." });
     } else if (filePath) {
       this.renderFileBody(panel, item, filePath);
     }
@@ -2923,22 +4288,22 @@ export class LibraryView extends ItemView {
    *  list). "Library" itself is always clickable, the one jump that costs the same regardless of
    *  depth; the skill segment only becomes clickable once a file from its tree is open. */
   private renderBreadcrumbs(panel: HTMLElement, item: ItemMetadata, tree: TreeNode[] | null) {
-    const row = panel.createDiv({ cls: "skillspace-crumbs" });
+    const row = panel.createDiv({ cls: "skillmanager-crumbs" });
     const fileOpenFromTree = !!tree && !!this.selectedFilePath;
     const stepBack = () => (fileOpenFromTree ? this.backToTree() : this.backToLibrary());
 
-    const backBtn = row.createEl("button", { cls: "skillspace-icon-btn", attr: { "aria-label": "Back" } });
+    const backBtn = row.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Back" } });
     setIcon(backBtn, "arrow-left");
     backBtn.addEventListener("click", stepBack);
 
     const crumb = (label: string, current: boolean, onClick?: () => void) => {
-      const btn = row.createEl("button", { cls: `skillspace-crumb${current ? " is-current" : ""}`, text: label });
+      const btn = row.createEl("button", { cls: `skillmanager-crumb${current ? " is-current" : ""}`, text: label });
       if (onClick) btn.addEventListener("click", onClick);
       return btn;
     };
-    const sep = () => row.createSpan({ cls: "skillspace-crumb-sep", text: "/" });
+    const sep = () => row.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
 
-    crumb("Library", false, () => this.backToLibrary());
+    crumb(this.detailReturnsToDashboard ? "Dashboard" : "Library", false, () => this.backToLibrary());
     sep();
     crumb(item.name, !fileOpenFromTree, fileOpenFromTree ? () => this.backToTree() : undefined);
 
@@ -2961,18 +4326,18 @@ export class LibraryView extends ItemView {
     const isManifest = !!filePath && filePath === item.sourcePath;
     const isReviewing = this.review !== null && this.review.entryId === item.entryId;
 
-    const header = panel.createDiv({ cls: "skillspace-detail-header" });
+    const header = panel.createDiv({ cls: "skillmanager-detail-header" });
     header.createEl("h3", {
       text: isReviewing
         ? `${this.review?.mode === "restore" ? "Restore" : "Update"} "${item.name}"`
         : filePath && !isManifest
           ? basename(filePath)
           : item.name,
-      cls: "skillspace-detail-title",
+      cls: "skillmanager-detail-title",
     });
-    header.createSpan({ text: this.sourceLabel(item), cls: "skillspace-detail-tool-pill" });
+    header.createSpan({ text: this.sourceLabel(item), cls: "skillmanager-detail-tool-pill" });
     if (filePath && !isReviewing) {
-      const actions = header.createDiv({ cls: "skillspace-detail-actions" });
+      const actions = header.createDiv({ cls: "skillmanager-detail-actions" });
       this.renderDetailActions(actions);
     }
 
@@ -2987,8 +4352,8 @@ export class LibraryView extends ItemView {
       // a right column over an empty left one.
       const fields = isManifest ? parseFrontmatter(this.detailContent).filter((f) => f.value) : [];
 
-      const band = panel.createDiv({ cls: "skillspace-detail-band" });
-      const left = band.createDiv({ cls: "skillspace-detail-band-left" });
+      const band = panel.createDiv({ cls: "skillmanager-detail-band" });
+      const left = band.createDiv({ cls: "skillmanager-detail-band-left" });
 
       if (isManifest) this.renderTagChips(left, item);
 
@@ -2997,13 +4362,13 @@ export class LibraryView extends ItemView {
       // versions of the same thing at once — tags aren't part of that textarea, so they stay.
       if (!this.detailEditing) {
         const description = fields.find((f) => f.key === "description");
-        if (description) left.createDiv({ cls: "skillspace-detail-desc", text: description.value });
+        if (description) left.createDiv({ cls: "skillmanager-detail-desc", text: description.value });
       }
 
-      const pathBlock = left.createDiv({ cls: "skillspace-detail-path", attr: { title: filePath } });
+      const pathBlock = left.createDiv({ cls: "skillmanager-detail-path", attr: { title: filePath } });
       pathBlock.createDiv({ text: filePath });
       if (isManifest && item.realPath !== item.sourcePath) {
-        pathBlock.createDiv({ text: `→ symlinked from ${item.realPath}`, cls: "skillspace-detail-path-target" });
+        pathBlock.createDiv({ text: `→ symlinked from ${item.realPath}`, cls: "skillmanager-detail-path-target" });
       }
 
       if (!this.detailEditing) {
@@ -3011,7 +4376,7 @@ export class LibraryView extends ItemView {
         if (moreFields.length > 0) this.renderMoreFields(left, moreFields);
       }
 
-      const right = band.createDiv({ cls: "skillspace-detail-band-right" });
+      const right = band.createDiv({ cls: "skillmanager-detail-band-right" });
       this.renderFileStats(right, item, filePath);
       if (item.sourceRepo) this.renderSourceStatus(right, item);
     } else if (item.sourceRepo) {
@@ -3021,7 +4386,7 @@ export class LibraryView extends ItemView {
 
   private renderDetailActions(actions: HTMLElement) {
     const editBtn = actions.createEl("button", {
-      cls: "skillspace-icon-btn",
+      cls: "skillmanager-icon-btn",
       attr: { "aria-label": this.detailEditing ? "Preview" : "Edit" },
     });
     setIcon(editBtn, this.detailEditing ? "eye" : "pencil");
@@ -3041,11 +4406,11 @@ export class LibraryView extends ItemView {
     } catch {
       // file may have moved since the last scan; stats just show defaults
     }
-    const stats = container.createDiv({ cls: "skillspace-detail-stats" });
+    const stats = container.createDiv({ cls: "skillmanager-detail-stats" });
     const row = (label: string, value: string) => {
-      const r = stats.createDiv({ cls: "skillspace-detail-stat-row" });
-      r.createSpan({ text: label, cls: "skillspace-detail-stat-label" });
-      r.createSpan({ text: value, cls: "skillspace-detail-stat-value" });
+      const r = stats.createDiv({ cls: "skillmanager-detail-stat-row" });
+      r.createSpan({ text: label, cls: "skillmanager-detail-stat-label" });
+      r.createSpan({ text: value, cls: "skillmanager-detail-stat-value" });
     };
     row("Size", formatBytes(fileSize));
     row("Length", `${this.detailContent.length.toLocaleString()} chars`);
@@ -3060,9 +4425,9 @@ export class LibraryView extends ItemView {
    *  during a rescan — see the versioning plan's "manual update checks" decision. The repo URL
    *  truncates (full URL is the aria-label/title) since the right column is narrow. */
   private renderSourceStatus(container: HTMLElement, item: ItemMetadata) {
-    const section = container.createDiv({ cls: "skillspace-detail-source" });
+    const section = container.createDiv({ cls: "skillmanager-detail-source" });
     this.renderSourceRepoLine(section, item);
-    this.renderSourceButtons(section.createDiv({ cls: "skillspace-detail-source-actions" }), item);
+    this.renderSourceButtons(section.createDiv({ cls: "skillmanager-detail-source-actions" }), item);
   }
 
   /** Same repo status as renderSourceStatus, but as one full-width row instead of a stacked
@@ -3070,9 +4435,9 @@ export class LibraryView extends ItemView {
    *  (browsing a multi-file skill's tree, or an active review), where the band would otherwise
    *  float a divider and a right column over an empty left one. */
   private renderSourceStatusInline(panel: HTMLElement, item: ItemMetadata) {
-    const row = panel.createDiv({ cls: "skillspace-detail-source-inline" });
+    const row = panel.createDiv({ cls: "skillmanager-detail-source-inline" });
     this.renderSourceRepoLine(row, item);
-    this.renderSourceButtons(row.createDiv({ cls: "skillspace-detail-source-actions" }), item);
+    this.renderSourceButtons(row.createDiv({ cls: "skillmanager-detail-source-actions" }), item);
   }
 
   /** Repo avatar + a link straight to the exact tracked folder/file on GitHub — same avatar
@@ -3083,13 +4448,13 @@ export class LibraryView extends ItemView {
    *  item has one regardless of whether it happens to also have a sourceRepo. */
   private renderSourceRepoLine(container: HTMLElement, item: ItemMetadata) {
     const repoUrl = item.sourceRepo as string;
-    // Keeps the existing skillspace-detail-source-repo class (and everything the surrounding
-    // .skillspace-detail-source/-inline layouts already key off it for) — just turns its single
+    // Keeps the existing skillmanager-detail-source-repo class (and everything the surrounding
+    // .skillmanager-detail-source/-inline layouts already key off it for) — just turns its single
     // text node into a small flex row with an avatar in front and a link instead of plain text.
-    const row = container.createDiv({ cls: "skillspace-detail-source-repo" });
+    const row = container.createDiv({ cls: "skillmanager-detail-source-repo" });
     const parsed = parseOwnerRepo(repoUrl);
     if (parsed) {
-      row.createEl("img", { cls: "skillspace-detail-source-avatar", attr: { src: `https://github.com/${parsed.owner}.png?size=32` } });
+      row.createEl("img", { cls: "skillmanager-detail-source-avatar", attr: { src: `https://github.com/${parsed.owner}.png?size=32` } });
     }
     row.createEl("a", {
       text: parsed ? `${parsed.owner}/${parsed.repo}` : repoUrl,
@@ -3103,14 +4468,14 @@ export class LibraryView extends ItemView {
   }
 
   private renderSourceButtons(actions: HTMLElement, item: ItemMetadata) {
-    const checkBtn = actions.createEl("button", { cls: "skillspace-detail-source-btn" });
+    const checkBtn = actions.createEl("button", { cls: "skillmanager-detail-source-btn" });
     this.setSourceBtnContent(checkBtn, "refresh-cw", "Check for updates");
     checkBtn.addEventListener("click", () => void this.checkForUpdate(item, checkBtn));
 
     // No ls-remote check needed first — the restore target is already known (whatever commit
     // was recorded at install/last-update time), unlike "Check for updates" which has to ask
     // the remote what's changed.
-    const restoreBtn = actions.createEl("button", { cls: "skillspace-detail-source-btn" });
+    const restoreBtn = actions.createEl("button", { cls: "skillmanager-detail-source-btn" });
     this.setSourceBtnContent(restoreBtn, "history", "Restore installed");
     restoreBtn.addEventListener("click", () => void this.startReview(item, "restore"));
   }
@@ -3119,7 +4484,7 @@ export class LibraryView extends ItemView {
    *  wipe out the other's content, since both replace the whole element. */
   private setSourceBtnContent(btn: HTMLButtonElement, icon: string, text: string) {
     btn.empty();
-    setIcon(btn.createSpan({ cls: "skillspace-detail-source-btn-icon" }), icon);
+    setIcon(btn.createSpan({ cls: "skillmanager-detail-source-btn-icon" }), icon);
     btn.createSpan({ text });
   }
 
@@ -3213,7 +4578,7 @@ export class LibraryView extends ItemView {
 
     if (review.status === "loading") {
       panel.createDiv({
-        cls: "skillspace-modal-meta",
+        cls: "skillmanager-modal-meta",
         text: review.mode === "restore" ? "Fetching the installed version…" : "Fetching upstream changes…",
       });
       return;
@@ -3221,10 +4586,10 @@ export class LibraryView extends ItemView {
 
     if (review.status === "error") {
       panel.createDiv({
-        cls: "skillspace-modal-meta",
+        cls: "skillmanager-modal-meta",
         text: `Couldn't fetch ${review.mode === "restore" ? "the installed version" : "the update"}: ${review.message}`,
       });
-      const dismissBtn = panel.createEl("button", { text: "Dismiss" });
+      const dismissBtn = panel.createEl("button", { text: "Dismiss", cls: "skillmanager-btn-neutral" });
       dismissBtn.addEventListener("click", () => {
         this.review = null;
         this.render();
@@ -3235,17 +4600,17 @@ export class LibraryView extends ItemView {
     renderDiffBody(panel.createDiv(), review.oldText, review.newText);
 
     if (review.companions.length > 0) {
-      const list = panel.createDiv({ cls: "skillspace-diff-companion-list" });
-      list.createDiv({ cls: "skillspace-modal-meta", text: "Other files in this skill that also changed:" });
+      const list = panel.createDiv({ cls: "skillmanager-diff-companion-list" });
+      list.createDiv({ cls: "skillmanager-modal-meta", text: "Other files in this skill that also changed:" });
       for (const row of review.companions) {
-        const rowEl = list.createDiv({ cls: "skillspace-diff-companion-row" });
-        rowEl.createSpan({ cls: `skillspace-diff-companion-badge is-${row.status}`, text: row.status });
+        const rowEl = list.createDiv({ cls: "skillmanager-diff-companion-row" });
+        rowEl.createSpan({ cls: `skillmanager-diff-companion-badge is-${row.status}`, text: row.status });
         rowEl.createSpan({ text: row.file });
       }
     }
 
-    const actions = panel.createDiv({ cls: "skillspace-modal-actions skillspace-diff-review-actions" });
-    actions.createEl("button", { text: "Cancel" }).addEventListener("click", () => {
+    const actions = panel.createDiv({ cls: "skillmanager-modal-actions skillmanager-diff-review-actions" });
+    actions.createEl("button", { text: "Cancel", cls: "skillmanager-btn-neutral" }).addEventListener("click", () => {
       this.cleanupReview();
       this.render();
     });
@@ -3338,6 +4703,36 @@ export class LibraryView extends ItemView {
     this.render();
   }
 
+  /** Same remote check as bulkCheckForUpdates, minus the button/progress UI — used by the
+   *  plugin's auto-update-check interval. Quiet on a clean check; only surfaces a Notice when it
+   *  actually finds something stale (or unreachable), so a background tick doesn't interrupt with
+   *  a "you're all good" popup every time it runs. */
+  async backgroundCheckForUpdates(): Promise<void> {
+    if (this.bulkCheckInProgress) return;
+    this.bulkCheckInProgress = true;
+    const tracked = this.items.filter((i) => i.sourceRepo);
+    let stale = 0;
+    let errors = 0;
+    for (const item of tracked) {
+      try {
+        const latest = remoteHeadCommit(item.sourceRepo as string, item.sourceRef || undefined);
+        const status = latest === item.sourceCommit ? "current" : "stale";
+        this.syncStatus.set(item.entryId, status);
+        if (status === "stale") stale++;
+      } catch {
+        errors++;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    }
+    this.bulkCheckInProgress = false;
+    if (stale > 0) {
+      new Notice(`${stale} skill${stale === 1 ? "" : "s"} ${stale === 1 ? "has" : "have"} an update available.`);
+    } else if (errors > 0 && tracked.length === errors) {
+      new Notice(`Auto update check: couldn't reach ${errors} source${errors === 1 ? "" : "s"}.`);
+    }
+    this.render();
+  }
+
   /** Silently applies every item bulkCheckForUpdates found stale. cleanupReview() first is
    *  defensive — these buttons live on the always-visible "All" page toolbar, so a review could
    *  in principle still be open when this runs. */
@@ -3371,16 +4766,16 @@ export class LibraryView extends ItemView {
       const collapsed = node.isDir && this.collapsedTreeFolders.has(node.relPath);
       const isActiveFile = !node.isDir && node.absPath === this.selectedFilePath;
       const row = container.createDiv({
-        cls: `skillspace-tree-item${node.isDir ? " is-dir" : ""}${isActiveFile ? " is-active" : ""}`,
+        cls: `skillmanager-tree-item${node.isDir ? " is-dir" : ""}${isActiveFile ? " is-active" : ""}`,
       });
-      row.style.setProperty("--skillspace-tree-depth", String(depth));
+      row.style.setProperty("--skillmanager-tree-depth", String(depth));
 
-      const chevron = row.createSpan({ cls: "skillspace-tree-chevron" });
+      const chevron = row.createSpan({ cls: "skillmanager-tree-chevron" });
       if (node.isDir) setIcon(chevron, collapsed ? "chevron-right" : "chevron-down");
 
-      const icon = row.createSpan({ cls: "skillspace-tree-icon" });
+      const icon = row.createSpan({ cls: "skillmanager-tree-icon" });
       setIcon(icon, node.isDir ? (collapsed ? "folder" : "folder-open") : "file-text");
-      row.createSpan({ text: node.name, cls: "skillspace-tree-label" });
+      row.createSpan({ text: node.name, cls: "skillmanager-tree-label" });
 
       if (node.isDir) {
         row.addEventListener("click", () => {
@@ -3418,14 +4813,14 @@ export class LibraryView extends ItemView {
 
   private renderFileBody(panel: HTMLElement, item: ItemMetadata, filePath: string) {
     const isManifest = filePath === item.sourcePath;
-    const body = panel.createDiv({ cls: "skillspace-detail-body" });
+    const body = panel.createDiv({ cls: "skillmanager-detail-body" });
     if (this.detailEditing) {
       // Styled and behaved like Obsidian's own source-mode editor rather than a form field:
       // no input-box chrome, grows with its content instead of scrolling in a box, Tab indents
       // instead of leaving the field, and Cmd/Ctrl+S saves without reaching for the mouse.
-      const editWrap = body.createDiv({ cls: "skillspace-edit-wrap" });
+      const editWrap = body.createDiv({ cls: "skillmanager-edit-wrap" });
       const textarea = editWrap.createEl("textarea", {
-        cls: "skillspace-edit-textarea",
+        cls: "skillmanager-edit-textarea",
         attr: { spellcheck: "true" },
       });
       textarea.value = this.detailContent;
@@ -3491,8 +4886,8 @@ export class LibraryView extends ItemView {
         }
       });
 
-      const saveRow = body.createDiv({ cls: "skillspace-detail-save-row" });
-      const cancelBtn = saveRow.createEl("button", { text: "Cancel" });
+      const saveRow = body.createDiv({ cls: "skillmanager-detail-save-row" });
+      const cancelBtn = saveRow.createEl("button", { text: "Cancel", cls: "skillmanager-btn-neutral" });
       cancelBtn.addEventListener("click", cancel);
       const saveBtn = saveRow.createEl("button", { text: "Save", cls: "mod-cta" });
       saveBtn.addEventListener("click", save);
@@ -3503,7 +4898,7 @@ export class LibraryView extends ItemView {
       // markdown-preview-sizer/-section) so the active theme's note styling — code fences,
       // headings, callouts, tables — applies here exactly as it would in a real note.
       const readingView = body.createDiv({
-        cls: "markdown-preview-view markdown-rendered node-insert-event is-readable-line-width allow-fold-headings allow-fold-lists show-indentation-guide skillspace-markdown-preview",
+        cls: "markdown-preview-view markdown-rendered node-insert-event is-readable-line-width allow-fold-headings allow-fold-lists show-indentation-guide skillmanager-markdown-preview",
       });
       const sizer = readingView.createDiv({ cls: "markdown-preview-sizer markdown-preview-section" });
       void MarkdownRenderer.render(
@@ -3520,11 +4915,11 @@ export class LibraryView extends ItemView {
    *  rows share a fixed-width label column so they left-align with each other regardless of
    *  the key's length (e.g. "name" vs "description"). */
   private renderFrontmatterRow(container: HTMLElement, key: string, value: string) {
-    const row = container.createDiv({ cls: "skillspace-fm-row" });
-    const label = row.createSpan({ cls: "skillspace-fm-label" });
-    label.createSpan({ text: key, cls: "skillspace-fm-key" });
-    label.createSpan({ text: ":", cls: "skillspace-fm-colon" });
-    row.createSpan({ text: value, cls: "skillspace-fm-value" });
+    const row = container.createDiv({ cls: "skillmanager-fm-row" });
+    const label = row.createSpan({ cls: "skillmanager-fm-label" });
+    label.createSpan({ text: key, cls: "skillmanager-fm-key" });
+    label.createSpan({ text: ":", cls: "skillmanager-fm-colon" });
+    row.createSpan({ text: value, cls: "skillmanager-fm-value" });
   }
 
   /** A collapsed-by-default view of every frontmatter field except description (which the band
@@ -3532,7 +4927,7 @@ export class LibraryView extends ItemView {
    *  declares. Kept out of the way by default since most of it is rarely needed at a glance. */
   private renderMoreFields(container: HTMLElement, fields: FrontmatterField[]) {
     const toggle = container.createEl("button", {
-      cls: "skillspace-fm-toggle",
+      cls: "skillmanager-fm-toggle",
       text: `${this.moreFieldsExpanded ? "▾" : "▸"} ${fields.length} more field${fields.length === 1 ? "" : "s"}`,
     });
     toggle.addEventListener("click", () => {
@@ -3540,7 +4935,7 @@ export class LibraryView extends ItemView {
       this.render();
     });
     if (this.moreFieldsExpanded) {
-      const box = container.createDiv({ cls: "skillspace-detail-frontmatter" });
+      const box = container.createDiv({ cls: "skillmanager-detail-frontmatter" });
       for (const field of fields) this.renderFrontmatterRow(box, field.key, field.value);
     }
   }
@@ -3549,13 +4944,13 @@ export class LibraryView extends ItemView {
    *  an inline input. Shown at the top of the band (see renderIdentityBand) rather than the old
    *  comma-separated text field at the very bottom of the panel. */
   private renderTagChips(container: HTMLElement, item: ItemMetadata) {
-    const row = container.createDiv({ cls: "skillspace-detail-tags-row" });
+    const row = container.createDiv({ cls: "skillmanager-detail-tags-row" });
 
     for (const tag of item.tags) {
-      const chip = row.createDiv({ cls: "skillspace-tag-chip" });
+      const chip = row.createDiv({ cls: "skillmanager-tag-chip" });
       chip.createSpan({ text: tag });
       const removeBtn = chip.createEl("button", {
-        cls: "skillspace-tag-chip-remove",
+        cls: "skillmanager-tag-chip-remove",
         text: "×",
         attr: { "aria-label": `Remove tag "${tag}"` },
       });
@@ -3565,7 +4960,7 @@ export class LibraryView extends ItemView {
     }
 
     if (this.addingTagFor !== item.entryId) {
-      const addBtn = row.createEl("button", { cls: "skillspace-tag-add-btn", text: "+ tag" });
+      const addBtn = row.createEl("button", { cls: "skillmanager-tag-add-btn", text: "+ tag" });
       addBtn.addEventListener("click", () => {
         this.addingTagFor = item.entryId;
         this.render();
@@ -3575,7 +4970,7 @@ export class LibraryView extends ItemView {
 
     const input = row.createEl("input", {
       type: "text",
-      cls: "skillspace-tag-add-input",
+      cls: "skillmanager-tag-add-input",
       attr: { placeholder: "Tag name" },
     });
     // Enter, Escape, and blur (clicking away) can all end the input, but only one of them

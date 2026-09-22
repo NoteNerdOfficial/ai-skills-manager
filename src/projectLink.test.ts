@@ -28,7 +28,7 @@ describe("addToProject / removeFromProject", () => {
   let project: ProjectWorkspace;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "skillspace-test-"));
+    root = mkdtempSync(join(tmpdir(), "skillmanager-test-"));
     project = { id: "proj-1", name: "Test project", path: join(root, "project") };
     mkdirSync(project.path, { recursive: true });
   });
@@ -121,7 +121,7 @@ describe("addToProject / removeFromProject", () => {
     const realFile = join(project.path, "backend.md");
     writeFileSync(realFile, "real content, not a link");
 
-    expect(() => removeFromProject(realFile)).toThrow(/refusing to delete a real file/);
+    expect(() => removeFromProject(realFile)).toThrow(/isn't a symlink/);
     expect(existsSync(realFile)).toBe(true);
   });
 
@@ -130,7 +130,7 @@ describe("addToProject / removeFromProject", () => {
     mkdirSync(realDir);
     writeFileSync(join(realDir, "SKILL.md"), "real manifest, not a link");
 
-    expect(() => removeFromProject(join(realDir, "SKILL.md"))).toThrow(/refusing to delete a real file/);
+    expect(() => removeFromProject(join(realDir, "SKILL.md"))).toThrow(/isn't a symlink/);
     expect(existsSync(realDir)).toBe(true);
   });
 });

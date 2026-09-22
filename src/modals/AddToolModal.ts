@@ -1,6 +1,6 @@
 import { App, Modal, Notice, Setting, TextAreaComponent } from "obsidian";
 import { existsSync } from "fs";
-import { ItemType, SkillSpacePluginSettings, TYPE_LABELS } from "../types";
+import { ItemType, SkillManagerPluginSettings, TYPE_LABELS } from "../types";
 import { expandHome } from "../scanners";
 import { slug } from "../format";
 import { RescanResult } from "../rescan";
@@ -8,26 +8,29 @@ import { RescanResult } from "../rescan";
 /** Same idea as the removed Settings-tab attachPathStatus, kept local to this modal now that
  *  tool configuration lives on the "All tools" page instead. */
 function attachPathStatus(controlEl: HTMLElement) {
-  const el = controlEl.createSpan({ cls: "skillspace-path-status" });
+  const el = controlEl.createSpan({ cls: "skillmanager-path-status" });
   return (rawPath: string) => {
     const trimmed = rawPath.trim();
     if (!trimmed) {
       el.setText("");
       el.title = "";
-      el.className = "skillspace-path-status";
+      el.className = "skillmanager-path-status";
       return;
     }
     const resolved = expandHome(trimmed);
     const found = existsSync(resolved);
     el.setText(found ? "found" : "not found");
     el.title = resolved;
-    el.className = `skillspace-path-status ${found ? "is-found" : "is-missing"}`;
+    el.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
   };
 }
 
 export class AddToolModal extends Modal {
   private name = "";
   private paths: Partial<Record<ItemType, string>> = {};
+  private mcpConfigPath = "";
+  private projectMcpConfigPath = "";
+  private mcpConfigKey = "";
   /** Raw inline SVG markup — same field/rendering contract as ToolConfig.svgIcon (parsed with
    *  DOMParser and appended directly, see LibraryView.renderIcon), not a PNG/JPG data URI or
    *  image URL. Empty means fall back to the generic default icon. */
@@ -35,7 +38,7 @@ export class AddToolModal extends Modal {
 
   constructor(
     app: App,
-    private settings: SkillSpacePluginSettings,
+    private settings: SkillManagerPluginSettings,
     private saveSettings: () => Promise<void>,
     private rescan: () => Promise<RescanResult>
   ) {
@@ -44,7 +47,7 @@ export class AddToolModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass("skillspace-modal");
+    contentEl.addClass("skillmanager-modal");
     contentEl.createEl("h3", { text: "Add tool" });
 
     new Setting(contentEl).setName("Name").addText((text) =>
@@ -70,6 +73,27 @@ export class AddToolModal extends Modal {
       );
     }
 
+    contentEl.createEl("h4", { text: "MCP servers (optional)" });
+    contentEl.createDiv({
+      cls: "setting-item-description",
+      text: "Point at this tool's MCP server config file(s), if it has any, so they show up on the MCP servers page.",
+    });
+    new Setting(contentEl).setName("Global config").addText((text) =>
+      text.setPlaceholder("~/.example/mcp.json").onChange((value) => {
+        this.mcpConfigPath = value.trim();
+      })
+    );
+    new Setting(contentEl).setName("Project config").addText((text) =>
+      text.setPlaceholder(".example/mcp.json").onChange((value) => {
+        this.projectMcpConfigPath = value.trim();
+      })
+    );
+    new Setting(contentEl).setName("Server list key (advanced)").addText((text) =>
+      text.setPlaceholder("mcpServers").onChange((value) => {
+        this.mcpConfigKey = value.trim();
+      })
+    );
+
     new Setting(contentEl)
       .addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()))
       .addButton((btn) =>
@@ -90,7 +114,7 @@ export class AddToolModal extends Modal {
       .setName("Logo (optional)")
       .setDesc("Paste SVG markup, or choose a .svg file. Falls back to a generic icon if left blank.");
 
-    const preview = setting.controlEl.createSpan({ cls: "skillspace-tool-logo-preview" });
+    const preview = setting.controlEl.createSpan({ cls: "skillmanager-tool-logo-preview" });
     const updatePreview = () => {
       preview.empty();
       if (!this.svgIcon.trim()) return;
@@ -108,7 +132,7 @@ export class AddToolModal extends Modal {
 
     const fileInput = setting.controlEl.createEl("input", {
       type: "file",
-      cls: "skillspace-file-input-hidden",
+      cls: "skillmanager-file-input-hidden",
       attr: { accept: ".svg,image/svg+xml" },
     });
     fileInput.addEventListener("change", () => {
@@ -128,7 +152,7 @@ export class AddToolModal extends Modal {
     setting.addButton((btn) => btn.setButtonText("Choose file…").onClick(() => fileInput.click()));
 
     let textArea!: TextAreaComponent;
-    new Setting(contentEl).setClass("skillspace-tool-logo-textarea").addTextArea((ta) => {
+    new Setting(contentEl).setClass("skillmanager-tool-logo-textarea").addTextArea((ta) => {
       textArea = ta;
       ta.setPlaceholder('<svg xmlns="http://www.w3.org/2000/svg" ...>...</svg>').onChange((value) => {
         this.svgIcon = value;
@@ -145,7 +169,17 @@ export class AddToolModal extends Modal {
     }
     const id = `${slug(trimmedName)}-${Date.now()}`;
     const svgIcon = this.svgIcon.trim() || undefined;
-    this.settings.tools.push({ id, name: trimmedName, icon: "terminal", svgIcon, paths: this.paths, custom: true });
+    this.settings.tools.push({
+      id,
+      name: trimmedName,
+      icon: "terminal",
+      svgIcon,
+      paths: this.paths,
+      custom: true,
+      mcpConfigPath: this.mcpConfigPath || undefined,
+      projectMcpConfigPath: this.projectMcpConfigPath || undefined,
+      mcpConfigKey: this.mcpConfigKey || undefined,
+    });
     await this.saveSettings();
     await this.rescan();
     new Notice(`Added "${trimmedName}".`);

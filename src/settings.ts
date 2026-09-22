@@ -1,6 +1,5 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
-import type SkillSpacePlugin from "./main";
-import { errorMessage } from "./errors";
+import { App, PluginSettingTab, Setting } from "obsidian";
+import type SkillManagerPlugin from "./main";
 import { EnabledFilter, SortOrder } from "./types";
 import { SORT_OPTIONS } from "./views/LibraryView";
 
@@ -16,6 +15,17 @@ const AUTO_RESCAN_OPTIONS: { minutes: number; label: string }[] = [
   { minutes: 15, label: "Every 15 minutes" },
   { minutes: 30, label: "Every 30 minutes" },
   { minutes: 60, label: "Every hour" },
+];
+
+// Each check is a network round-trip per tracked source, so this intentionally starts at "Every
+// hour" rather than offering rescan's 5/15/30-minute options.
+const AUTO_UPDATE_CHECK_OPTIONS: { minutes: number; label: string }[] = [
+  { minutes: 0, label: "Off" },
+  { minutes: 60, label: "Every hour" },
+  { minutes: 360, label: "Every 6 hours" },
+  { minutes: 720, label: "Every 12 hours" },
+  { minutes: 1440, label: "Daily" },
+  { minutes: 10080, label: "Weekly" },
 ];
 
 const RELATED_PLUGINS: { name: string; desc: string; url: string }[] = [
@@ -41,10 +51,10 @@ const RELATED_PLUGINS: { name: string; desc: string; url: string }[] = [
   },
 ];
 
-export class SkillSpaceSettingTab extends PluginSettingTab {
-  plugin: SkillSpacePlugin;
+export class SkillManagerSettingTab extends PluginSettingTab {
+  plugin: SkillManagerPlugin;
 
-  constructor(app: App, plugin: SkillSpacePlugin) {
+  constructor(app: App, plugin: SkillManagerPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -85,6 +95,20 @@ export class SkillSpaceSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Auto check for updates")
+      .setDesc(
+        "Periodically check every tracked source (an item installed from a Discover repo) against its remote in the background, independent of clicking Check for updates. Only flags what's stale; it never applies an update on its own."
+      )
+      .addDropdown((dropdown) => {
+        for (const { minutes, label } of AUTO_UPDATE_CHECK_OPTIONS) dropdown.addOption(String(minutes), label);
+        dropdown.setValue(String(this.plugin.settings.autoUpdateCheckMinutes)).onChange(async (value) => {
+          this.plugin.settings.autoUpdateCheckMinutes = Number(value);
+          await this.plugin.saveSettings();
+          this.plugin.applyAutoUpdateCheckInterval();
+        });
+      });
+
+    new Setting(containerEl)
       .setName("Default sort order")
       .setDesc("Sort order the library view opens with.")
       .addDropdown((dropdown) => {
@@ -119,86 +143,27 @@ export class SkillSpaceSettingTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl).setName("MCP servers").setHeading();
     new Setting(containerEl)
-      .setName("Rescan tools")
+      .setName("Open config file with")
       .setDesc(
-        "Per-tool paths (which folders AI Skills Manager scans for skills, agents, commands, and rules), enabling/disabling a tool, and adding a custom one now live on the \"All tools\" page, at the top of the Tools section in the library sidebar."
+        "App to open an MCP server's config file in from its \"Open config file\" action, e.g. \"Visual Studio Code\" or \"TextEdit\". Leave blank to use your Mac's default app for that file, which can land somewhere unexpected (e.g. Xcode) if you've never set one. macOS only."
       )
-      .addButton((btn) =>
-        btn
-          .setIcon("refresh-cw")
-          .setTooltip("Scan tools")
-          .onClick(async () => {
-            btn.setDisabled(true);
-            try {
-              const { items } = await this.plugin.rescanEverywhere();
-              new Notice(`Scan complete: ${items.length} item${items.length === 1 ? "" : "s"} found.`);
-            } catch (e) {
-              new Notice("Scan failed: " + errorMessage(e));
-            } finally {
-              btn.setDisabled(false);
-            }
+      .addText((text) =>
+        text
+          .setPlaceholder("Visual Studio Code")
+          .setValue(this.plugin.settings.mcpConfigEditorApp)
+          .onChange(async (value) => {
+            this.plugin.settings.mcpConfigEditorApp = value.trim();
+            await this.plugin.saveSettings();
           })
       );
 
     new Setting(containerEl).setName("Workspaces").setHeading();
     containerEl.createEl("p", {
-      text: "Extra project folders to scan for project-local skills (e.g. <project>/.claude/skills), in addition to the current vault, which is always included automatically.",
+      text: 'Extra project folders are managed from the library sidebar’s Workspaces section now (the "+" icon), not here.',
       cls: "setting-item-description",
     });
-
-    for (const project of this.plugin.settings.projectWorkspaces) {
-      new Setting(containerEl)
-        .setName(project.name)
-        .setDesc(project.path)
-        .addButton((btn) =>
-          btn
-            .setIcon("trash")
-            .setTooltip("Remove")
-            .onClick(async () => {
-              this.plugin.settings.projectWorkspaces = this.plugin.settings.projectWorkspaces.filter(
-                (p) => p.id !== project.id
-              );
-              await this.plugin.saveSettings();
-              // Removing a project changes what performRescan actually scans (getAllProjects
-              // reads projectWorkspaces directly) — a display-only refresh would leave its stale
-              // items/sidebar row sitting there until the next manual rescan.
-              await this.plugin.rescanEverywhere();
-              this.display();
-            })
-        );
-    }
-
-    let newProjectName = "";
-    let newProjectPath = "";
-    new Setting(containerEl)
-      .setName("Add project")
-      .addText((text) =>
-        text.setPlaceholder("Name").onChange((value) => {
-          newProjectName = value;
-        })
-      )
-      .addText((text) =>
-        text.setPlaceholder("~/path/to/project").onChange((value) => {
-          newProjectPath = value;
-        })
-      )
-      .addButton((btn) =>
-        btn
-          .setButtonText("Add")
-          .setCta()
-          .onClick(async () => {
-            if (!newProjectName.trim() || !newProjectPath.trim()) return;
-            this.plugin.settings.projectWorkspaces.push({
-              id: `proj-${Date.now()}`,
-              name: newProjectName.trim(),
-              path: newProjectPath.trim(),
-            });
-            await this.plugin.saveSettings();
-            await this.plugin.rescanEverywhere();
-            this.display();
-          })
-      );
 
     new Setting(containerEl).setName("Support").setHeading();
     new Setting(containerEl)

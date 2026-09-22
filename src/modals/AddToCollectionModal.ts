@@ -1,12 +1,12 @@
 import { App, Modal, Setting } from "obsidian";
-import { Collection, ItemMetadata, SkillSpacePluginSettings } from "../types";
+import { Collection, ItemMetadata, SkillManagerPluginSettings } from "../types";
 
 export class AddToCollectionModal extends Modal {
   private newName = "";
 
   constructor(
     app: App,
-    private settings: SkillSpacePluginSettings,
+    private settings: SkillManagerPluginSettings,
     private item: ItemMetadata,
     private onToggle: (collection: Collection, add: boolean) => Promise<void>,
     private onCreate: (name: string) => Promise<void>
@@ -16,7 +16,7 @@ export class AddToCollectionModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass("skillspace-modal");
+    contentEl.addClass("skillmanager-modal");
     contentEl.createEl("h3", { text: "Add to collection" });
 
     if (this.settings.collections.length === 0) {
@@ -24,7 +24,7 @@ export class AddToCollectionModal extends Modal {
     }
 
     for (const collection of this.settings.collections) {
-      const row = contentEl.createDiv({ cls: "skillspace-collection-picker-row" });
+      const row = contentEl.createDiv({ cls: "skillmanager-collection-picker-row" });
       const checkbox = row.createEl("input", { type: "checkbox" });
       checkbox.checked = this.item.collections.includes(collection.id);
       checkbox.addEventListener("change", () => {

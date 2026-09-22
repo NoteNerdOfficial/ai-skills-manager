@@ -1,9 +1,9 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Stats } from "fs";
 import { homedir } from "os";
-import { basename, join, sep } from "path";
+import { basename, dirname, join, sep } from "path";
 import { slug } from "./format";
-import { DISABLED_DIRNAME } from "./itemToggle";
-import { DiscoveredItem, ItemType, PluginSource, ProjectWorkspace, ToolConfig } from "./types";
+import { DISABLED_DIRNAME, LEGACY_DISABLED_DIRNAME } from "./itemToggle";
+import { DiscoveredItem, ItemType, PluginSource, ProjectWorkspace, RulePathEntry, ToolConfig } from "./types";
 
 export function expandHome(rawPath: string): string {
   return rawPath.startsWith("~") ? join(homedir(), rawPath.slice(1)) : rawPath;
@@ -97,7 +97,7 @@ export function makeEntryId(
 }
 
 const MAX_SCAN_DEPTH = 4;
-const SKIP_DIRNAMES = new Set([DISABLED_DIRNAME, "node_modules", ".git"]);
+const SKIP_DIRNAMES = new Set([DISABLED_DIRNAME, LEGACY_DISABLED_DIRNAME, "node_modules", ".git"]);
 
 function scanEntries(
   dir: string,
@@ -121,7 +121,7 @@ function scanEntries(
 
   const items: DiscoveredItem[] = [];
   for (const entry of entries) {
-    if (SKIP_DIRNAMES.has(entry)) continue; // .skillspace-disabled is scanned separately below
+    if (SKIP_DIRNAMES.has(entry)) continue; // .skillmanager-disabled is scanned separately below
     const entryPath = join(dir, entry);
 
     let stat: Stats;
@@ -189,7 +189,50 @@ function scanDirectory(
   return [
     ...scanEntries(dir, tool, type, projectId, pluginId, true),
     ...scanEntries(join(dir, DISABLED_DIRNAME), tool, type, projectId, pluginId, false),
+    // Folders disabled under the plugin's pre-rename dirname still need to surface as disabled
+    // (see itemToggle.ts's LEGACY_DISABLED_DIRNAME) rather than silently reappearing as enabled.
+    ...scanEntries(join(dir, LEGACY_DISABLED_DIRNAME), tool, type, projectId, pluginId, false),
   ];
+}
+
+/** For a tool whose configured path is one instructions file (ToolConfig.singleFileRule) rather
+ *  than a directory — e.g. Claude Code's CLAUDE.md — the whole file is the item, so this reads
+ *  it directly instead of readdir-ing it. Mirrors scanDirectory's enabled/disabled pair: the
+ *  disabled copy sits at <parent>/.skillmanager-disabled/<filename>, exactly where itemToggle.ts's
+ *  generic move-to-sibling-folder logic already puts it for a lone file. */
+function scanSingleFile(
+  filePath: string,
+  tool: ToolConfig,
+  type: ItemType,
+  projectId: string | null,
+  pluginId: string | null
+): DiscoveredItem[] {
+  const fileName = basename(filePath);
+  const disabledPath = join(dirname(filePath), DISABLED_DIRNAME, fileName);
+  const legacyDisabledPath = join(dirname(filePath), LEGACY_DISABLED_DIRNAME, fileName);
+
+  const items: DiscoveredItem[] = [];
+  for (const [path, enabled] of [
+    [filePath, true],
+    [disabledPath, false],
+    [legacyDisabledPath, false],
+  ] as const) {
+    if (!existsSync(path) || !statSync(path).isFile()) continue;
+    const meta = readSourceMeta(path);
+    items.push({
+      entryId: makeEntryId(tool.id, type, projectId, pluginId, fileName),
+      sourcePath: path,
+      realPath: resolveRealPath(path),
+      tool: tool.id,
+      type,
+      projectId,
+      pluginId,
+      name: meta.name || fileName.replace(/\.md$/, ""),
+      description: meta.description,
+      enabled,
+    });
+  }
+  return items;
 }
 
 /** The directory a tool's items of a given type live in — global (project === null) or rooted at
@@ -221,14 +264,39 @@ export function isBuiltInPath(sourcePath: string, tool: ToolConfig | undefined):
 const CANDIDATE_TYPE_ORDER: ItemType[] = ["skill", "agent", "command", "rule"];
 export function candidateTypesForTool(tool: ToolConfig): ItemType[] {
   const known = new Set([...Object.keys(tool.paths), ...Object.keys(tool.projectPaths ?? {})]);
-  return CANDIDATE_TYPE_ORDER.filter((type) => known.has(type));
+  // A single-file rule (CLAUDE.md) is the user's own project memory, not a manifest an
+  // installed GitHub skill would replace — and resolveToolDir would point the install flow's
+  // mkdir/copy straight at the file's own path. Left off the candidate list entirely.
+  return CANDIDATE_TYPE_ORDER.filter((type) => known.has(type) && !(type === "rule" && tool.singleFileRule));
+}
+
+/** Reads one ruleAdditionalPaths/ruleAdditionalProjectPaths entry, using its own stored
+ *  singleFile flag rather than the tool-wide singleFileRule — see RulePathEntry. */
+function scanRuleEntry(
+  entry: RulePathEntry,
+  resolvedPath: string,
+  tool: ToolConfig,
+  projectId: string | null
+): DiscoveredItem[] {
+  return entry.singleFile
+    ? scanSingleFile(resolvedPath, tool, "rule", projectId, null)
+    : scanDirectory(resolvedPath, tool, "rule", projectId, null);
 }
 
 export function scanTool(tool: ToolConfig): DiscoveredItem[] {
   const items: DiscoveredItem[] = [];
   for (const type of Object.keys(tool.paths) as ItemType[]) {
     const dir = resolveToolDir(tool, type, null);
-    if (dir) items.push(...scanDirectory(dir, tool, type, null, null));
+    if (!dir) continue;
+    items.push(
+      ...(tool.singleFileRule && type === "rule"
+        ? scanSingleFile(dir, tool, type, null, null)
+        : scanDirectory(dir, tool, type, null, null))
+    );
+  }
+  for (const entry of tool.ruleAdditionalPaths ?? []) {
+    if (!entry.path.trim()) continue;
+    items.push(...scanRuleEntry(entry, expandHome(entry.path), tool, null));
   }
   return items;
 }
@@ -245,10 +313,24 @@ export function scanAllTools(tools: ToolConfig[]): DiscoveredItem[] {
 export function scanProject(tools: ToolConfig[], project: ProjectWorkspace): DiscoveredItem[] {
   const items: DiscoveredItem[] = [];
   for (const tool of tools) {
-    const types = tool.projectPaths ? (Object.keys(tool.projectPaths) as ItemType[]) : (Object.keys(tool.paths) as ItemType[]);
+    // Union, not either/or — a tool with a projectPaths override for just one type (e.g. Claude
+    // Code's "rule") still falls back to the global paths' other types via resolveToolDir.
+    const types = new Set<ItemType>([
+      ...(Object.keys(tool.paths) as ItemType[]),
+      ...(Object.keys(tool.projectPaths ?? {}) as ItemType[]),
+    ]);
     for (const type of types) {
       const dir = resolveToolDir(tool, type, project);
-      if (dir) items.push(...scanDirectory(dir, tool, type, project.id, null));
+      if (!dir) continue;
+      items.push(
+        ...(tool.singleFileRule && type === "rule"
+          ? scanSingleFile(dir, tool, type, project.id, null)
+          : scanDirectory(dir, tool, type, project.id, null))
+      );
+    }
+    for (const entry of tool.ruleAdditionalProjectPaths ?? []) {
+      if (!entry.path.trim()) continue;
+      items.push(...scanRuleEntry(entry, join(expandHome(project.path), entry.path), tool, project.id));
     }
   }
   return items;

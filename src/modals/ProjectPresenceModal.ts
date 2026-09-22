@@ -17,7 +17,7 @@ export class ProjectPresenceModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass("skillspace-modal");
+    contentEl.addClass("skillmanager-modal");
     contentEl.createEl("h3", { text: "Workspaces" });
     contentEl.createEl("p", {
       text: `Check a project to symlink "${this.itemName}" into its local skills folder. The original is never copied, so it can't drift out of sync. Uncheck it to remove just that symlink; nothing is deleted.`,
@@ -30,7 +30,7 @@ export class ProjectPresenceModal extends Modal {
     }
 
     for (const project of this.projects) {
-      const row = contentEl.createDiv({ cls: "skillspace-collection-picker-row" });
+      const row = contentEl.createDiv({ cls: "skillmanager-collection-picker-row" });
       const checkbox = row.createEl("input", { type: "checkbox" });
       checkbox.checked = this.presentProjectIds.has(project.id);
       checkbox.addEventListener("change", () => {
@@ -45,7 +45,7 @@ export class ProjectPresenceModal extends Modal {
           }
         })();
       });
-      const iconEl = row.createSpan({ cls: "skillspace-collection-picker-icon" });
+      const iconEl = row.createSpan({ cls: "skillmanager-collection-picker-icon" });
       setIcon(iconEl, projectIcon(project.id));
       row.createSpan({ text: ` ${project.name}` });
     }

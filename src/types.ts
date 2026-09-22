@@ -3,7 +3,17 @@ export type ItemType = "skill" | "agent" | "command" | "rule";
 /** Referenced anywhere an icon *id* is required — the ribbon icon, the library view's tab icon,
  *  and the sidebar brand mark. This is a custom mark (not part of Obsidian's built-in Lucide
  *  set), so it's registered with `addIcon()` in `main.ts` before anything reads this id. */
-export const PLUGIN_ICON_ID = "skillspace-shapes";
+export const PLUGIN_ICON_ID = "skillmanager-shapes";
+
+/** Own copy of a vertical 3-dot "more" glyph, registered the same way as PLUGIN_ICON_ID above.
+ *  Obsidian's built-in "more-vertical" Lucide icon is itself vertical, but any other installed
+ *  plugin can call addIcon() to redefine that same global id with a different (e.g. horizontal)
+ *  glyph — a real collision seen in testing. Using our own id sidesteps that entirely. */
+export const MORE_ICON_ID = "skillmanager-more";
+
+/** Same reasoning as MORE_ICON_ID, laid out horizontally — used by card footers (skill cards,
+ *  Discover cards), where that orientation reads better than the sidebar's vertical one. */
+export const MORE_HORIZONTAL_ICON_ID = "skillmanager-more-horizontal";
 
 export type EnabledFilter = "all" | "enabled" | "disabled";
 export type SortOrder = "name-asc" | "name-desc" | "modified-desc" | "modified-asc";
@@ -65,6 +75,49 @@ export interface ToolConfig {
    *  page's "Custom" stat. Also what main.ts's settings-load merge checks to know a saved tool
    *  entry isn't one of DEFAULT_TOOLS and should be kept rather than dropped. */
   custom?: boolean;
+  /** True when this tool's "rule" path is a single instructions file (e.g. Claude Code's
+   *  CLAUDE.md, one file loaded into every session) rather than a directory of many separate
+   *  rule files (e.g. Cursor's ~/.cursor/rules). Changes how scanners.ts reads `paths.rule` —
+   *  the whole file becomes one item instead of being read as a directory — and lets the
+   *  library filter "instructions files" apart from per-rule directories within the Rules type. */
+  singleFileRule?: boolean;
+  /** Extra rule paths beyond paths.rule (and, for the project-scoped list,
+   *  ruleAdditionalProjectPaths beyond projectPaths.rule) — for a tool that genuinely reads
+   *  rules from more than one place at once, e.g. Cursor still honoring a legacy single
+   *  ".cursorrules" file alongside its current ".cursor/rules/" directory. Shown as repeatable
+   *  rows under the Rules field in the tool detail rail (LibraryView's renderRuleAdditionalPaths)
+   *  instead of forcing everything through the one paths.rule slot. */
+  ruleAdditionalPaths?: RulePathEntry[];
+  ruleAdditionalProjectPaths?: RulePathEntry[];
+  /** Path to this tool's global MCP server config JSON (a "mcpServers" map), if known — e.g.
+   *  Claude Code's ~/.claude.json. Read-only: MCP servers are surfaced for visibility, never
+   *  toggled from here. */
+  mcpConfigPath?: string;
+  /** Project-relative path to this tool's project-scoped MCP config JSON, e.g. Claude Code's
+   *  .mcp.json at the project root. */
+  projectMcpConfigPath?: string;
+  /** The top-level JSON key holding the server map in mcpConfigPath/projectMcpConfigPath, for a
+   *  tool that doesn't use Claude Code's "mcpServers" convention — e.g. VS Code's .vscode/mcp.json
+   *  (confirmed on-disk) uses "servers" instead. Defaults to "mcpServers" when unset. Ignored for
+   *  mcpConfigFormat "toml", where it names the table prefix instead (still "mcp_servers" by
+   *  default there too). */
+  mcpConfigKey?: string;
+  /** File format of mcpConfigPath/projectMcpConfigPath — "json" (default) or "toml" for a tool
+   *  like Codex CLI, whose ~/.codex/config.toml (confirmed on-disk) declares servers under
+   *  [mcp_servers.NAME] tables rather than a JSON object. */
+  mcpConfigFormat?: "json" | "toml";
+}
+
+/** One entry in ToolConfig.ruleAdditionalPaths / ruleAdditionalProjectPaths. */
+export interface RulePathEntry {
+  path: string;
+  /** Same meaning as ToolConfig.singleFileRule, but per-entry since a tool can mix both shapes
+   *  under one Rules field. Set once when the path is added (from whether it resolves to a file
+   *  or a directory at that moment — see LibraryView's renderRuleAdditionalPaths) and from then
+   *  on trusted as-is rather than re-detected from disk on every scan: a toggled-off single file
+   *  doesn't exist at its own path any more (see itemToggle.ts's DISABLED_DIRNAME move), so live
+   *  detection can't tell "temporarily disabled file" apart from "directory not created yet." */
+  singleFile: boolean;
 }
 
 /** A folder on disk (a coding project, or the current vault) that may have its own
@@ -120,7 +173,7 @@ export interface ItemMetadata {
   /** Set once, at install time (see InstallFromGitHubModal), and updated after a successful
    *  update/restore (see LibraryView's startReview/applyReview) — never user-edited directly.
    *  Absent entirely for an item that was just found on disk rather than installed through
-   *  Skillspace. */
+   *  Skillmanager. */
   sourceRepo?: string;
   /** Empty string means "track the repo's default branch via HEAD" rather than a pinned branch —
    *  see git.ts's remoteHeadCommit. */
@@ -128,6 +181,33 @@ export interface ItemMetadata {
   /** Path within the repo that was installed — empty means the repo root itself is the skill. */
   sourceSubpath?: string;
   sourceCommit?: string;
+}
+
+/** One server's config, as read straight from a "mcpServers" JSON map — either a local process
+ *  (command/args/env) or a remote endpoint (url/type). Shown as-is; never parsed further. */
+export interface McpServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  type?: "http" | "sse";
+}
+
+/** An MCP server found in a tool's config file — a read-only visibility feature, deliberately
+ *  not an ItemType/DiscoveredItem: it isn't scanned from a SKILL.md-style file, has no
+ *  enable/disable action (toggling it from outside its owning tool would be too destructive to
+ *  safely support), and carries no user-editable metadata, so it's never persisted to the
+ *  shadow-note store — just recomputed fresh on every rescan. */
+export interface McpServerEntry {
+  /** Deterministic, not stored: `${tool}:global:${sourcePath}:${name}` or
+   *  `${tool}:project:${projectId}:${sourcePath}:${name}`. */
+  entryId: string;
+  tool: string;
+  name: string;
+  scope: "global" | { projectId: string; projectName: string };
+  config: McpServerConfig;
+  /** The config file this entry was read from — shown for context, not clickable/editable. */
+  sourcePath: string;
 }
 
 export interface Collection {
@@ -187,7 +267,7 @@ export interface DiscoverSource {
   addedAt: number;
 }
 
-export interface SkillSpacePluginSettings {
+export interface SkillManagerPluginSettings {
   storageFolder: string;
   tools: ToolConfig[];
   collections: Collection[];
@@ -209,6 +289,10 @@ export interface SkillSpacePluginSettings {
   /** Minutes between automatic background rescans; 0 disables it and leaves rescanning to the
    *  manual triggers (opening the library, the sidebar/settings "Scan tools" buttons). */
   autoRescanMinutes: number;
+  /** Minutes between automatic background checks of every tracked sourceRepo item against its
+   *  remote; 0 disables it and leaves checking to the manual "Check for updates" button. Only
+   *  checks and flags stale items — it never applies updates on its own. */
+  autoUpdateCheckMinutes: number;
   /** Sort order and enabled/disabled filter the library view opens with — otherwise every
    *  session starts back at name-asc/all even if you always switch to the same one. */
   defaultSortOrder: SortOrder;
@@ -217,6 +301,21 @@ export interface SkillSpacePluginSettings {
    *  Keeps a "Restore" option available there for a day afterward; older entries are dropped
    *  (not the item itself — it stays disabled, this just stops reminding about it). */
   dashboardRecentlyDisabled: Record<string, number>;
+  /** entryId (for a prune candidate) or a sorted "entryIdA::entryIdB" pair key (for an overlap) ->
+   *  the timestamp it was dismissed as "not relevant" from the Dashboard. Unlike
+   *  dashboardRecentlyDisabled, this never expires and never touches the item's enabled state —
+   *  it only stops that specific recommendation from resurfacing. */
+  dashboardDisregarded: Record<string, number>;
+  /** True once the MCP servers page's "only scanning this vault" callout has been dismissed (or
+   *  a workspace has been added — see LibraryView.renderWorkspaceScopeHint) — permanent, not
+   *  per-session, so it doesn't reappear on every reload once acknowledged. The page falls back
+   *  to the quieter header chip once this is true. */
+  workspaceHintDismissed: boolean;
+  /** App name to open an MCP server's config file with (see LibraryView.openMcpConfigFile),
+   *  passed to macOS's `open -a`. Empty means fall back to the OS's own default-app association
+   *  for that file, which for an extension like .json or .toml can land on an unexpected app
+   *  (e.g. Xcode, if it's claimed that association) — set this to override it. macOS only. */
+  mcpConfigEditorApp: string;
 }
 
 /** Canonical set of reorderable sidebar sections and their default order. "Library" isn't
@@ -234,12 +333,24 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
       skill: "~/.claude/skills",
       command: "~/.claude/commands",
       agent: "~/.claude/agents",
+      rule: "~/.claude/CLAUDE.md",
     },
+    // Project-scoped CLAUDE.md lives at the project root, not under a mirrored .claude/ folder —
+    // the auto-derived default (stripping "~/" from the global path) would land on
+    // ".claude/CLAUDE.md", which is wrong, so this needs an explicit override.
+    projectPaths: {
+      rule: "CLAUDE.md",
+    },
+    singleFileRule: true,
     pluginsRegistry: "~/.claude/plugins/installed_plugins.json",
     // ~/.claude/skills/synced/<workspace>_<user>/ is a vendor-managed cache of Claude Code's own
     // default skill catalog (confirmed on-disk: a manifest.json + .bucket-<id> marker sit
     // alongside the skill folders) — not something the user installed or wrote.
     builtInDirnames: ["synced"],
+    // User-level MCP servers live under a top-level "mcpServers" key in ~/.claude.json;
+    // project-level ones in a .mcp.json at the project root, same key shape.
+    mcpConfigPath: "~/.claude.json",
+    projectMcpConfigPath: ".mcp.json",
   },
   {
     id: "cursor",
@@ -285,7 +396,7 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 15" fill="currentColor"><path d="M14.0777 13.984C14.945 14.6345 16.2458 14.2008 15.0533 13.0084C11.476 9.53949 12.2349 0 7.79033 0C3.34579 0 4.10461 9.53949 0.527295 13.0084C-0.773543 14.3092 0.635692 14.6345 1.50293 13.984C4.86344 11.7076 4.64663 7.69664 7.79033 7.69664C10.934 7.69664 10.7172 11.7076 14.0777 13.984Z"/></svg>',
     // Only "skill" is confirmed at the global/machine-wide scope (~/.gemini/config/skills,
     // shared across Antigravity, the Gemini CLI, and the IDE). Rules live in a single
-    // ~/.gemini/GEMINI.md file rather than a directory skillspace can scan, and there's no
+    // ~/.gemini/GEMINI.md file rather than a directory skillmanager can scan, and there's no
     // documented global directory for Workflows (Antigravity's slash-command equivalent) or
     // named custom Agents — only the project-scoped locations below. Double-check/adjust in
     // Settings if that's grown global directories since.
@@ -329,6 +440,10 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
     // ~/.codex/skills/.system/ is Codex's own bundled default skill set (e.g. review-agent) —
     // not something the user installed or wrote.
     builtInDirnames: [".system"],
+    // Confirmed on-disk: ~/.codex/config.toml declares global MCP servers under
+    // [mcp_servers.NAME] TOML tables, not a JSON "mcpServers" object like Claude Code.
+    mcpConfigPath: "~/.codex/config.toml",
+    mcpConfigFormat: "toml",
   },
   {
     id: "windsurf",
@@ -391,7 +506,7 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
     svgIcon:
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300" fill="currentColor"><path d="M206.97 92.7966L197.78 108.729L221.009 148.932C221.179 149.237 221.281 149.61 221.281 149.949C221.281 150.288 221.179 150.661 221.009 150.966L197.78 191.203L206.97 207.136L240 149.949L206.97 92.7627V92.7966ZM194.219 106.661L203.409 90.7288H185.029L175.839 106.661H194.253H194.219ZM175.805 110.797L197.271 147.915H215.651L194.219 110.797H175.805ZM194.219 189.169L215.651 152.017H197.271L175.805 189.169H194.219ZM175.805 193.305L184.995 209.169H203.375L194.185 193.305H175.771H175.805ZM113.509 213.102C113.136 213.102 112.797 213 112.492 212.83C112.186 212.661 111.915 212.39 111.745 212.085L88.4819 171.847H70.1017L103.132 229H169.158L159.968 213.102H113.543H113.509ZM163.529 211.034L172.719 226.932L181.909 211L172.719 195.068L163.529 211V211.034ZM169.158 193.034H126.294L117.104 208.966H159.968L169.158 193.034ZM122.699 191L101.233 153.847L92.0427 169.78L113.509 206.932L122.699 191ZM70.0678 167.712H88.448L97.6381 151.78H79.2918L70.0678 167.712ZM111.644 87.9491C111.813 87.6441 112.085 87.3729 112.39 87.2034C112.695 87.0339 113.068 86.9322 113.407 86.9322H159.9L169.09 71H103.03L70 128.186H88.3802L111.576 87.9831L111.644 87.9491ZM97.6381 148.22L88.448 132.288H70.0678L79.2579 148.22H97.6381ZM113.441 93.1017L92.0088 130.22L101.199 146.153L122.631 109.034L113.441 93.1017ZM159.934 91.0339H117.002L126.192 106.966H169.124L159.934 91.0339ZM172.719 104.898L181.875 89L172.719 73.0678L163.529 88.9661L172.719 104.898Z"/></svg>',
     // No global directory for either — Continue's global rules live inside ~/.continue/config.yaml
-    // rather than a folder skillspace can scan, so only the project-scoped paths are set.
+    // rather than a folder skillmanager can scan, so only the project-scoped paths are set.
     paths: {},
     projectPaths: {
       rule: ".continue/rules",
@@ -414,7 +529,7 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
       command: "~/.config/opencode/commands",
     },
     // Rules deliberately excluded: OpenCode's global instructions file is a single
-    // ~/.config/opencode/AGENTS.md, not a directory skillspace can scan.
+    // ~/.config/opencode/AGENTS.md, not a directory skillmanager can scan.
     //
     // Project-scoped paths are a different folder entirely (.opencode/... vs
     // ~/.config/opencode/...), not just the global path relocated — needs an explicit override.
@@ -433,7 +548,7 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
     // "rule" confirmed as a real directory (~/.trae/user_rules holds multiple files, unlike most
     // other tools' single global instructions file). "agent" isn't confirmed as a file-based
     // convention at all — Trae's custom-agent docs describe managing them through the IDE/a
-    // template gallery, never a folder skillspace could scan — so left out of both paths here,
+    // template gallery, never a folder skillmanager could scan — so left out of both paths here,
     // with only a symmetry-based guess in unconfirmedPaths.
     paths: {
       skill: "~/.trae/skills",
@@ -501,6 +616,36 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
       rule: ".github/instructions",
       command: ".github/prompts",
     },
+    // .vscode/mcp.json is really VS Code's own native MCP feature (usable by more than just
+    // Copilot Chat), not something Copilot itself owns — attributed here anyway since this
+    // codebase has no separate "vscode" tool id and .vscode/ already sits alongside .github/ as
+    // this entry's project-scoped territory. Confirmed on-disk shape: a top-level "servers" key
+    // (not Claude Code's "mcpServers") mapping name -> { type, url } or { command, args, env }.
+    projectMcpConfigPath: ".vscode/mcp.json",
+    mcpConfigKey: "servers",
+  },
+  {
+    id: "pi",
+    name: "Pi",
+    icon: "pi",
+    svgIcon:
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" fill="currentColor" fill-rule="evenodd"><path clip-rule="evenodd" d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"/><path d="M517.36 400H634.72V634.72H517.36Z"/></svg>',
+    // Pi also reads the shared ~/.agents/skills/ (and project .agents/skills/, searched up
+    // through ancestors to the git root) for cross-tool interop — deliberately not repeated here
+    // since that's already covered by the "Shared" tool; this captures Pi's own distinct
+    // location instead. No confirmed directory for agents or commands: Pi's slash commands are
+    // served by skills themselves (/skill:name), and custom commands register through
+    // ~/.pi/agent/extensions/ (code, not user-authored markdown files) — nothing here for
+    // skillmanager to scan as an "agent" or "command" folder.
+    paths: {
+      skill: "~/.pi/agent/skills",
+    },
+    // AGENTS.md is auto-discovered at the project root, not from a global ~/.pi/ file.
+    projectPaths: {
+      skill: ".pi/skills",
+      rule: "AGENTS.md",
+    },
+    singleFileRule: true,
   },
   {
     // Cross-tool shared library convention (~/.agents/skills/). No project-local equivalent:
@@ -518,7 +663,7 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
   },
 ];
 
-export const DEFAULT_SETTINGS: SkillSpacePluginSettings = {
+export const DEFAULT_SETTINGS: SkillManagerPluginSettings = {
   storageFolder: "AI Skills Manager",
   tools: DEFAULT_TOOLS,
   collections: [],
@@ -528,7 +673,11 @@ export const DEFAULT_SETTINGS: SkillSpacePluginSettings = {
   sectionOrder: DEFAULT_SECTION_ORDER,
   showEmptySidebarRows: false,
   autoRescanMinutes: 0,
+  autoUpdateCheckMinutes: 0,
   defaultSortOrder: "name-asc",
   defaultEnabledFilter: "all",
   dashboardRecentlyDisabled: {},
+  dashboardDisregarded: {},
+  workspaceHintDismissed: false,
+  mcpConfigEditorApp: "",
 };

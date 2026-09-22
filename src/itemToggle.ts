@@ -3,7 +3,12 @@ import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { linkableUnit } from "./fsUnit";
 import { ItemMetadata } from "./types";
 
-export const DISABLED_DIRNAME = ".skillspace-disabled";
+export const DISABLED_DIRNAME = ".skillmanager-disabled";
+
+/** The dirname used before the plugin was renamed. Folders disabled under an older build still
+ *  carry this name on disk, so it must keep being recognized as "disabled" (for scanning and for
+ *  re-enabling) even though every new disable now writes DISABLED_DIRNAME instead. */
+export const LEGACY_DISABLED_DIRNAME = ".skillspace-disabled";
 
 /** A plain rename breaks a relative symlink (e.g. "../../.agents/skills/foo") the moment it
  *  moves a directory level deeper or shallower, since the "../" count no longer lands on the
@@ -21,13 +26,13 @@ function moveEntry(fromPath: string, toPath: string, isDirectory: boolean): void
 }
 
 /** Toggles whether a tool can actually see this item, by physically moving it in or out of a
- *  sibling ".skillspace-disabled" folder. Our earlier "enabled" flag lived only in our own
+ *  sibling ".skillmanager-disabled" folder. Our earlier "enabled" flag lived only in our own
  *  shadow note and never touched the file a tool reads, so it had no real effect — this does. */
 export function toggleItemEnabled(item: ItemMetadata): void {
   const unit = linkableUnit(item.sourcePath);
   const parentDir = dirname(unit.path);
 
-  if (basename(parentDir) === DISABLED_DIRNAME) {
+  if (basename(parentDir) === DISABLED_DIRNAME || basename(parentDir) === LEGACY_DISABLED_DIRNAME) {
     const targetDir = dirname(parentDir);
     const target = join(targetDir, unit.name);
     if (existsSync(target)) throw new Error(`"${unit.name}" already exists at its enabled location.`);

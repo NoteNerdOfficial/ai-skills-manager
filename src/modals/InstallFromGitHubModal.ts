@@ -1,7 +1,7 @@
 import { App, Modal, Notice, Setting } from "obsidian";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
 import { basename, join } from "path";
-import { ItemType, ProjectWorkspace, SkillSpacePluginSettings, TYPE_LABELS } from "../types";
+import { ItemType, ProjectWorkspace, SkillManagerPluginSettings, TYPE_LABELS } from "../types";
 import { candidateTypesForTool, makeEntryId, parseSourceMeta, resolveToolDir } from "../scanners";
 import { shallowCloneRepo } from "../git";
 import { ShadowNoteStore } from "../store";
@@ -61,7 +61,7 @@ export class InstallFromGitHubModal extends Modal {
 
   constructor(
     app: App,
-    private settings: SkillSpacePluginSettings,
+    private settings: SkillManagerPluginSettings,
     private projects: ProjectWorkspace[],
     private store: ShadowNoteStore,
     private rescan: () => Promise<RescanResult>,
@@ -118,7 +118,7 @@ export class InstallFromGitHubModal extends Modal {
 
   onOpen() {
     const { contentEl } = this;
-    contentEl.addClass("skillspace-modal");
+    contentEl.addClass("skillmanager-modal");
     contentEl.createEl("h3", { text: "Install from GitHub" });
 
     new Setting(contentEl)
@@ -212,7 +212,7 @@ export class InstallFromGitHubModal extends Modal {
       });
     }
 
-    this.statusEl = contentEl.createDiv({ cls: "skillspace-modal-meta" });
+    this.statusEl = contentEl.createDiv({ cls: "skillmanager-modal-meta" });
 
     new Setting(contentEl)
       .addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()))

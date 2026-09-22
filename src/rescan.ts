@@ -1,6 +1,7 @@
 import { App, FileSystemAdapter } from "obsidian";
-import { ItemMetadata, PluginSource, ProjectWorkspace, SkillSpacePluginSettings } from "./types";
+import { ItemMetadata, McpServerEntry, PluginSource, ProjectWorkspace, SkillManagerPluginSettings } from "./types";
 import { scanAllPlugins, scanAllProjects, scanAllTools } from "./scanners";
+import { scanMcpServers } from "./mcpScanners";
 import { ShadowNoteStore } from "./store";
 
 export const VAULT_PROJECT_ID = "vault";
@@ -13,7 +14,7 @@ export function projectIcon(projectId: string): string {
 }
 
 /** The current vault (auto-registered, always included) plus any user-registered project folders. */
-export function getAllProjects(app: App, settings: SkillSpacePluginSettings): ProjectWorkspace[] {
+export function getAllProjects(app: App, settings: SkillManagerPluginSettings): ProjectWorkspace[] {
   const adapter = app.vault.adapter;
   const vaultProject: ProjectWorkspace[] =
     adapter instanceof FileSystemAdapter
@@ -25,6 +26,7 @@ export function getAllProjects(app: App, settings: SkillSpacePluginSettings): Pr
 export interface RescanResult {
   items: ItemMetadata[];
   plugins: PluginSource[];
+  mcpServers: McpServerEntry[];
 }
 
 /** Re-scans every configured tool/project/plugin directory and syncs the shadow-note store to
@@ -38,10 +40,16 @@ export interface RescanResult {
  *  disabled tool's items from the main library grid happens downstream instead, in
  *  LibraryView.filteredItems() — this result stays "everything that's actually stored" so the
  *  "All tools" page can still show a disabled tool's true item count. */
+/** `includeMcpServers` defaults to true (LibraryView.rescan() needs it for the always-visible
+ *  sidebar count and the MCP servers tab); main.ts's no-view-open background rescan passes false
+ *  since it never reads RescanResult.mcpServers, so there's no reason to synchronously read and
+ *  parse every tool's and project's MCP config file on every auto-rescan tick when nothing's open
+ *  to show the result. */
 export async function performRescan(
   app: App,
-  settings: SkillSpacePluginSettings,
-  store: ShadowNoteStore
+  settings: SkillManagerPluginSettings,
+  store: ShadowNoteStore,
+  includeMcpServers = true
 ): Promise<RescanResult> {
   const projects = getAllProjects(app, settings);
   const pluginScan = scanAllPlugins(settings.tools);
@@ -54,5 +62,9 @@ export async function performRescan(
     await store.ensureItem(item);
   }
   await store.pruneMissing(new Set(discovered.map((d) => d.entryId)));
-  return { items: await store.list(), plugins: pluginScan.plugins };
+  return {
+    items: await store.list(),
+    plugins: pluginScan.plugins,
+    mcpServers: includeMcpServers ? scanMcpServers(settings.tools, projects) : [],
+  };
 }
