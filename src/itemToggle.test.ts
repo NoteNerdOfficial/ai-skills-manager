@@ -1,9 +1,9 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DISABLED_DIRNAME, deleteItem, toggleItemEnabled } from "./itemToggle";
-import { ItemMetadata } from "./types";
+import { DISABLED_DIRNAME, deleteItem, toggleItemEnabled, togglePluginEnabled } from "./itemToggle";
+import { ItemMetadata, ToolConfig } from "./types";
 
 function makeItem(sourcePath: string): ItemMetadata {
   return {
@@ -135,6 +135,15 @@ describe("toggleItemEnabled / deleteItem", () => {
     expect(existsSync(join(disabledLinkPath, "SKILL.md"))).toBe(true);
   });
 
+  it("refuses to delete a plugin-bundled item, leaving the file untouched", () => {
+    const filePath = join(root, "ask-matt.md");
+    writeFileSync(filePath, "content");
+    const item = { ...makeItem(filePath), pluginId: "mattpocock-skills@claude-plugins-official" };
+
+    expect(() => deleteItem(item)).toThrow(/installed plugin/);
+    expect(existsSync(filePath)).toBe(true);
+  });
+
   it("deleteItem removes a flat file", () => {
     const filePath = join(root, "backend.md");
     writeFileSync(filePath, "content");
@@ -151,6 +160,15 @@ describe("toggleItemEnabled / deleteItem", () => {
     deleteItem(makeItem(join(skillDir, "SKILL.md")));
 
     expect(existsSync(skillDir)).toBe(false);
+  });
+
+  it("refuses to toggle a plugin-bundled item individually, leaving the file untouched", () => {
+    const filePath = join(root, "ask-matt.md");
+    writeFileSync(filePath, "content");
+    const item = { ...makeItem(filePath), pluginId: "mattpocock-skills@claude-plugins-official" };
+
+    expect(() => toggleItemEnabled(item)).toThrow(/installed plugin/);
+    expect(existsSync(filePath)).toBe(true);
   });
 
   it("deleteItem on a project-linked symlink removes only the link, never the real target", () => {
@@ -173,5 +191,50 @@ describe("toggleItemEnabled / deleteItem", () => {
     expect(existsSync(globalSkillDir)).toBe(true); // the real global skill is untouched
     expect(existsSync(join(globalSkillDir, "SKILL.md"))).toBe(true);
     expect(existsSync(join(globalSkillDir, "helper.py"))).toBe(true);
+  });
+});
+
+function makeTool(pluginsSettingsPath?: string): ToolConfig {
+  return { id: "claude-code", name: "Claude Code", icon: "asterisk", paths: {}, pluginsSettingsPath };
+}
+
+describe("togglePluginEnabled", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "skillmanager-plugin-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("flips an already-listed plugin from enabled to disabled, leaving other keys untouched", () => {
+    const settingsPath = join(root, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: ["x"] }, enabledPlugins: { "foo@bar": true } }, null, 2));
+
+    togglePluginEnabled(makeTool(settingsPath), "foo@bar", true);
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    expect(written.enabledPlugins).toEqual({ "foo@bar": false });
+    expect(written.permissions).toEqual({ allow: ["x"] }); // untouched
+  });
+
+  it("adds a disabled entry for a plugin that was implicitly enabled (absent from the map)", () => {
+    const settingsPath = join(root, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ enabledPlugins: {} }, null, 2));
+
+    togglePluginEnabled(makeTool(settingsPath), "foo@bar", true);
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    expect(written.enabledPlugins).toEqual({ "foo@bar": false });
+  });
+
+  it("throws when the tool has no configured plugin settings path", () => {
+    expect(() => togglePluginEnabled(makeTool(undefined), "foo@bar", true)).toThrow(/no known plugin settings file/);
+  });
+
+  it("throws when the settings file doesn't exist", () => {
+    expect(() => togglePluginEnabled(makeTool(join(root, "missing.json")), "foo@bar", true)).toThrow(/wasn't found/);
   });
 });

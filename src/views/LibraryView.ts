@@ -1,7 +1,7 @@
 import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon, setTooltip } from "obsidian";
 import { execFileSync } from "child_process";
 import { cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
-import { basename, dirname, join, sep } from "path";
+import { basename, dirname, join, relative, sep } from "path";
 import {
   Collection,
   DiscoverEntry,
@@ -23,12 +23,14 @@ import {
 } from "../types";
 import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, expandHome, toProjectRelative } from "../scanners";
 import { addToProject, removeFromProject } from "../projectLink";
-import { deleteItem, toggleItemEnabled } from "../itemToggle";
+import { deleteItem, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
 import { ShadowNoteStore } from "../store";
 import { deleteCollectionAndSync, upsertCollectionAndSync } from "../collections";
 import { CollectionEditModal } from "../modals/CollectionEditModal";
 import { AddToCollectionModal } from "../modals/AddToCollectionModal";
+import { PluginItemInfoModal } from "../modals/PluginItemInfoModal";
+import { InfoModal } from "../modals/InfoModal";
 import { ProjectPresenceModal } from "../modals/ProjectPresenceModal";
 import { ProjectEditModal } from "../modals/ProjectEditModal";
 import { InstallFromGitHubModal } from "../modals/InstallFromGitHubModal";
@@ -1266,12 +1268,86 @@ export class LibraryView extends ItemView {
       // content at all, not just "none scanned yet" — same "don't pad the sidebar with rows that
       // always read 0" reasoning Tools/Projects already apply, just missing here until now.
       if (!showEmpty && count === 0) continue;
-      this.renderNavRow(sidebar, "package", plugin.name, count, this.pluginFilter === plugin.id, () => {
+
+      const row = sidebar.createDiv({ cls: "skillmanager-nav-item" });
+      if (this.pluginFilter === plugin.id) row.addClass("is-active");
+      if (!plugin.enabled) row.addClass("is-off");
+      const iconEl = row.createSpan({ cls: "skillmanager-nav-icon" });
+      this.renderIcon(iconEl, "package");
+      row.createSpan({ text: plugin.name, cls: "skillmanager-nav-label" });
+      row.createSpan({ text: String(count), cls: "skillmanager-nav-count" });
+      row.addEventListener("click", () => {
         this.clearScopeFilters();
         this.pluginFilter = this.pluginFilter === plugin.id ? null : plugin.id;
         this.render();
       });
+
+      // Per-item toggling is blocked for a plugin's own cards (see renderCard) since the tool
+      // has no concept of disabling one skill inside a plugin — this whole-plugin toggle is the
+      // real, supported equivalent, same slot Collections uses for its own toggle.
+      const tool = this.getSettings().tools.find((t) => t.id === plugin.toolId);
+      if (tool?.pluginsSettingsPath) {
+        const actions = row.createDiv({ cls: "skillmanager-nav-actions" });
+        const toggle = actions.createEl("button", {
+          cls: `skillmanager-toggle skillmanager-toggle-sm${plugin.enabled ? " is-on" : ""}`,
+          attr: { "aria-label": plugin.enabled ? "Disable this plugin" : "Enable this plugin" },
+        });
+        toggle.addEventListener("click", (evt) => {
+          evt.stopPropagation();
+          void this.togglePlugin(tool, plugin);
+        });
+      }
     }
+  }
+
+  private async togglePlugin(tool: ToolConfig, plugin: PluginSource) {
+    try {
+      togglePluginEnabled(tool, plugin.id, plugin.enabled);
+    } catch (e) {
+      new Notice(`Couldn't toggle "${plugin.name}": ` + errorMessage(e));
+      return;
+    }
+    await this.rescan();
+  }
+
+  /** A plugin card's toggle click lands here instead of toggleEnabled — same "explain, don't
+   *  pretend it worked" reasoning as itemToggle.ts's guards, just surfaced as a modal since a
+   *  thrown error from a click handler would otherwise only ever show as a terse Notice. */
+  private explainPluginToggle(item: ItemMetadata) {
+    const plugin = this.discoveredPlugins.find((p) => p.id === item.pluginId);
+    const tool = plugin ? this.getSettings().tools.find((t) => t.id === plugin.toolId) : undefined;
+    if (!plugin || !tool) return;
+    new PluginItemInfoModal(
+      this.app,
+      item,
+      plugin,
+      tool,
+      () => this.togglePlugin(tool, plugin),
+      plugin.repoUrl ? () => this.installPluginItemStandalone(item, plugin) : undefined
+    ).open();
+  }
+
+  /** Prefills the real install pipeline with the plugin's own repo and the item's path relative
+   *  to the plugin's install root — the same relative layout the repo itself uses, since the
+   *  plugin's install directory IS a clone of that repo (confirmed against a real Claude Code
+   *  plugin install). Always lands at global scope (lockToGlobal): a standalone copy escaping a
+   *  plugin boundary is exactly the "Add to another tool…" case, not a one-project duplicate. */
+  private installPluginItemStandalone(item: ItemMetadata, plugin: PluginSource) {
+    if (!plugin.repoUrl) return;
+    const unitPath = linkableUnit(item.sourcePath).path;
+    const subpath = relative(plugin.path, unitPath).split(sep).join("/");
+    new InstallFromGitHubModal(
+      this.app,
+      this.getSettings(),
+      this.getAllProjects(),
+      this.store,
+      () => this.rescan(),
+      { repoUrl: plugin.repoUrl, ref: "", subpath, type: item.type },
+      undefined,
+      undefined,
+      true,
+      item.tool
+    ).open();
   }
 
   private renderCollectionsSection(sidebar: HTMLElement) {
@@ -1298,17 +1374,6 @@ export class LibraryView extends ItemView {
       if (this.collectionFilter === collection.id) row.addClass("is-active");
 
       const actions = row.createDiv({ cls: "skillmanager-nav-actions" });
-      const members = this.items.filter((item) => collection.itemIds.includes(item.entryId));
-      const allOn = members.length > 0 && members.every((item) => item.enabled);
-
-      const toggle = actions.createEl("button", {
-        cls: `skillmanager-toggle skillmanager-toggle-sm${allOn ? " is-on" : ""}`,
-        attr: { "aria-label": "Enable or disable every item in this collection" },
-      });
-      toggle.addEventListener("click", (evt) => {
-        evt.stopPropagation();
-        void this.toggleCollection(collection.id);
-      });
 
       const moreBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More" } });
       setIcon(moreBtn, MORE_ICON_ID);
@@ -1477,23 +1542,6 @@ export class LibraryView extends ItemView {
   private syncStatusFor(item: ItemMetadata): "current" | "stale" | "unknown" {
     if (!item.sourceRepo) return "unknown";
     return this.syncStatus.get(item.entryId) ?? "unknown";
-  }
-
-  private async toggleCollection(collectionId: string) {
-    const collection = this.getSettings().collections.find((c) => c.id === collectionId);
-    if (!collection) return;
-
-    const members = this.items.filter((item) => collection.itemIds.includes(item.entryId));
-    const shouldEnable = members.some((item) => !item.enabled);
-    for (const item of members) {
-      if (item.enabled === shouldEnable) continue;
-      try {
-        toggleItemEnabled(item);
-      } catch (e) {
-        new Notice(`Couldn't toggle "${item.name}": ` + errorMessage(e));
-      }
-    }
-    await this.rescan();
   }
 
   private async upsertCollection(collection: Collection) {
@@ -3340,7 +3388,13 @@ export class LibraryView extends ItemView {
     });
     toggle.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      void this.toggleEnabled(item);
+      // A plugin-bundled item has no individual on/off — the tool only supports enabling or
+      // disabling the whole plugin. Explain that instead of pretending the click did anything.
+      if (item.pluginId !== null) {
+        this.explainPluginToggle(item);
+      } else {
+        void this.toggleEnabled(item);
+      }
     });
 
     // What this is for (tool, and the plugin it's bundled with, if any) — lives under the title,
@@ -3468,14 +3522,19 @@ export class LibraryView extends ItemView {
           .onClick(() => this.addItemToAnotherTool(item))
       );
     }
-    menu.addSeparator();
-    menu.addItem((menuItem) =>
-      menuItem
-        .setTitle(isSymlink ? (isProjectLinked ? "Unlink from project" : "Unlink") : "Delete")
-        .setIcon(isSymlink ? "unlink" : "trash-2")
-        .setWarning(true)
-        .onClick(() => this.confirmDelete(item))
-    );
+    // A plugin-bundled item has no delete/uninstall here — its file lives inside the tool's own
+    // plugin manager (for Claude Code, a git-tracked cache directory), which already has its own
+    // supported way to remove a plugin. See deleteItem's guard for why this isn't just hidden UI.
+    if (item.pluginId === null) {
+      menu.addSeparator();
+      menu.addItem((menuItem) =>
+        menuItem
+          .setTitle(isSymlink ? (isProjectLinked ? "Unlink from project" : "Unlink") : "Delete")
+          .setIcon(isSymlink ? "unlink" : "trash-2")
+          .setWarning(true)
+          .onClick(() => this.confirmDelete(item))
+      );
+    }
     menu.showAtMouseEvent(evt);
   }
 
@@ -3623,11 +3682,16 @@ export class LibraryView extends ItemView {
     mtimePrune: DashboardMetric[];
   } {
     const disregarded = this.getSettings().dashboardDisregarded;
-    const pruneCandidates = findPruneCandidates(metrics).filter((m) => !disregarded[m.item.entryId]);
+    // A plugin-bundled item can't be disabled individually from here any more than from its own
+    // card (see renderCard) — Prune candidates only lists things its own "Disable" button can
+    // actually act on.
+    const pruneCandidates = findPruneCandidates(metrics)
+      .filter((m) => !disregarded[m.item.entryId])
+      .filter((m) => m.item.pluginId === null);
     const usage = triggerUsageLoad ? this.getClaudeUsage() : this.claudeUsage;
     const isClaudeSkillOrAgent = (m: DashboardMetric) =>
       m.item.tool === "claude-code" && (m.item.type === "skill" || m.item.type === "agent");
-    const claudeSkillAgentItems = metrics.filter(isClaudeSkillOrAgent).map((m) => m.item);
+    const claudeSkillAgentItems = metrics.filter(isClaudeSkillOrAgent).filter((m) => m.item.pluginId === null).map((m) => m.item);
     const usagePrune = usage ? findUsagePruneCandidates(claudeSkillAgentItems, usage).filter((u) => !disregarded[u.item.entryId]) : [];
     const mtimePrune = pruneCandidates.filter((m) => !usage || !isClaudeSkillOrAgent(m));
     return { usagePrune, mtimePrune };
@@ -4161,8 +4225,19 @@ export class LibraryView extends ItemView {
     const section = body.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-callout" });
     this.renderDashboardSectionHead(section, "Prune candidates");
     section.createDiv({
-      text: `Claude Code skills and agents by real invocation history (never invoked, or not invoked in ${USAGE_STALE_DAYS}+ days); everything else (other tools, plus Claude Code commands and rules) by file edit history, since there's no usage signal for those.`,
+      text: `Claude Code skills and agents flagged by real usage (never invoked, or idle ${USAGE_STALE_DAYS}+ days). Everything else flagged by file edit history, since there's no usage signal for those.`,
       cls: "skillmanager-subtitle",
+    });
+    const introRow = section.createDiv({ cls: "skillmanager-subtitle" });
+    introRow.createSpan({ text: "Unused skills still cost context every turn. " });
+    const whyLink = introRow.createEl("a", { text: "Why this matters", cls: "skillmanager-subtitle-link" });
+    whyLink.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      new InfoModal(
+        this.app,
+        "Why this matters",
+        "An enabled skill or agent costs context on every turn just by being available to the model — its name and description both go into the system prompt whether it's ever invoked or not. An unused one is pure overhead until you disable it."
+      ).open();
     });
 
     const now = Date.now();
@@ -4407,14 +4482,29 @@ export class LibraryView extends ItemView {
       // file may have moved since the last scan; stats just show defaults
     }
     const stats = container.createDiv({ cls: "skillmanager-detail-stats" });
-    const row = (label: string, value: string) => {
+    const row = (label: string, value: string, tooltip?: string) => {
       const r = stats.createDiv({ cls: "skillmanager-detail-stat-row" });
-      r.createSpan({ text: label, cls: "skillmanager-detail-stat-label" });
+      const labelEl = r.createSpan({ cls: "skillmanager-detail-stat-label" });
+      labelEl.createSpan({ text: label });
+      // The label itself is the hover target (rather than the whole row) so the icon doesn't
+      // read as decoration — it's the visible cue that there's more to read on hover.
+      if (tooltip) {
+        const infoIcon = labelEl.createSpan({ cls: "skillmanager-detail-stat-info" });
+        setIcon(infoIcon, "info");
+        setTooltip(labelEl, tooltip, { placement: "top" });
+      }
       r.createSpan({ text: value, cls: "skillmanager-detail-stat-value" });
     };
     row("Size", formatBytes(fileSize));
     row("Length", `${this.detailContent.length.toLocaleString()} chars`);
-    row("Tokens", formatTokens(this.detailContent.length));
+    // While this item is enabled, this is roughly what it costs every single turn just by being
+    // available — not only when it's actually invoked (see the Dashboard's Prune candidates for
+    // the same point made in aggregate, across everything currently enabled).
+    row(
+      "Context",
+      formatTokens(this.detailContent.length),
+      "Est. tokens this adds to the context window on every turn while enabled, whether it's invoked or not."
+    );
     row("Modified", formatDate(modified));
     row("Type", TYPE_LABEL_SINGULAR[item.type]);
   }

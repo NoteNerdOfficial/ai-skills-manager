@@ -4,6 +4,8 @@ Browse, tag, and organize AI skills, agents, commands, and rules from inside Obs
 
 If you've written a good skill for one tool and then can't find it again, or you keep hand-copying the same prompt into every project and every agent, this plugin turns your scattered `~/.claude/skills`, `~/.cursor/rules`, `.github/prompts`, and similar folders into one searchable, taggable library, without moving your files out of the places those tools actually read from.
 
+![Library view listing skills, agents, commands, and rules across tools](images/library.png)
+
 ## Why this exists
 
 - **Skills pile up in a graveyard of folders.** Every coding tool invents its own convention for where skills, agents, commands, and rules live: some global, some per-project, some both. Nothing shows you all of it at once.
@@ -27,11 +29,17 @@ Organize items with your own tags, star favorites, and group related skills/agen
 **Vault-native metadata**
 Per-item metadata (tags, favorites, collection membership) is stored as plain frontmatter in small markdown notes inside your vault, not hidden in a JSON blob. That means it syncs via whatever you already use to sync your vault, and it's queryable from Dataview or Bases like any other note.
 
+![Detail panel previewing a skill's full rendered content alongside its metadata](images/item-preview.png)
+
 **Link a global skill into a project**
 Add a global skill to a project workspace and it's symlinked into that project's local tool folder, never copied, so it can't drift out of sync with the source. Remove it and only the link goes away; the original is untouched.
 
 **Discover and install from GitHub**
 Point Discover at a GitHub repo (or a specific subfolder) and it walks it for `SKILL.md` files and agent/command/rule markdown, showing star counts and previews before you install. Or paste a repo URL (or a GitHub `tree` URL for one branch/subfolder) directly into "Install from GitHub" and pick which tool, type, and project (or global) it lands in.
+
+![Discover tab, empty state with suggested starter repos](images/discover.png)
+
+![Adding a GitHub repo as a source and installing a skill from it](images/adding-repo-flow.gif)
 
 **Check for updates, with a real diff**
 For anything installed through the plugin, "Check for updates" fetches the source repo and shows exactly what changed, including companion files like `references/` and `scripts/` alongside the main manifest, before you apply anything. "Restore" reverts an item back to the exact commit it was installed at. An optional background interval can check every tracked source on its own and flag what's stale, without ever applying an update for you.
@@ -40,7 +48,11 @@ For anything installed through the plugin, "Check for updates" fetches the sourc
 Reads Claude Code's installed-plugins registry so skills, agents, and commands bundled inside an installed Claude Code plugin show up in the library too, tagged with the plugin they came from.
 
 **Dashboard: context cost, usage, and overlaps**
-A dedicated tab that estimates the context footprint of everything you currently have enabled, broken down by tool and ranked item by item. For Claude Code specifically, it reads your real `~/.claude/projects` session transcripts to build a "Top Skills & Agents" usage ranking and to flag prune candidates that have never fired or gone stale, instead of guessing from file age. Everywhere else, a file-age-based heuristic flags large items that haven't been touched in a while. A separate "Possible overlaps" list catches enabled items sharing an exact name (an unambiguous collision) or near-duplicate descriptions, likely competing for the same trigger conditions, with a side-by-side compare before you disable one. Any prune or overlap suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself.
+A dedicated tab that estimates the context footprint of everything you currently have enabled, broken down by tool and ranked item by item. For Claude Code specifically, it reads your real `~/.claude/projects` session transcripts to build a "Top Skills & Agents" usage ranking and to flag prune candidates that have never fired or gone stale, instead of guessing from file age. Everywhere else, a file-age-based heuristic flags large items that haven't been touched in a while. A separate "Possible overlaps" list catches enabled items sharing an exact name (an unambiguous collision) or near-duplicate descriptions, likely competing for the same trigger conditions, with a side-by-side compare before you disable one.
+
+Any prune or overlap suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself.
+
+![Dashboard tab showing cost by tool, ranked items, prune candidates, and possible overlaps](images/dashboard.png)
 
 **MCP servers, read-only**
 A dedicated page lists every MCP server configured across your tools, global and per-project, read straight from each tool's own config file (`~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, `.vscode/mcp.json`, and more). It's visibility only, nothing here can enable, disable, or edit a server, but you can jump straight to its config file to do that by hand.

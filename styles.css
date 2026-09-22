@@ -157,6 +157,10 @@
   color: var(--text-normal);
 }
 
+.skillmanager-nav-item.is-off {
+  opacity: 0.68;
+}
+
 .skillmanager-nav-item.is-active {
   background: var(--background-modifier-hover);
   color: var(--text-normal);
@@ -264,6 +268,15 @@
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.skillmanager-subtitle-link {
+  color: var(--text-accent);
+  cursor: pointer;
+}
+
+.skillmanager-subtitle-link:hover {
+  text-decoration: underline;
 }
 
 /* Workspace-scope banner (see LibraryView.renderWorkspaceBanner) — a one-time nudge shown only
@@ -1688,6 +1701,19 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-detail-stat-label {
   color: var(--text-faint);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.skillmanager-detail-stat-info {
+  display: inline-flex;
+  cursor: help;
+}
+
+.skillmanager-detail-stat-info svg {
+  width: 11px;
+  height: 11px;
 }
 
 .skillmanager-detail-stat-value {
@@ -2711,14 +2737,12 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-columns {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 16px;
   margin-top: 28px;
 }
 
 .skillmanager-dash-columns > .skillmanager-dash-section {
-  /* No align-items override above means the default "stretch" applies, so whichever column is
-     taller sets the height for both — wraps to its own full row below a certain width instead
-     of squeezing, since flex-basis 280px won't shrink past min-width. */
   flex: 1 1 280px;
   min-width: 280px;
   display: flex;
@@ -2726,19 +2750,9 @@ input.skillmanager-tag-add-input {
 }
 
 .skillmanager-dash-callout .skillmanager-subtitle {
-  padding-bottom: 14px;
-  margin-bottom: 0;
-  border-bottom: 1px solid var(--background-modifier-border);
+  margin-bottom: 8px;
 }
 
 .skillmanager-dash-callout-rows {
-  /* Caps how tall either column can grow before it scrolls internally instead of pushing the
-     other column (and the rest of the page) to match an unbounded height. */
-  overflow-y: auto;
-  max-height: 260px;
-  margin-top: 12px;
-  /* Same fix as .skillmanager-dash-tiles: a flex item with non-visible overflow otherwise gets an
-     automatic min-height of 0 and can collapse under the parent column's default shrinking. */
-  flex-shrink: 0;
+  margin-top: 4px;
 }
-

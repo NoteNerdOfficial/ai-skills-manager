@@ -159,12 +159,6 @@ export class SkillManagerSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl).setName("Workspaces").setHeading();
-    containerEl.createEl("p", {
-      text: 'Extra project folders are managed from the library sidebar’s Workspaces section now (the "+" icon), not here.',
-      cls: "setting-item-description",
-    });
-
     new Setting(containerEl).setName("Support").setHeading();
     new Setting(containerEl)
       .setName("Report a bug or request a feature")

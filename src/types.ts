@@ -56,6 +56,13 @@ export interface ToolConfig {
   unconfirmedPaths?: Partial<Record<ItemType, string>>;
   /** Path to this tool's installed-plugins registry JSON, if it has one (e.g. Claude Code). */
   pluginsRegistry?: string;
+  /** Path to the JSON file holding this tool's own per-plugin enable/disable state (e.g. Claude
+   *  Code's ~/.claude/settings.json, under its "enabledPlugins" map), if it has one. Only a whole
+   *  plugin can be toggled this way — there's no supported concept of disabling one skill inside
+   *  a plugin, which is why an item with a pluginId can't be toggled individually (see
+   *  itemToggle.ts's toggleItemEnabled) and is instead toggled as a unit from the sidebar's
+   *  Plugins section (see itemToggle.ts's togglePluginEnabled). */
+  pluginsSettingsPath?: string;
   /** Subfolder name(s), if any, where this tool stores its own shipped-in-the-box
    *  skills/agents/commands/rules — e.g. Claude Code's "synced/" cache, Codex's ".system/". An
    *  item found nested under one of these (at any depth within the tool's scanned path) is
@@ -135,6 +142,18 @@ export interface PluginSource {
   id: string;
   name: string;
   path: string;
+  /** The ToolConfig this plugin was discovered under — needed to find its pluginsSettingsPath
+   *  when toggling the whole plugin on/off. */
+  toolId: string;
+  /** Whether the tool currently loads this plugin at all, read from pluginsSettingsPath. True
+   *  when that file (or its entry for this plugin) doesn't exist, matching how Claude Code treats
+   *  an installed-but-unlisted plugin as enabled by default. */
+  enabled: boolean;
+  /** The plugin's source repo, read from its own .claude-plugin/plugin.json "repository" field —
+   *  absent for most plugins in practice (only observed set on one of several installed here), so
+   *  always optional. Lets a card belonging to this plugin offer "install a standalone copy" as
+   *  an escape hatch from the whole-plugin-only toggle (see LibraryView's explainPluginToggle). */
+  repoUrl?: string;
 }
 
 export interface DiscoveredItem {
@@ -343,6 +362,7 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
     },
     singleFileRule: true,
     pluginsRegistry: "~/.claude/plugins/installed_plugins.json",
+    pluginsSettingsPath: "~/.claude/settings.json",
     // ~/.claude/skills/synced/<workspace>_<user>/ is a vendor-managed cache of Claude Code's own
     // default skill catalog (confirmed on-disk: a manifest.json + .bucket-<id> marker sit
     // alongside the skill folders) — not something the user installed or wrote.

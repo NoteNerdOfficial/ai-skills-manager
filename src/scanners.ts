@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Sta
 import { homedir } from "os";
 import { basename, dirname, join, sep } from "path";
 import { slug } from "./format";
-import { DISABLED_DIRNAME, LEGACY_DISABLED_DIRNAME } from "./itemToggle";
+import { DISABLED_DIRNAME } from "./itemToggle";
 import { DiscoveredItem, ItemType, PluginSource, ProjectWorkspace, RulePathEntry, ToolConfig } from "./types";
 
 export function expandHome(rawPath: string): string {
@@ -97,7 +97,7 @@ export function makeEntryId(
 }
 
 const MAX_SCAN_DEPTH = 4;
-const SKIP_DIRNAMES = new Set([DISABLED_DIRNAME, LEGACY_DISABLED_DIRNAME, "node_modules", ".git"]);
+const SKIP_DIRNAMES = new Set([DISABLED_DIRNAME, "node_modules", ".git"]);
 
 function scanEntries(
   dir: string,
@@ -152,7 +152,7 @@ function scanEntries(
           enabled,
         });
       } else {
-        items.push(...scanEntries(entryPath, tool, type, projectId, pluginId, enabled, depth + 1));
+        items.push(...scanCategoryFolder(entryPath, tool, type, projectId, pluginId, enabled, depth + 1));
       }
       continue;
     }
@@ -179,6 +179,27 @@ function scanEntries(
   return items;
 }
 
+/** itemToggle.ts disables an item into a ".skillmanager-disabled" sibling in ITS OWN parent
+ *  folder — which, for an item nested inside a category folder (e.g. skills/engineering/tdd),
+ *  is the category folder, not the top-level configured tool path. So the enabled/disabled pair
+ *  has to be checked at every folder level scanEntries recurses into, not just the top: otherwise
+ *  a disabled item nested inside a category folder is invisible to both the enabled walk (which
+ *  skips ".skillmanager-disabled" by name) and a single top-level-only disabled scan. A folder
+ *  we're already scanning as "disabled" needs no further pairing — nothing is disabled-within-disabled. */
+function scanCategoryFolder(
+  dir: string,
+  tool: ToolConfig,
+  type: ItemType,
+  projectId: string | null,
+  pluginId: string | null,
+  enabled: boolean,
+  depth: number
+): DiscoveredItem[] {
+  const items = scanEntries(dir, tool, type, projectId, pluginId, enabled, depth);
+  if (!enabled) return items;
+  return [...items, ...scanEntries(join(dir, DISABLED_DIRNAME), tool, type, projectId, pluginId, false, depth)];
+}
+
 function scanDirectory(
   dir: string,
   tool: ToolConfig,
@@ -186,13 +207,7 @@ function scanDirectory(
   projectId: string | null,
   pluginId: string | null
 ): DiscoveredItem[] {
-  return [
-    ...scanEntries(dir, tool, type, projectId, pluginId, true),
-    ...scanEntries(join(dir, DISABLED_DIRNAME), tool, type, projectId, pluginId, false),
-    // Folders disabled under the plugin's pre-rename dirname still need to surface as disabled
-    // (see itemToggle.ts's LEGACY_DISABLED_DIRNAME) rather than silently reappearing as enabled.
-    ...scanEntries(join(dir, LEGACY_DISABLED_DIRNAME), tool, type, projectId, pluginId, false),
-  ];
+  return scanCategoryFolder(dir, tool, type, projectId, pluginId, true, 0);
 }
 
 /** For a tool whose configured path is one instructions file (ToolConfig.singleFileRule) rather
@@ -209,13 +224,11 @@ function scanSingleFile(
 ): DiscoveredItem[] {
   const fileName = basename(filePath);
   const disabledPath = join(dirname(filePath), DISABLED_DIRNAME, fileName);
-  const legacyDisabledPath = join(dirname(filePath), LEGACY_DISABLED_DIRNAME, fileName);
 
   const items: DiscoveredItem[] = [];
   for (const [path, enabled] of [
     [filePath, true],
     [disabledPath, false],
-    [legacyDisabledPath, false],
   ] as const) {
     if (!existsSync(path) || !statSync(path).isFile()) continue;
     const meta = readSourceMeta(path);
@@ -340,17 +353,54 @@ export function scanAllProjects(tools: ToolConfig[], projects: ProjectWorkspace[
   return projects.flatMap((project) => scanProject(tools, project));
 }
 
-function readInstalledPlugins(registryPath: string): PluginSource[] {
+/** Reads the tool's own "is this installed plugin actually loaded" map (e.g. Claude Code's
+ *  ~/.claude/settings.json "enabledPlugins"), if the tool has one configured at all. Missing
+ *  file or missing key both read as "not explicitly disabled" (see readPluginEnabled). */
+function readPluginEnabledMap(settingsPath: string | undefined): Record<string, boolean> {
+  if (!settingsPath || !existsSync(settingsPath)) return {};
+  try {
+    const raw = JSON.parse(readFileSync(settingsPath, "utf-8")) as { enabledPlugins?: Record<string, boolean> };
+    return raw.enabledPlugins ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/** Best-effort: most installed plugins don't declare this at all (observed empty across several
+ *  real installs here), so a miss is the common case, not an error — an install-from-URL escape
+ *  hatch (see LibraryView's explainPluginToggle) is a bonus when it's there, never assumed. Only
+ *  a github.com URL is any use to us, since InstallFromGitHubModal only understands that host. */
+function readPluginRepoUrl(installPath: string): string | undefined {
+  const manifestPath = join(installPath, ".claude-plugin", "plugin.json");
+  if (!existsSync(manifestPath)) return undefined;
+  try {
+    const raw = JSON.parse(readFileSync(manifestPath, "utf-8")) as { repository?: unknown };
+    const repo = typeof raw.repository === "string" ? raw.repository : undefined;
+    return repo && /^https?:\/\/(www\.)?github\.com\//.test(repo) ? repo : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readInstalledPlugins(registryPath: string, toolId: string, pluginsSettingsPath: string | undefined): PluginSource[] {
   if (!existsSync(registryPath)) return [];
   try {
     const raw = JSON.parse(readFileSync(registryPath, "utf-8")) as {
       plugins?: Record<string, { installPath?: string }[]>;
     };
+    const enabledMap = readPluginEnabledMap(pluginsSettingsPath ? expandHome(pluginsSettingsPath) : undefined);
     const plugins: PluginSource[] = [];
     for (const [key, installs] of Object.entries(raw.plugins ?? {})) {
       const installPath = installs?.[0]?.installPath;
       if (installPath) {
-        plugins.push({ id: key, name: key.split("@")[0], path: installPath });
+        plugins.push({
+          id: key,
+          name: key.split("@")[0],
+          path: installPath,
+          toolId,
+          enabled: enabledMap[key] ?? true,
+          repoUrl: readPluginRepoUrl(installPath),
+        });
       }
     }
     return plugins;
@@ -369,11 +419,16 @@ export function scanAllPlugins(tools: ToolConfig[]): { items: DiscoveredItem[]; 
   const plugins: PluginSource[] = [];
   for (const tool of tools) {
     if (!tool.pluginsRegistry) continue;
-    const discovered = readInstalledPlugins(expandHome(tool.pluginsRegistry));
+    const discovered = readInstalledPlugins(expandHome(tool.pluginsRegistry), tool.id, tool.pluginsSettingsPath);
     plugins.push(...discovered);
     for (const plugin of discovered) {
       for (const [type, rawPath] of Object.entries(tool.paths) as [ItemType, string][]) {
-        items.push(...scanDirectory(join(plugin.path, toPluginRelative(rawPath)), tool, type, null, plugin.id));
+        const found = scanDirectory(join(plugin.path, toPluginRelative(rawPath)), tool, type, null, plugin.id);
+        // A whole disabled plugin means the tool loads none of its skills, regardless of which
+        // folder a given one physically sits in — reflect that on every item rather than only the
+        // ones already sitting in a .skillmanager-disabled folder from back when per-item toggling
+        // was still allowed for plugins.
+        items.push(...(plugin.enabled ? found : found.map((item) => ({ ...item, enabled: false }))));
       }
     }
   }
