@@ -8219,6 +8219,177 @@ var SkillManagerSettingTab = class extends import_obsidian15.PluginSettingTab {
     super(app, plugin);
     this.plugin = plugin;
   }
+  /** Declarative settings for Obsidian 1.13+, which indexes these definitions for Settings search.
+   *  display() below remains as the compatibility fallback for the plugin's minAppVersion. */
+  getSettingDefinitions() {
+    return [
+      {
+        type: "group",
+        items: [
+          {
+            name: "Storage folder",
+            desc: "Vault folder where AI Skills Manager keeps its metadata notes for each discovered item.",
+            control: {
+              type: "text",
+              key: "storageFolder",
+              placeholder: "AI Skills Manager",
+              defaultValue: "AI Skills Manager",
+              validate: (value) => value.trim() ? void 0 : "Storage folder cannot be empty."
+            }
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: "Library view",
+        items: [
+          {
+            name: "Auto-rescan",
+            desc: "Periodically re-scan every configured tool and project in the background.",
+            control: {
+              type: "dropdown",
+              key: "autoRescanMinutes",
+              options: Object.fromEntries(AUTO_RESCAN_OPTIONS.map(({ minutes, label }) => [String(minutes), label])),
+              defaultValue: "0"
+            }
+          },
+          {
+            name: "Auto check for updates",
+            desc: "Periodically check tracked sources against their remotes and flag stale items without applying updates.",
+            control: {
+              type: "dropdown",
+              key: "autoUpdateCheckMinutes",
+              options: Object.fromEntries(AUTO_UPDATE_CHECK_OPTIONS.map(({ minutes, label }) => [String(minutes), label])),
+              defaultValue: "0"
+            }
+          },
+          {
+            name: "Default sort order",
+            desc: "Sort order the library view opens with.",
+            control: {
+              type: "dropdown",
+              key: "defaultSortOrder",
+              options: Object.fromEntries(SORT_OPTIONS.map(({ key, label }) => [key, label])),
+              defaultValue: "name-asc"
+            }
+          },
+          {
+            name: "Default enabled/disabled filter",
+            desc: "Enabled/disabled filter the library view opens with.",
+            control: {
+              type: "dropdown",
+              key: "defaultEnabledFilter",
+              options: Object.fromEntries(ENABLED_FILTER_OPTIONS.map(({ key, label }) => [key, label])),
+              defaultValue: "all"
+            }
+          },
+          {
+            name: "Show every tool and project in the sidebar",
+            desc: "Show configured tools and workspaces even when they have no discovered items.",
+            control: {
+              type: "toggle",
+              key: "showEmptySidebarRows",
+              defaultValue: false
+            }
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: "MCP servers",
+        items: [
+          {
+            name: "Open config file with",
+            desc: "App to open an MCP server's config file with. Leave blank to use macOS's default app.",
+            control: {
+              type: "text",
+              key: "mcpConfigEditorApp",
+              placeholder: "Visual Studio Code",
+              defaultValue: ""
+            }
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: "Support",
+        items: [
+          {
+            name: "Report a bug or request a feature",
+            desc: "Opens a new issue on the AI Skills Manager GitHub repo.",
+            action: () => window.open("https://github.com/NoteNerdOfficial/ai-skills-manager/issues/new", "_blank")
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: "Related plugins",
+        items: RELATED_PLUGINS.map((plugin) => ({
+          name: plugin.name,
+          desc: plugin.desc,
+          action: () => window.open(plugin.url, "_blank")
+        }))
+      }
+    ];
+  }
+  getControlValue(key) {
+    const settings = this.plugin.settings;
+    switch (key) {
+      case "storageFolder":
+      case "mcpConfigEditorApp":
+      case "defaultSortOrder":
+      case "defaultEnabledFilter":
+        return settings[key];
+      case "autoRescanMinutes":
+      case "autoUpdateCheckMinutes":
+        return String(settings[key]);
+      case "showEmptySidebarRows":
+        return settings.showEmptySidebarRows;
+      default:
+        return void 0;
+    }
+  }
+  async setControlValue(key, value) {
+    switch (key) {
+      case "storageFolder":
+        if (typeof value === "string")
+          this.plugin.settings.storageFolder = value.trim() || "AI Skills Manager";
+        break;
+      case "autoRescanMinutes":
+        if (typeof value === "string") {
+          this.plugin.settings.autoRescanMinutes = Number(value);
+          this.plugin.applyAutoRescanInterval();
+        }
+        break;
+      case "autoUpdateCheckMinutes":
+        if (typeof value === "string") {
+          this.plugin.settings.autoUpdateCheckMinutes = Number(value);
+          this.plugin.applyAutoUpdateCheckInterval();
+        }
+        break;
+      case "defaultSortOrder":
+        if (typeof value === "string")
+          this.plugin.settings.defaultSortOrder = value;
+        break;
+      case "defaultEnabledFilter":
+        if (typeof value === "string")
+          this.plugin.settings.defaultEnabledFilter = value;
+        break;
+      case "showEmptySidebarRows":
+        if (typeof value === "boolean") {
+          this.plugin.settings.showEmptySidebarRows = value;
+          this.plugin.refreshOpenViews();
+        }
+        break;
+      case "mcpConfigEditorApp":
+        if (typeof value === "string")
+          this.plugin.settings.mcpConfigEditorApp = value.trim();
+        break;
+      default:
+        return;
+    }
+    await this.plugin.saveSettings();
+  }
   display() {
     const { containerEl } = this;
     containerEl.empty();
