@@ -1,6 +1,6 @@
 {
   "name": "ai-skills-manager",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Manage AI skills, agents, commands, and rules for Claude, Codex, Pi, and more, with usage insights and MCP visibility.",
   "main": "main.js",
   "scripts": {
