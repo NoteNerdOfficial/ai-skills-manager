@@ -1380,7 +1380,7 @@ export class LibraryView extends ItemView {
         });
         toggle.addEventListener("click", (evt) => {
           evt.stopPropagation();
-          void this.togglePlugin(tool, plugin);
+          this.explainPluginBundleToggle(plugin);
         });
       }
     }
@@ -1416,7 +1416,33 @@ export class LibraryView extends ItemView {
   private explainPluginBundleToggle(plugin: PluginSource) {
     const tool = this.pluginBundleTool(plugin);
     if (!tool) return;
-    new PluginItemInfoModal(this.app, null, plugin, tool).open();
+    new PluginItemInfoModal(
+      this.app,
+      null,
+      plugin,
+      tool,
+      tool.pluginsSettingsPath ? () => this.togglePlugin(tool, plugin) : undefined,
+      undefined,
+      plugin.repoUrl ? () => this.openPluginRepoInDiscover(plugin) : undefined
+    ).open();
+  }
+
+  /** Reopens a known plugin repository through Discover so users can browse its contents and
+   *  install selected skills/agents as independently managed copies. */
+  private openPluginRepoInDiscover(plugin: PluginSource) {
+    if (!plugin.repoUrl) return;
+    new AddDiscoverSourceModal(
+      this.app,
+      this.getSettings(),
+      this.saveSettings,
+      (repoUrl, subpath) => this.isDiscoverEntryInstalled(repoUrl, subpath),
+      () => {
+        this.clearScopeFilters();
+        this.discoverMode = true;
+        this.render();
+      },
+      plugin.repoUrl
+    ).open();
   }
 
   /** Prefills the real install pipeline with the plugin's own repo and the item's path relative
@@ -2687,8 +2713,7 @@ export class LibraryView extends ItemView {
     });
     toggle.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      if (tool?.pluginsSettingsPath) void this.togglePlugin(tool, plugin);
-      else this.explainPluginBundleToggle(plugin);
+      this.explainPluginBundleToggle(plugin);
     });
     if (tool) {
       const toolCaption = card.createDiv({ cls: "skillmanager-card-tool" });

@@ -13,7 +13,8 @@ export class PluginItemInfoModal extends Modal {
     private plugin: PluginSource,
     private tool: ToolConfig,
     private onTogglePlugin?: () => void | Promise<void>,
-    private onInstallStandalone?: () => void
+    private onInstallStandalone?: () => void,
+    private onDiscoverRepo?: () => void
   ) {
     super(app);
   }
@@ -30,16 +31,24 @@ export class PluginItemInfoModal extends Modal {
           : `It's bundled in the "${this.plugin.name}" plugin managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable this plugin here.`,
       });
     } else {
-      contentEl.createEl("h3", { text: `"${this.plugin.name}" can't be toggled here` });
+      contentEl.createEl("h3", { text: `Options for "${this.plugin.name}"` });
       contentEl.createEl("p", {
         cls: "skillmanager-modal-meta",
-        text: `This plugin is managed by ${this.tool.name}. Use ${this.tool.name} to enable or disable it as a whole.`,
+        text: this.onTogglePlugin
+          ? `This is a packaged plugin managed by ${this.tool.name}. You can enable or disable the whole plugin here, but its bundled items move together — they can't be toggled individually.`
+          : `This plugin is managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable the package here.`,
       });
     }
     if (this.item && this.onInstallStandalone) {
       contentEl.createEl("p", {
         cls: "skillmanager-modal-meta",
-        text: `Want to manage "${this.item.name}" by itself instead? Install it separately via Discover, straight from the plugin's own repo. That copy lives outside the plugin and toggles individually like any other skill.`,
+        text: `Want to manage "${this.item.name}" by itself instead? Install a standalone copy from the plugin's own GitHub repo. That copy lives outside the plugin, toggles individually, and can be updated through AI Skills Manager.`,
+      });
+    }
+    if (!this.item && this.onDiscoverRepo) {
+      contentEl.createEl("p", {
+        cls: "skillmanager-modal-meta",
+        text: "For individual control, add the plugin's known GitHub repository to Discover and install only the items you want. Copies installed through AI Skills Manager can be managed and updated independently.",
       });
     }
 
@@ -50,6 +59,13 @@ export class PluginItemInfoModal extends Modal {
       installBtn.addEventListener("click", () => {
         this.close();
         this.onInstallStandalone?.();
+      });
+    }
+    if (!this.item && this.onDiscoverRepo) {
+      const discoverBtn = actions.createEl("button", { text: "Add repo to Discover…" });
+      discoverBtn.addEventListener("click", () => {
+        this.close();
+        this.onDiscoverRepo?.();
       });
     }
     if (this.onTogglePlugin) {

@@ -1075,13 +1075,14 @@ function errorMessage(e) {
 
 // src/modals/PluginItemInfoModal.ts
 var PluginItemInfoModal = class extends import_obsidian3.Modal {
-  constructor(app, item, plugin, tool, onTogglePlugin, onInstallStandalone) {
+  constructor(app, item, plugin, tool, onTogglePlugin, onInstallStandalone, onDiscoverRepo) {
     super(app);
     this.item = item;
     this.plugin = plugin;
     this.tool = tool;
     this.onTogglePlugin = onTogglePlugin;
     this.onInstallStandalone = onInstallStandalone;
+    this.onDiscoverRepo = onDiscoverRepo;
   }
   onOpen() {
     const { contentEl } = this;
@@ -1093,16 +1094,22 @@ var PluginItemInfoModal = class extends import_obsidian3.Modal {
         text: this.onTogglePlugin ? `It's bundled in the "${this.plugin.name}" plugin. ${this.tool.name} only supports enabling or disabling a plugin as a whole \u2014 there's no way to turn off just one skill inside it.` : `It's bundled in the "${this.plugin.name}" plugin managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable this plugin here.`
       });
     } else {
-      contentEl.createEl("h3", { text: `"${this.plugin.name}" can't be toggled here` });
+      contentEl.createEl("h3", { text: `Options for "${this.plugin.name}"` });
       contentEl.createEl("p", {
         cls: "skillmanager-modal-meta",
-        text: `This plugin is managed by ${this.tool.name}. Use ${this.tool.name} to enable or disable it as a whole.`
+        text: this.onTogglePlugin ? `This is a packaged plugin managed by ${this.tool.name}. You can enable or disable the whole plugin here, but its bundled items move together \u2014 they can't be toggled individually.` : `This plugin is managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable the package here.`
       });
     }
     if (this.item && this.onInstallStandalone) {
       contentEl.createEl("p", {
         cls: "skillmanager-modal-meta",
-        text: `Want to manage "${this.item.name}" by itself instead? Install it separately via Discover, straight from the plugin's own repo. That copy lives outside the plugin and toggles individually like any other skill.`
+        text: `Want to manage "${this.item.name}" by itself instead? Install a standalone copy from the plugin's own GitHub repo. That copy lives outside the plugin, toggles individually, and can be updated through AI Skills Manager.`
+      });
+    }
+    if (!this.item && this.onDiscoverRepo) {
+      contentEl.createEl("p", {
+        cls: "skillmanager-modal-meta",
+        text: "For individual control, add the plugin's known GitHub repository to Discover and install only the items you want. Copies installed through AI Skills Manager can be managed and updated independently."
       });
     }
     const actions = contentEl.createDiv({ cls: "skillmanager-modal-actions" });
@@ -1113,6 +1120,14 @@ var PluginItemInfoModal = class extends import_obsidian3.Modal {
         var _a;
         this.close();
         (_a = this.onInstallStandalone) == null ? void 0 : _a.call(this);
+      });
+    }
+    if (!this.item && this.onDiscoverRepo) {
+      const discoverBtn = actions.createEl("button", { text: "Add repo to Discover\u2026" });
+      discoverBtn.addEventListener("click", () => {
+        var _a;
+        this.close();
+        (_a = this.onDiscoverRepo) == null ? void 0 : _a.call(this);
       });
     }
     if (this.onTogglePlugin) {
@@ -1919,12 +1934,13 @@ async function fetchGithubStars(repoUrl) {
 
 // src/modals/AddDiscoverSourceModal.ts
 var AddDiscoverSourceModal = class extends import_obsidian10.Modal {
-  constructor(app, settings, saveSettings, isInstalled, onAdded) {
+  constructor(app, settings, saveSettings, isInstalled, onAdded, initialRepoUrl) {
     super(app);
     this.settings = settings;
     this.saveSettings = saveSettings;
     this.isInstalled = isInstalled;
     this.onAdded = onAdded;
+    this.initialRepoUrl = initialRepoUrl;
     this.repoUrlInput = "";
     this.ref = "";
     this.subpath = "";
@@ -1932,6 +1948,7 @@ var AddDiscoverSourceModal = class extends import_obsidian10.Modal {
     this.subpathTouched = false;
     this.statusEl = null;
     this.submitting = false;
+    this.repoUrlInput = initialRepoUrl != null ? initialRepoUrl : "";
   }
   onOpen() {
     const { contentEl } = this;
@@ -1944,7 +1961,7 @@ var AddDiscoverSourceModal = class extends import_obsidian10.Modal {
     let refText;
     let subpathText;
     new import_obsidian10.Setting(contentEl).setName("Repository URL").setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.").addText((text) => {
-      text.setPlaceholder("https://github.com/owner/repo").onChange((value) => {
+      text.setPlaceholder("https://github.com/owner/repo").setValue(this.repoUrlInput).onChange((value) => {
         this.repoUrlInput = value;
         const parsed = parseGitHubUrl(value);
         if (!parsed)
@@ -4498,7 +4515,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
         });
         toggle.addEventListener("click", (evt) => {
           evt.stopPropagation();
-          void this.togglePlugin(tool, plugin);
+          this.explainPluginBundleToggle(plugin);
         });
       }
     }
@@ -4533,7 +4550,33 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const tool = this.pluginBundleTool(plugin);
     if (!tool)
       return;
-    new PluginItemInfoModal(this.app, null, plugin, tool).open();
+    new PluginItemInfoModal(
+      this.app,
+      null,
+      plugin,
+      tool,
+      tool.pluginsSettingsPath ? () => this.togglePlugin(tool, plugin) : void 0,
+      void 0,
+      plugin.repoUrl ? () => this.openPluginRepoInDiscover(plugin) : void 0
+    ).open();
+  }
+  /** Reopens a known plugin repository through Discover so users can browse its contents and
+   *  install selected skills/agents as independently managed copies. */
+  openPluginRepoInDiscover(plugin) {
+    if (!plugin.repoUrl)
+      return;
+    new AddDiscoverSourceModal(
+      this.app,
+      this.getSettings(),
+      this.saveSettings,
+      (repoUrl, subpath) => this.isDiscoverEntryInstalled(repoUrl, subpath),
+      () => {
+        this.clearScopeFilters();
+        this.discoverMode = true;
+        this.render();
+      },
+      plugin.repoUrl
+    ).open();
   }
   /** Prefills the real install pipeline with the plugin's own repo and the item's path relative
    *  to the plugin's install root — the same relative layout the repo itself uses, since the
@@ -5683,10 +5726,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     });
     toggle.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      if (tool == null ? void 0 : tool.pluginsSettingsPath)
-        void this.togglePlugin(tool, plugin);
-      else
-        this.explainPluginBundleToggle(plugin);
+      this.explainPluginBundleToggle(plugin);
     });
     if (tool) {
       const toolCaption = card.createDiv({ cls: "skillmanager-card-tool" });

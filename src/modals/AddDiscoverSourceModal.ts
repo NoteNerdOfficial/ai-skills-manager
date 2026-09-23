@@ -24,9 +24,11 @@ export class AddDiscoverSourceModal extends Modal {
     /** True if this repoUrl/subpath is already installed as a real item — filters it out of the
      *  catalog rather than showing an "install" card for something already in the library. */
     private isInstalled: (repoUrl: string, subpath: string) => boolean,
-    private onAdded: () => void
+    private onAdded: () => void,
+    private initialRepoUrl?: string
   ) {
     super(app);
+    this.repoUrlInput = initialRepoUrl ?? "";
   }
 
   onOpen() {
@@ -45,7 +47,7 @@ export class AddDiscoverSourceModal extends Modal {
       .setName("Repository URL")
       .setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.")
       .addText((text) => {
-        text.setPlaceholder("https://github.com/owner/repo").onChange((value) => {
+        text.setPlaceholder("https://github.com/owner/repo").setValue(this.repoUrlInput).onChange((value) => {
           this.repoUrlInput = value;
           const parsed = parseGitHubUrl(value);
           if (!parsed) return;
