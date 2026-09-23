@@ -49,8 +49,7 @@ Reads Claude Code's installed-plugins registry and Codex's installed plugin cach
 
 Installed bundles are browsable from **Library → Plugin bundles**, with search, tool/group/tag filters, sorting, and a breadcrumb back from a bundle's item list.
 
-**Dashboard: context cost, usage, and overlaps**
-A dedicated tab that estimates the context footprint of everything you currently have enabled, broken down by tool and ranked item by item. For Claude Code and Codex, it reads their session history (`~/.claude/projects` and `~/.codex/sessions`) to build a "Top Skills & Agents" usage ranking. Claude Code usage data also flags prune candidates that have never fired or gone stale, instead of guessing from file age. Everywhere else, including Codex prune recommendations, a file-age-based heuristic flags large items that haven't been touched in a while. A separate "Possible overlaps" list catches enabled items sharing an exact name (an unambiguous collision) or near-duplicate descriptions, likely competing for the same trigger conditions, with a side-by-side compare before you disable one.
+A dedicated tab that separates representative source-file size from estimated context exposure. For skills and agents, it shows metadata available before invocation separately from instruction tokens loaded on invocation; commands and rules are marked tool-dependent until their per-tool loading policies are modeled. For Claude Code and Codex, it reads their session history (`~/.claude/projects` and `~/.codex/sessions`) to build a "Top Skills & Agents" usage ranking. Claude Code usage data also flags prune candidates that have never fired or gone stale, instead of guessing from file age. Everywhere else, including Codex prune recommendations, a file-age-based heuristic flags large source files that haven't been touched in a while. A separate "Possible overlaps" list catches enabled items sharing an exact name (an unambiguous collision) or near-duplicate descriptions, likely competing for the same trigger conditions, with a side-by-side compare before you disable one.
 
 Any prune or overlap suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself.
 
@@ -109,7 +108,7 @@ AI Skills Manager is desktop-only: it reads and writes files directly on disk (a
 5. Add a project workspace from the "+" next to Workspaces in the sidebar to see that project's local skills alongside your global ones, and to link global skills into it.
 6. Use **Discover** to browse a GitHub repo for skills/agents/commands/rules and install what you want, or use **Install from GitHub** directly if you already know the repo.
 7. For anything installed that way, use **Check for updates** on its detail panel to review a diff before pulling in changes, or **Restore** to revert to the version you installed.
-8. Open the **Dashboard** tab any time to see context cost by tool, what's probably safe to prune, and where two items might be overlapping.
+8. Open the **Dashboard** tab any time to see source size and estimated context exposure by tool, what's probably safe to prune, and where two items might be overlapping.
 9. Open **MCP servers** from the sidebar to see every server configured across your tools, global and per-project, and jump to its config file.
 
 ## Settings

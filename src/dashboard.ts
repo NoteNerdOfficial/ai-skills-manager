@@ -1,9 +1,15 @@
 import { readFileSync, statSync } from "fs";
 import { ItemMetadata } from "./types";
+import { stripFrontmatter } from "./format";
 
 export interface DashboardMetric {
   item: ItemMetadata;
+  /** Full representative file size. This is a source-size metric, not a prompt-cost metric. */
   charCount: number;
+  /** Estimated metadata exposed before a skill/agent is invoked. Null means tool-dependent. */
+  alwaysAvailableCharCount: number | null;
+  /** Estimated instruction body loaded when a skill/agent is invoked. Null means tool-dependent. */
+  invocationCharCount: number | null;
   mtimeMs: number;
 }
 
@@ -28,26 +34,34 @@ export function isSameName(a: ItemMetadata, b: ItemMetadata): boolean {
   return a.type === b.type && a.name.trim().toLowerCase() === b.name.trim().toLowerCase();
 }
 
-/** Reads each item's single representative file (its `sourcePath` — a multi-file skill's is its
- *  SKILL.md, same file the detail rail reads) to measure the context footprint it actually costs
- *  once loaded. An unreadable file (permissions, mid-move) is skipped rather than failing the
- *  whole dashboard. */
+/** Reads each item's single representative file (a multi-file skill's is its SKILL.md).
+ *
+ * `charCount` remains the complete source-file size for ranking/prune purposes. For skills and
+ * agents, the two context estimates intentionally separate the metadata that is available before
+ * invocation from the instruction body loaded on invocation. Commands and rules are left null
+ * until the app has a per-tool loading policy for them; pretending their file size is a per-turn
+ * cost would be more misleading than useful.
+ */
 export function computeDashboardMetrics(items: ItemMetadata[]): DashboardMetric[] {
   const metrics: DashboardMetric[] = [];
   for (const item of items) {
-    let charCount: number;
+    let content: string;
     try {
-      charCount = readFileSync(item.sourcePath, "utf-8").length;
+      content = readFileSync(item.sourcePath, "utf-8");
     } catch {
       continue;
     }
+    const charCount = content.length;
+    const isSkillOrAgent = item.type === "skill" || item.type === "agent";
+    const alwaysAvailableCharCount = isSkillOrAgent ? `${item.name}\n${item.description}`.length : null;
+    const invocationCharCount = isSkillOrAgent ? stripFrontmatter(content).length : null;
     let mtimeMs = 0;
     try {
       mtimeMs = statSync(item.sourcePath).mtimeMs;
     } catch {
       // leave at 0
     }
-    metrics.push({ item, charCount, mtimeMs });
+    metrics.push({ item, charCount, alwaysAvailableCharCount, invocationCharCount, mtimeMs });
   }
   return metrics;
 }
@@ -59,7 +73,7 @@ function percentile(sorted: number[], p: number): number {
 }
 
 /** Self-scaling rather than a fixed byte threshold, which would be wrong for both a five-skill
- *  vault and a five-hundred-skill one: flags items in the top quartile of enabled context cost
+ *  vault and a five-hundred-skill one: flags items in the top quartile of enabled source size
  *  that also haven't been touched in a while — a free proxy for "probably not earning its keep,"
  *  without needing real invocation-usage tracking. */
 export function findPruneCandidates(metrics: DashboardMetric[], staleDays = 90): DashboardMetric[] {

@@ -4000,7 +4000,7 @@ export class LibraryView extends ItemView {
     ).open();
   }
 
-  // ---------- Dashboard: context cost, ranked, plus prune/overlap flags ----------
+  // ---------- Dashboard: source/context estimates, ranked, plus prune/overlap flags ----------
 
   /** realPath !== sourcePath is exactly what fs.realpathSync resolving through a symlink looks
    *  like (same check the detail pane uses for "→ symlinked from ..."), so it doubles as "is this
@@ -4135,13 +4135,35 @@ export class LibraryView extends ItemView {
     const titleRow = headerLeft.createDiv({ cls: "skillmanager-title-row" });
     titleRow.createEl("h2", { text: "Dashboard", cls: "skillmanager-title" });
     headerLeft.createDiv({
-      text: "Context usage across enabled skills, agents, commands, and rules. Calibrate for optimal performance.",
+      text: "Source size and estimated context usage across enabled items. Tool-specific loading rules will refine commands and rules later.",
       cls: "skillmanager-subtitle",
     });
     const headerStats = headerTop.createDiv({ cls: "skillmanager-dash-header-stats" });
     const totalChars = metrics.reduce((sum, m) => sum + m.charCount, 0);
+    const availableChars = metrics.reduce((sum, m) => sum + (m.alwaysAvailableCharCount ?? 0), 0);
+    const invocationChars = metrics.reduce((sum, m) => sum + (m.invocationCharCount ?? 0), 0);
     this.renderDashboardStat(headerStats, "Enabled", String(metrics.length));
-    this.renderDashboardStat(headerStats, "Est. tokens", formatTokens(totalChars).replace("~", ""));
+    this.renderDashboardStat(
+      headerStats,
+      "Source tokens",
+      formatTokens(totalChars).replace("~", ""),
+      "",
+      "Estimated tokens in each representative source file. This is a file-size estimate, not necessarily per-turn context."
+    );
+    this.renderDashboardStat(
+      headerStats,
+      "Available",
+      formatTokens(availableChars).replace("~", ""),
+      "skillmanager-dash-stat-accent",
+      "Estimated name-and-description metadata exposed before a skill or agent is invoked. Commands and rules are not included until tool-specific loading policies are modeled."
+    );
+    this.renderDashboardStat(
+      headerStats,
+      "On invoke",
+      formatTokens(invocationChars).replace("~", ""),
+      "",
+      "Estimated instruction-body tokens loaded when a skill or agent is invoked. Companion files are loaded on demand and are not included here."
+    );
     this.renderDashboardStat(headerStats, "Prune", String(pruneCount), pruneCount ? "skillmanager-dash-stat-danger" : "");
     this.renderDashboardStat(headerStats, "Overlaps", String(overlapPairs.length), overlapPairs.length ? "skillmanager-dash-stat-accent" : "");
     header.createDiv({ cls: "skillmanager-dash-divider" });
@@ -4182,9 +4204,15 @@ export class LibraryView extends ItemView {
     });
   }
 
-  private renderDashboardStat(parent: HTMLElement, label: string, value: string, accentCls = "") {
+  private renderDashboardStat(parent: HTMLElement, label: string, value: string, accentCls = "", tooltip?: string) {
     const stat = parent.createDiv({ cls: "skillmanager-dash-stat" });
-    stat.createDiv({ text: label, cls: "skillmanager-dash-stat-label" });
+    const labelEl = stat.createDiv({ cls: "skillmanager-dash-stat-label" });
+    labelEl.createSpan({ text: label });
+    if (tooltip) {
+      const infoIcon = labelEl.createSpan({ cls: "skillmanager-dash-stat-info" });
+      setIcon(infoIcon, "info");
+      setTooltip(labelEl, tooltip, { placement: "top" });
+    }
     stat.createDiv({ text: value, cls: `skillmanager-dash-stat-value ${accentCls}`.trim() });
   }
 
@@ -4626,14 +4654,14 @@ export class LibraryView extends ItemView {
       cls: "skillmanager-subtitle",
     });
     const introRow = section.createDiv({ cls: "skillmanager-subtitle" });
-    introRow.createSpan({ text: "Unused skills still cost context every turn. " });
+    introRow.createSpan({ text: "Unused skills and agents still expose metadata every turn. " });
     const whyLink = introRow.createEl("a", { text: "Why this matters", cls: "skillmanager-subtitle-link" });
     whyLink.addEventListener("click", (evt) => {
       evt.preventDefault();
       new InfoModal(
         this.app,
         "Why this matters",
-        "An enabled skill or agent costs context on every turn just by being available to the model — its name and description both go into the system prompt whether it's ever invoked or not. An unused one is pure overhead until you disable it."
+        "For skills and agents, the available estimate represents metadata exposed before invocation. The instruction body is counted separately under On invoke; companion files are loaded on demand. Commands and rules remain tool-dependent until their loading policies are modeled."
       ).open();
     });
 
@@ -4894,14 +4922,15 @@ export class LibraryView extends ItemView {
     };
     row("Size", formatBytes(fileSize));
     row("Length", `${this.detailContent.length.toLocaleString()} chars`);
-    // While this item is enabled, this is roughly what it costs every single turn just by being
-    // available — not only when it's actually invoked (see the Dashboard's Prune candidates for
-    // the same point made in aggregate, across everything currently enabled).
-    row(
-      "Context",
-      formatTokens(this.detailContent.length),
-      "Est. tokens this adds to the context window on every turn while enabled, whether it's invoked or not."
-    );
+    row("File tokens", formatTokens(this.detailContent.length), "Estimated tokens in this file. This is a source-size estimate, not necessarily per-turn context.");
+    if (filePath === item.sourcePath && (item.type === "skill" || item.type === "agent")) {
+      const availableChars = `${item.name}\n${item.description}`.length;
+      const invocationChars = stripFrontmatter(this.detailContent).length;
+      row("Available", formatTokens(availableChars), "Estimated metadata exposed before invocation: the item's name and description.");
+      row("On invoke", formatTokens(invocationChars), "Estimated instruction-body tokens loaded when this skill or agent is invoked.");
+    } else if (filePath === item.sourcePath) {
+      row("Context", "Tool-dependent", "Commands and rules have tool-specific loading behavior. Their context cost is not estimated yet.");
+    }
     row("Modified", formatDate(modified));
     row("Type", TYPE_LABEL_SINGULAR[item.type]);
   }

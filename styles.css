@@ -2543,6 +2543,19 @@ input.skillmanager-tag-add-input {
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
   margin-bottom: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.skillmanager-dash-stat-info {
+  display: inline-flex;
+  cursor: help;
+}
+
+.skillmanager-dash-stat-info svg {
+  width: 11px;
+  height: 11px;
 }
 
 .skillmanager-dash-stat-value {

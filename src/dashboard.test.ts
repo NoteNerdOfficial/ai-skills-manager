@@ -40,7 +40,26 @@ describe("computeDashboardMetrics", () => {
     const metrics = computeDashboardMetrics([makeItem({ sourcePath: filePath, name: "a" })]);
     expect(metrics).toHaveLength(1);
     expect(metrics[0].charCount).toBe(5);
+    expect(metrics[0].alwaysAvailableCharCount).toBe("a\n".length);
+    expect(metrics[0].invocationCharCount).toBe(5);
     expect(metrics[0].mtimeMs).toBeGreaterThan(0);
+  });
+
+  it("separates skill metadata from the instruction body", () => {
+    const filePath = join(root, "SKILL.md");
+    const content = "---\nname: review\ndescription: Review changes\n---\n\nRead the diff carefully.";
+    writeFileSync(filePath, content, { encoding: "utf-8", flag: "w" });
+    const metrics = computeDashboardMetrics([makeItem({ sourcePath: filePath, name: "review", description: "Review changes" })]);
+    expect(metrics[0].alwaysAvailableCharCount).toBe("review\nReview changes".length);
+    expect(metrics[0].invocationCharCount).toBe("\nRead the diff carefully.".length);
+  });
+
+  it("does not claim a universal context cost for commands and rules", () => {
+    const filePath = join(root, "command.md");
+    writeFileSync(filePath, "---\nname: deploy\n---\nRun deploy.");
+    const metrics = computeDashboardMetrics([makeItem({ sourcePath: filePath, type: "command", name: "deploy" })]);
+    expect(metrics[0].alwaysAvailableCharCount).toBeNull();
+    expect(metrics[0].invocationCharCount).toBeNull();
   });
 
   it("skips an item whose file can't be read instead of throwing", () => {
@@ -59,9 +78,9 @@ describe("findPruneCandidates", () => {
     const now = Date.now();
     const oldMs = now - 200 * 24 * 60 * 60 * 1000;
     const metrics = [
-      { item: makeItem({ sourcePath: "/a", name: "small-recent" }), charCount: 100, mtimeMs: now },
-      { item: makeItem({ sourcePath: "/b", name: "large-recent" }), charCount: 10000, mtimeMs: now },
-      { item: makeItem({ sourcePath: "/c", name: "large-stale" }), charCount: 10000, mtimeMs: oldMs },
+      { item: makeItem({ sourcePath: "/a", name: "small-recent" }), charCount: 100, alwaysAvailableCharCount: null, invocationCharCount: null, mtimeMs: now },
+      { item: makeItem({ sourcePath: "/b", name: "large-recent" }), charCount: 10000, alwaysAvailableCharCount: null, invocationCharCount: null, mtimeMs: now },
+      { item: makeItem({ sourcePath: "/c", name: "large-stale" }), charCount: 10000, alwaysAvailableCharCount: null, invocationCharCount: null, mtimeMs: oldMs },
     ];
     const candidates = findPruneCandidates(metrics, 90);
     expect(candidates.map((c) => c.item.name)).toEqual(["large-stale"]);
@@ -70,8 +89,8 @@ describe("findPruneCandidates", () => {
   it("doesn't flag anything when every item is the same size", () => {
     const oldMs = Date.now() - 200 * 24 * 60 * 60 * 1000;
     const metrics = [
-      { item: makeItem({ sourcePath: "/a", name: "a" }), charCount: 500, mtimeMs: oldMs },
-      { item: makeItem({ sourcePath: "/b", name: "b" }), charCount: 500, mtimeMs: oldMs },
+      { item: makeItem({ sourcePath: "/a", name: "a" }), charCount: 500, alwaysAvailableCharCount: null, invocationCharCount: null, mtimeMs: oldMs },
+      { item: makeItem({ sourcePath: "/b", name: "b" }), charCount: 500, alwaysAvailableCharCount: null, invocationCharCount: null, mtimeMs: oldMs },
     ];
     // Same-size set still has a well-defined 75th percentile equal to that size, so both
     // qualify on size — this just documents that behavior rather than asserting emptiness.
