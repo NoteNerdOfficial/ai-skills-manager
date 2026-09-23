@@ -3,7 +3,7 @@
   "name": "AI Skills Manager",
   "version": "0.1.0",
   "minAppVersion": "1.7.2",
-  "description": "Browse, tag, and organize AI skills, agents, and commands across coding tools — from inside Obsidian.",
+  "description": "Browse, tag, enable, and install AI skills, agents, commands, and rules across coding tools, with usage insights and MCP visibility, directly from Obsidian.",
   "author": "notenerd",
   "authorUrl": "",
   "fundingUrl": "",
