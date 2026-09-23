@@ -89,6 +89,8 @@ Checkmarks reflect the paths scanned by default. Every one of them, plus a few d
 
 Support for additional tools and edge cases is welcome. If you use one of these tools and can test a layout, share feedback, or improve its scanner, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+![All tools page showing configured tools, item counts, and enable or disable controls](images/all-tools.png)
+
 ## Installation
 
 1. In Obsidian, open **Settings → Community plugins**.
@@ -119,7 +121,6 @@ AI Skills Manager is desktop-only: it reads and writes files directly on disk (a
 - **Tools**: every tool's global and project-scoped paths, editable per type, with a live "found/not found" check against your actual filesystem. Managed from the "All tools" page in the library sidebar.
 - **Project workspaces**: managed from the Workspaces section of the library sidebar rather than the settings tab; add, edit, or remove project folders (beyond the current vault) to scan for project-local skills.
 
-![All tools page showing configured tools, item counts, and enable or disable controls](images/all-tools.png)
 
 ## Development
 
