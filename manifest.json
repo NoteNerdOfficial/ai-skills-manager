@@ -3,7 +3,7 @@
   "name": "AI Skills Manager",
   "version": "0.1.0",
   "minAppVersion": "1.7.2",
-  "description": "Browse, tag, enable, and install AI skills, agents, commands, and rules across coding tools, with usage insights and MCP visibility, directly from Obsidian.",
+  "description": "Manage AI skills, agents, commands, and rules for Claude, Codex, Pi, and more, with usage insights and MCP visibility.",
   "author": "notenerd",
   "authorUrl": "",
   "fundingUrl": "",

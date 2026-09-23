@@ -128,6 +128,10 @@ npm run build   # type-check + production build
 npm run lint
 ```
 
+## Contributing
+
+Contributions are welcome, especially from people who use tools we cannot test locally. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, scanner guidance, fixture patterns, and testing expectations.
+
 ## License
 
 MIT
