@@ -2577,7 +2577,7 @@ input.skillmanager-tag-add-input {
   border-top: 1px solid var(--background-modifier-border);
 }
 
-/* ---- Cost by tool: clickable cards, a type legend, spans full width, scrolls if crowded ---- */
+/* ---- Source size by tool: clickable cards, a type legend, spans full width, scrolls if crowded ---- */
 
 .skillmanager-dash-legend {
   display: flex;
@@ -2683,6 +2683,15 @@ input.skillmanager-tag-add-input {
   font-weight: 500;
   color: var(--text-normal);
   margin: 2px 0 8px;
+}
+
+.skillmanager-dash-tile-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  margin: -2px 0 8px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
 }
 
 .skillmanager-dash-tile-dot {

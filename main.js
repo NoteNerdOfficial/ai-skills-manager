@@ -3403,6 +3403,10 @@ var LibraryView = class extends import_obsidian14.ItemView {
     this.sortOrder = "name-asc";
     this.typeFilter = null;
     this.toolFilter = null;
+    /** Page-local cross-filters: these narrow a type/tool page without activating the other
+     *  sidebar navigation row, so the primary page scope remains visually unambiguous. */
+    this.pageToolFilter = null;
+    this.pageTypeFilter = null;
     this.collectionFilter = null;
     this.projectFilter = null;
     this.pluginFilter = null;
@@ -3469,7 +3473,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
      *  the same places — the sidebar renders far more often than the Dashboard itself, so this must
      *  stay a cache, not a recompute-on-every-render. */
     this.dashboardAttentionCount = null;
-    /** Which "Cost by tool" card is selected — filters the ranked list below to just that tool;
+    /** Which "Source size by tool" card is selected — filters the ranked list below to just that tool;
      *  null means "All tools." */
     this.dashboardActiveTool = null;
     /** Which type pill is selected above the Ranked list — ANDs with dashboardActiveTool; null
@@ -3926,6 +3930,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
   clearScopeFilters() {
     this.typeFilter = null;
     this.toolFilter = null;
+    this.pageToolFilter = null;
+    this.pageTypeFilter = null;
     this.collectionFilter = null;
     this.projectFilter = null;
     this.pluginFilter = null;
@@ -3965,6 +3971,10 @@ var LibraryView = class extends import_obsidian14.ItemView {
       if (this.typeFilter && item.type !== this.typeFilter)
         return false;
       if (this.toolFilter && item.tool !== this.toolFilter)
+        return false;
+      if (this.pageTypeFilter && item.type !== this.pageTypeFilter)
+        return false;
+      if (this.pageToolFilter && item.tool !== this.pageToolFilter)
         return false;
       if (this.collectionFilter && !item.collections.includes(this.collectionFilter))
         return false;
@@ -6509,8 +6519,71 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const controls = tagbar.createDiv({ cls: "skillmanager-tagbar-controls" });
     if (this.typeFilter === "rule")
       this.renderRuleKindButton(controls);
+    if (this.typeFilter)
+      this.renderToolFilterButton(controls);
+    if (this.toolFilter)
+      this.renderTypeFilterButton(controls);
     this.renderSourceButton(controls);
     this.renderSortButton(controls);
+  }
+  /** A type page can narrow to one tool without changing the type sidebar scope. */
+  renderToolFilterButton(container) {
+    var _a, _b;
+    const settings = this.getSettings();
+    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by tool" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    (0, import_obsidian14.setIcon)(icon, "filter");
+    const label = this.pageToolFilter ? (_b = (_a = settings.tools.find((t) => t.id === this.pageToolFilter)) == null ? void 0 : _a.name) != null ? _b : "Tool" : "All tools";
+    btn.createSpan({ text: label, cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    (0, import_obsidian14.setIcon)(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new import_obsidian14.Menu();
+      menu.addItem(
+        (menuItem) => menuItem.setTitle("All tools").setChecked(this.pageToolFilter === null).onClick(() => {
+          this.pageToolFilter = null;
+          this.render();
+        })
+      );
+      for (const tool of settings.tools) {
+        const count = this.items.filter((item) => item.type === this.typeFilter && item.tool === tool.id).length;
+        menu.addItem(
+          (menuItem) => menuItem.setTitle(`${tool.name} (${count})`).setChecked(this.pageToolFilter === tool.id).onClick(() => {
+            this.pageToolFilter = tool.id;
+            this.render();
+          })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
+  }
+  /** A tool page can narrow to one type without changing the tool sidebar scope. */
+  renderTypeFilterButton(container) {
+    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by type" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    (0, import_obsidian14.setIcon)(icon, "filter");
+    btn.createSpan({ text: this.pageTypeFilter ? TYPE_LABELS[this.pageTypeFilter] : "All types", cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    (0, import_obsidian14.setIcon)(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new import_obsidian14.Menu();
+      menu.addItem(
+        (menuItem) => menuItem.setTitle("All types").setChecked(this.pageTypeFilter === null).onClick(() => {
+          this.pageTypeFilter = null;
+          this.render();
+        })
+      );
+      for (const type of Object.keys(TYPE_LABELS)) {
+        const count = this.items.filter((item) => item.tool === this.toolFilter && item.type === type).length;
+        menu.addItem(
+          (menuItem) => menuItem.setTitle(`${TYPE_LABELS[type]} (${count})`).setChecked(this.pageTypeFilter === type).onClick(() => {
+            this.pageTypeFilter = type;
+            this.render();
+          })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
   }
   /** Only rendered while typeFilter === "rule" (see renderTagBar) — lets a mixed Rules list (a
    *  tool's single CLAUDE.md-style instructions file alongside another tool's directory of many
@@ -7123,7 +7196,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  there's room; falls back to horizontal scroll once there are too many tools to fit. */
   renderDashboardToolCards(body, metrics) {
     var _a;
-    this.renderDashboardSectionHead(body, "Cost by tool", (right) => this.renderDashboardTypeLegend(right));
+    this.renderDashboardSectionHead(body, "Source size by tool", (right) => this.renderDashboardTypeLegend(right));
     const tileGrid = body.createDiv({ cls: "skillmanager-dash-tiles" });
     const byType = (list) => [...list].sort((a, b) => a.item.type.localeCompare(b.item.type));
     const groups = /* @__PURE__ */ new Map();
@@ -7144,6 +7217,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       allTile.addClass("is-active");
     allTile.createDiv({ text: "All tools", cls: "skillmanager-dash-tile-name" });
     allTile.createDiv({ text: formatTokens(grandTotal), cls: "skillmanager-dash-tile-value" });
+    this.renderDashboardTileContext(allTile, metrics);
     this.renderDashboardStackedBar(allTile.createDiv({ cls: "skillmanager-dash-tile-bar" }), byType(metrics), grandTotal);
     allTile.addEventListener("click", () => selectTool(null));
     const toolName = (toolId) => {
@@ -7159,9 +7233,30 @@ var LibraryView = class extends import_obsidian14.ItemView {
       tileHead.createDiv({ text: toolName(tool), cls: "skillmanager-dash-tile-name" });
       tileHead.createSpan({ cls: "skillmanager-dash-tile-dot" }).style.background = DASHBOARD_TYPE_COLORS[this.dashboardDominantType(list)];
       tile.createDiv({ text: formatTokens(total), cls: "skillmanager-dash-tile-value" });
+      this.renderDashboardTileContext(tile, list);
       this.renderDashboardStackedBar(tile.createDiv({ cls: "skillmanager-dash-tile-bar" }), byType(list), grandTotal);
       tile.addEventListener("click", () => selectTool(tool));
     }
+  }
+  /** Adds the context split to each source-size card. Null metrics are deliberately ignored in
+   *  the totals: commands and rules remain tool-dependent until their loading policies are known. */
+  renderDashboardTileContext(tile, list) {
+    const known = list.some((m) => m.alwaysAvailableCharCount !== null || m.invocationCharCount !== null);
+    const context = tile.createDiv({ cls: "skillmanager-dash-tile-context" });
+    if (!known) {
+      context.createSpan({ text: "Context: tool-dependent" });
+      return;
+    }
+    const available = list.reduce((sum, m) => {
+      var _a;
+      return sum + ((_a = m.alwaysAvailableCharCount) != null ? _a : 0);
+    }, 0);
+    const invocation = list.reduce((sum, m) => {
+      var _a;
+      return sum + ((_a = m.invocationCharCount) != null ? _a : 0);
+    }, 0);
+    context.createSpan({ text: `Available ${formatTokens(available)}` });
+    context.createSpan({ text: `On invoke ${formatTokens(invocation)}` });
   }
   /** Collapsed to a handful by default, filtered by whichever tool card is active and/or type
    *  pill is selected (the two AND together — e.g. "Claude Code" + "Command"). */

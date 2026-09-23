@@ -195,6 +195,10 @@ export class LibraryView extends ItemView {
   private sortOrder: SortOrder = "name-asc";
   private typeFilter: ItemType | null = null;
   private toolFilter: string | null = null;
+  /** Page-local cross-filters: these narrow a type/tool page without activating the other
+   *  sidebar navigation row, so the primary page scope remains visually unambiguous. */
+  private pageToolFilter: string | null = null;
+  private pageTypeFilter: ItemType | null = null;
   private collectionFilter: string | null = null;
   private projectFilter: string | null = null;
   private pluginFilter: string | null = null;
@@ -261,7 +265,7 @@ export class LibraryView extends ItemView {
    *  the same places — the sidebar renders far more often than the Dashboard itself, so this must
    *  stay a cache, not a recompute-on-every-render. */
   private dashboardAttentionCount: number | null = null;
-  /** Which "Cost by tool" card is selected — filters the ranked list below to just that tool;
+  /** Which "Source size by tool" card is selected — filters the ranked list below to just that tool;
    *  null means "All tools." */
   private dashboardActiveTool: string | null = null;
   /** Which type pill is selected above the Ranked list — ANDs with dashboardActiveTool; null
@@ -769,6 +773,8 @@ export class LibraryView extends ItemView {
   private clearScopeFilters() {
     this.typeFilter = null;
     this.toolFilter = null;
+    this.pageToolFilter = null;
+    this.pageTypeFilter = null;
     this.collectionFilter = null;
     this.projectFilter = null;
     this.pluginFilter = null;
@@ -822,6 +828,8 @@ export class LibraryView extends ItemView {
       if (this.favoritesOnly && !item.favorite) return false;
       if (this.typeFilter && item.type !== this.typeFilter) return false;
       if (this.toolFilter && item.tool !== this.toolFilter) return false;
+      if (this.pageTypeFilter && item.type !== this.pageTypeFilter) return false;
+      if (this.pageToolFilter && item.tool !== this.pageToolFilter) return false;
       if (this.collectionFilter && !item.collections.includes(this.collectionFilter)) return false;
       if (this.projectFilter && item.projectId !== this.projectFilter) return false;
       if (this.pluginFilter && item.pluginId !== this.pluginFilter) return false;
@@ -3561,8 +3569,82 @@ export class LibraryView extends ItemView {
 
     const controls = tagbar.createDiv({ cls: "skillmanager-tagbar-controls" });
     if (this.typeFilter === "rule") this.renderRuleKindButton(controls);
+    if (this.typeFilter) this.renderToolFilterButton(controls);
+    if (this.toolFilter) this.renderTypeFilterButton(controls);
     this.renderSourceButton(controls);
     this.renderSortButton(controls);
+  }
+
+  /** A type page can narrow to one tool without changing the type sidebar scope. */
+  private renderToolFilterButton(container: HTMLElement) {
+    const settings = this.getSettings();
+    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by tool" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    setIcon(icon, "filter");
+    const label = this.pageToolFilter ? settings.tools.find((t) => t.id === this.pageToolFilter)?.name ?? "Tool" : "All tools";
+    btn.createSpan({ text: label, cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new Menu();
+      menu.addItem((menuItem) =>
+        menuItem
+          .setTitle("All tools")
+          .setChecked(this.pageToolFilter === null)
+          .onClick(() => {
+            this.pageToolFilter = null;
+            this.render();
+          })
+      );
+      for (const tool of settings.tools) {
+        const count = this.items.filter((item) => item.type === this.typeFilter && item.tool === tool.id).length;
+        menu.addItem((menuItem) =>
+          menuItem
+            .setTitle(`${tool.name} (${count})`)
+            .setChecked(this.pageToolFilter === tool.id)
+            .onClick(() => {
+              this.pageToolFilter = tool.id;
+              this.render();
+            })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
+  }
+
+  /** A tool page can narrow to one type without changing the tool sidebar scope. */
+  private renderTypeFilterButton(container: HTMLElement) {
+    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by type" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    setIcon(icon, "filter");
+    btn.createSpan({ text: this.pageTypeFilter ? TYPE_LABELS[this.pageTypeFilter] : "All types", cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new Menu();
+      menu.addItem((menuItem) =>
+        menuItem
+          .setTitle("All types")
+          .setChecked(this.pageTypeFilter === null)
+          .onClick(() => {
+            this.pageTypeFilter = null;
+            this.render();
+          })
+      );
+      for (const type of Object.keys(TYPE_LABELS) as ItemType[]) {
+        const count = this.items.filter((item) => item.tool === this.toolFilter && item.type === type).length;
+        menu.addItem((menuItem) =>
+          menuItem
+            .setTitle(`${TYPE_LABELS[type]} (${count})`)
+            .setChecked(this.pageTypeFilter === type)
+            .onClick(() => {
+              this.pageTypeFilter = type;
+              this.render();
+            })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
   }
 
   /** Only rendered while typeFilter === "rule" (see renderTagBar) — lets a mixed Rules list (a
@@ -4289,7 +4371,7 @@ export class LibraryView extends ItemView {
    *  since the ranking alone doesn't make each item's tool obvious. Grows to fill the row when
    *  there's room; falls back to horizontal scroll once there are too many tools to fit. */
   private renderDashboardToolCards(body: HTMLElement, metrics: DashboardMetric[]) {
-    this.renderDashboardSectionHead(body, "Cost by tool", (right) => this.renderDashboardTypeLegend(right));
+    this.renderDashboardSectionHead(body, "Source size by tool", (right) => this.renderDashboardTypeLegend(right));
     const tileGrid = body.createDiv({ cls: "skillmanager-dash-tiles" });
 
     const byType = (list: DashboardMetric[]) => [...list].sort((a, b) => a.item.type.localeCompare(b.item.type));
@@ -4312,6 +4394,7 @@ export class LibraryView extends ItemView {
     if (!this.dashboardActiveTool) allTile.addClass("is-active");
     allTile.createDiv({ text: "All tools", cls: "skillmanager-dash-tile-name" });
     allTile.createDiv({ text: formatTokens(grandTotal), cls: "skillmanager-dash-tile-value" });
+    this.renderDashboardTileContext(allTile, metrics);
     this.renderDashboardStackedBar(allTile.createDiv({ cls: "skillmanager-dash-tile-bar" }), byType(metrics), grandTotal);
     allTile.addEventListener("click", () => selectTool(null));
 
@@ -4324,9 +4407,25 @@ export class LibraryView extends ItemView {
       tileHead.createDiv({ text: toolName(tool), cls: "skillmanager-dash-tile-name" });
       tileHead.createSpan({ cls: "skillmanager-dash-tile-dot" }).style.background = DASHBOARD_TYPE_COLORS[this.dashboardDominantType(list)];
       tile.createDiv({ text: formatTokens(total), cls: "skillmanager-dash-tile-value" });
+      this.renderDashboardTileContext(tile, list);
       this.renderDashboardStackedBar(tile.createDiv({ cls: "skillmanager-dash-tile-bar" }), byType(list), grandTotal);
       tile.addEventListener("click", () => selectTool(tool));
     }
+  }
+
+  /** Adds the context split to each source-size card. Null metrics are deliberately ignored in
+   *  the totals: commands and rules remain tool-dependent until their loading policies are known. */
+  private renderDashboardTileContext(tile: HTMLElement, list: DashboardMetric[]) {
+    const known = list.some((m) => m.alwaysAvailableCharCount !== null || m.invocationCharCount !== null);
+    const context = tile.createDiv({ cls: "skillmanager-dash-tile-context" });
+    if (!known) {
+      context.createSpan({ text: "Context: tool-dependent" });
+      return;
+    }
+    const available = list.reduce((sum, m) => sum + (m.alwaysAvailableCharCount ?? 0), 0);
+    const invocation = list.reduce((sum, m) => sum + (m.invocationCharCount ?? 0), 0);
+    context.createSpan({ text: `Available ${formatTokens(available)}` });
+    context.createSpan({ text: `On invoke ${formatTokens(invocation)}` });
   }
 
   /** Collapsed to a handful by default, filtered by whichever tool card is active and/or type
