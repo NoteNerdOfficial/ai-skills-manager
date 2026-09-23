@@ -87,6 +87,8 @@ Rules is a mix of directories of many rule files (e.g. Cursor's `.cursor/rules/`
 
 Checkmarks reflect the paths scanned by default. Every one of them, plus a few documented-but-unconfirmed guesses for newer tools, can be added, changed, or turned off per tool in Settings.
 
+Support for additional tools and edge cases is welcome. If you use one of these tools and can test a layout, share feedback, or improve its scanner, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Installation
 
 1. In Obsidian, open **Settings → Community plugins**.
