@@ -5903,6 +5903,9 @@ var LibraryView = class extends import_obsidian14.ItemView {
     menu.addItem(
       (menuItem) => menuItem.setTitle("Open config file").setIcon("external-link").onClick(() => void this.openMcpConfigFile(server))
     );
+    menu.addItem(
+      (menuItem) => menuItem.setTitle("Open containing folder").setIcon("folder-open").onClick(() => void this.openContainingFolder(server.sourcePath))
+    );
     if (server.config.command) {
       menu.addItem(
         (menuItem) => menuItem.setTitle("Copy command").setIcon("copy").onClick(() => void this.copyMcpCommand(server))
@@ -5917,6 +5920,49 @@ var LibraryView = class extends import_obsidian14.ItemView {
   electronShell() {
     const req = window.require;
     return req ? req("electron").shell : null;
+  }
+  fileManagerLabel() {
+    if (process.platform === "darwin")
+      return "Reveal in Finder";
+    if (process.platform === "win32")
+      return "Show in File Explorer";
+    return "Show in file manager";
+  }
+  /** Opens a directory directly, or reveals a flat file in its containing file manager folder. */
+  async revealItemLocation(item) {
+    const unit = linkableUnit(item.sourcePath);
+    const shell = this.electronShell();
+    if (!shell) {
+      new import_obsidian14.Notice("Can't open files from this device, try Obsidian's desktop app.");
+      return;
+    }
+    if (unit.isDirectory) {
+      const errorText = await shell.openPath(unit.path);
+      if (errorText)
+        new import_obsidian14.Notice(`Couldn't open ${unit.path}: ${errorText}`);
+      return;
+    }
+    const electron = window.require;
+    if (!electron) {
+      new import_obsidian14.Notice("Can't open files from this device, try Obsidian's desktop app.");
+      return;
+    }
+    try {
+      electron("electron").shell.showItemInFolder(unit.path);
+    } catch (e) {
+      new import_obsidian14.Notice(`Couldn't reveal ${unit.path}: ${errorMessage(e)}`);
+    }
+  }
+  async openContainingFolder(filePath) {
+    const shell = this.electronShell();
+    if (!shell) {
+      new import_obsidian14.Notice("Can't open files from this device, try Obsidian's desktop app.");
+      return;
+    }
+    const folderPath = (0, import_path13.dirname)(filePath);
+    const errorText = await shell.openPath(folderPath);
+    if (errorText)
+      new import_obsidian14.Notice(`Couldn't open ${folderPath}: ${errorText}`);
   }
   /** Hands off to the OS's own editor rather than writing to the config ourselves — see the plan
    *  notes on why this plugin doesn't parse-and-rewrite a tool's live MCP config. `shell.openPath`
@@ -6895,6 +6941,11 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const isSymlink = this.isSymlinkedItem(item);
     const isProjectLinked = isSymlink && item.projectId !== null;
     const menu = new import_obsidian14.Menu();
+    if (item.pluginId === null) {
+      menu.addItem(
+        (menuItem) => menuItem.setTitle(this.fileManagerLabel()).setIcon("folder-open").onClick(() => void this.revealItemLocation(item))
+      );
+    }
     menu.addItem(
       (menuItem) => menuItem.setTitle(item.favorite ? "Remove from favourites" : "Add to favourites").setIcon(item.favorite ? "star-off" : "star").onClick(() => {
         void this.applyItemUpdate(item.entryId, { favorite: !item.favorite });
