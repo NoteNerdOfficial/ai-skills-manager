@@ -82,6 +82,7 @@ import { computeCompanionChanges, CompanionRow } from "../diff/companions";
 export const LIBRARY_VIEW_TYPE = "skillmanager-library-view";
 
 export type UpdateMode = "update" | "restore";
+type PluginBundleSortOrder = "name-asc" | "name-desc" | "items-desc" | "items-asc";
 
 /** A pending update/restore review, shown inline in the detail rail in place of the manifest's
  *  normal content (see renderDetailRail/renderDiffReview) rather than a separate view — scoped to
@@ -291,7 +292,7 @@ export class LibraryView extends ItemView {
   private pluginBundleToolFilter: string | null = null;
   private pluginBundleGroupFilter: string | null = null;
   private pluginBundleTagFilter: string | null = null;
-  private pluginBundleSortOrder: "name-asc" | "name-desc" | "items-desc" | "items-asc" = "name-asc";
+  private pluginBundleSortOrder: PluginBundleSortOrder = "name-asc";
   /** Independent from dashboardRankedExpanded — Top Skills & Agents and Ranked by cost are
    *  different lists and shouldn't share collapse state. */
   private dashboardTopSkillsExpanded = false;
@@ -1318,7 +1319,7 @@ export class LibraryView extends ItemView {
               .setWarning(true)
               .onClick(() => void this.deleteProject(project))
           );
-          menu.showAtMouseEvent(evt as MouseEvent);
+          menu.showAtMouseEvent(evt);
         });
       }
 
@@ -1476,7 +1477,7 @@ export class LibraryView extends ItemView {
             .setWarning(true)
             .onClick(() => void this.deleteCollection(collection))
         );
-        menu.showAtMouseEvent(evt as MouseEvent);
+        menu.showAtMouseEvent(evt);
       });
 
       row.addEventListener("click", () => {
@@ -2635,7 +2636,7 @@ export class LibraryView extends ItemView {
   }
 
   private renderPluginBundleSortButton(toolbar: HTMLElement) {
-    const options: { key: typeof this.pluginBundleSortOrder; label: string }[] = [
+    const options: { key: PluginBundleSortOrder; label: string }[] = [
       { key: "name-asc", label: "Name (A to Z)" },
       { key: "name-desc", label: "Name (Z to A)" },
       { key: "items-desc", label: "Items (high to low)" },

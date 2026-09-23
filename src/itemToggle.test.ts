@@ -215,7 +215,10 @@ describe("togglePluginEnabled", () => {
 
     togglePluginEnabled(makeTool(settingsPath), "foo@bar", true);
 
-    const written = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    const written = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+      enabledPlugins?: Record<string, boolean>;
+      permissions?: unknown;
+    };
     expect(written.enabledPlugins).toEqual({ "foo@bar": false });
     expect(written.permissions).toEqual({ allow: ["x"] }); // untouched
   });
@@ -226,7 +229,9 @@ describe("togglePluginEnabled", () => {
 
     togglePluginEnabled(makeTool(settingsPath), "foo@bar", true);
 
-    const written = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    const written = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
+      enabledPlugins?: Record<string, boolean>;
+    };
     expect(written.enabledPlugins).toEqual({ "foo@bar": false });
   });
 
