@@ -45,7 +45,7 @@ var TYPE_LABEL_SINGULAR = {
   command: "Command",
   rule: "Rule"
 };
-var DEFAULT_SECTION_ORDER = ["types", "plugins", "tools", "projects", "collections"];
+var DEFAULT_SECTION_ORDER = ["types", "extensions", "tools", "projects", "collections"];
 var DEFAULT_TOOLS = [
   {
     id: "claude-code",
@@ -156,6 +156,10 @@ var DEFAULT_TOOLS = [
       skill: "~/.codex/skills",
       command: "~/.codex/prompts",
       agent: "~/.codex/agents"
+    },
+    pluginsPaths: ["~/.codex/plugins/cache"],
+    pluginPaths: {
+      command: "commands"
     },
     // ~/.codex/skills/.system/ is Codex's own bundled default skill set (e.g. review-agent) —
     // not something the user installed or wrote.
@@ -740,17 +744,26 @@ function readPluginEnabledMap(settingsPath) {
     return {};
   }
 }
-function readPluginRepoUrl(installPath) {
-  const manifestPath = (0, import_path3.join)(installPath, ".claude-plugin", "plugin.json");
-  if (!(0, import_fs2.existsSync)(manifestPath))
-    return void 0;
-  try {
-    const raw = JSON.parse((0, import_fs2.readFileSync)(manifestPath, "utf-8"));
-    const repo = typeof raw.repository === "string" ? raw.repository : void 0;
-    return repo && /^https?:\/\/(www\.)?github\.com\//.test(repo) ? repo : void 0;
-  } catch (e) {
-    return void 0;
+function readPluginManifest(installPath) {
+  for (const folder of [".claude-plugin", ".codex-plugin"]) {
+    const manifestPath = (0, import_path3.join)(installPath, folder, "plugin.json");
+    if (!(0, import_fs2.existsSync)(manifestPath))
+      continue;
+    try {
+      const raw = JSON.parse((0, import_fs2.readFileSync)(manifestPath, "utf-8"));
+      return {
+        name: typeof raw.name === "string" ? raw.name : void 0,
+        repository: typeof raw.repository === "string" ? raw.repository : void 0
+      };
+    } catch (e) {
+      return {};
+    }
   }
+  return {};
+}
+function readPluginRepoUrl(installPath) {
+  const repo = readPluginManifest(installPath).repository;
+  return repo && /^https?:\/\/(www\.)?github\.com\//.test(repo) ? repo : void 0;
 }
 function readInstalledPlugins(registryPath, toolId, pluginsSettingsPath) {
   var _a, _b, _c;
@@ -766,6 +779,7 @@ function readInstalledPlugins(registryPath, toolId, pluginsSettingsPath) {
         plugins.push({
           id: key,
           name: key.split("@")[0],
+          group: key.split("@")[1],
           path: installPath,
           toolId,
           enabled: (_c = enabledMap[key]) != null ? _c : true,
@@ -778,17 +792,74 @@ function readInstalledPlugins(registryPath, toolId, pluginsSettingsPath) {
     return [];
   }
 }
+function readCachedPlugins(cachePaths, toolId) {
+  const plugins = [];
+  const seen = /* @__PURE__ */ new Set();
+  const seenPluginIds = /* @__PURE__ */ new Set();
+  for (const cachePath of cachePaths) {
+    if (!(0, import_fs2.existsSync)(cachePath))
+      continue;
+    let marketplaces;
+    try {
+      marketplaces = (0, import_fs2.readdirSync)(cachePath);
+    } catch (e) {
+      continue;
+    }
+    for (const marketplace of marketplaces) {
+      const marketplacePath = (0, import_path3.join)(cachePath, marketplace);
+      let pluginNames;
+      try {
+        pluginNames = (0, import_fs2.readdirSync)(marketplacePath);
+      } catch (e) {
+        continue;
+      }
+      for (const pluginName of pluginNames) {
+        const pluginPath = (0, import_path3.join)(marketplacePath, pluginName);
+        let versions;
+        try {
+          versions = (0, import_fs2.readdirSync)(pluginPath);
+        } catch (e) {
+          continue;
+        }
+        for (const version of versions) {
+          const installPath = (0, import_path3.join)(pluginPath, version);
+          if (!(0, import_fs2.existsSync)((0, import_path3.join)(installPath, ".codex-plugin")))
+            continue;
+          const pluginId = `codex:${marketplace}:${pluginName}`;
+          if (seenPluginIds.has(pluginId))
+            continue;
+          const realInstallPath = resolveRealPath(installPath);
+          if (seen.has(realInstallPath))
+            continue;
+          seen.add(realInstallPath);
+          seenPluginIds.add(pluginId);
+          const manifest = readPluginManifest(installPath);
+          plugins.push({
+            id: pluginId,
+            name: manifest.name || pluginName,
+            group: marketplace,
+            path: installPath,
+            toolId,
+            enabled: true,
+            repoUrl: readPluginRepoUrl(installPath)
+          });
+        }
+      }
+    }
+  }
+  return plugins;
+}
 function scanAllPlugins(tools) {
+  var _a, _b, _c;
   const items = [];
   const plugins = [];
   for (const tool of tools) {
-    if (!tool.pluginsRegistry)
-      continue;
-    const discovered = readInstalledPlugins(expandHome2(tool.pluginsRegistry), tool.id, tool.pluginsSettingsPath);
+    const discovered = tool.pluginsRegistry ? readInstalledPlugins(expandHome2(tool.pluginsRegistry), tool.id, tool.pluginsSettingsPath) : readCachedPlugins(((_a = tool.pluginsPaths) != null ? _a : []).map(expandHome2), tool.id);
     plugins.push(...discovered);
     for (const plugin of discovered) {
       for (const [type, rawPath] of Object.entries(tool.paths)) {
-        const found = scanDirectory((0, import_path3.join)(plugin.path, toPluginRelative(rawPath)), tool, type, null, plugin.id);
+        const pluginPath = (_c = (_b = tool.pluginPaths) == null ? void 0 : _b[type]) != null ? _c : toPluginRelative(rawPath);
+        const found = scanDirectory((0, import_path3.join)(plugin.path, pluginPath), tool, type, null, plugin.id);
         items.push(...plugin.enabled ? found : found.map((item) => ({ ...item, enabled: false })));
       }
     }
@@ -1015,12 +1086,20 @@ var PluginItemInfoModal = class extends import_obsidian3.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: `"${this.item.name}" can't be toggled on its own` });
-    contentEl.createEl("p", {
-      cls: "skillmanager-modal-meta",
-      text: `It's bundled in the "${this.plugin.name}" plugin. ${this.tool.name} only supports enabling or disabling a plugin as a whole \u2014 there's no way to turn off just one skill inside it.`
-    });
-    if (this.onInstallStandalone) {
+    if (this.item) {
+      contentEl.createEl("h3", { text: `"${this.item.name}" can't be toggled on its own` });
+      contentEl.createEl("p", {
+        cls: "skillmanager-modal-meta",
+        text: this.onTogglePlugin ? `It's bundled in the "${this.plugin.name}" plugin. ${this.tool.name} only supports enabling or disabling a plugin as a whole \u2014 there's no way to turn off just one skill inside it.` : `It's bundled in the "${this.plugin.name}" plugin managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable this plugin here.`
+      });
+    } else {
+      contentEl.createEl("h3", { text: `"${this.plugin.name}" can't be toggled here` });
+      contentEl.createEl("p", {
+        cls: "skillmanager-modal-meta",
+        text: `This plugin is managed by ${this.tool.name}. Use ${this.tool.name} to enable or disable it as a whole.`
+      });
+    }
+    if (this.item && this.onInstallStandalone) {
       contentEl.createEl("p", {
         cls: "skillmanager-modal-meta",
         text: `Want to manage "${this.item.name}" by itself instead? Install it separately via Discover, straight from the plugin's own repo. That copy lives outside the plugin and toggles individually like any other skill.`
@@ -1028,7 +1107,7 @@ var PluginItemInfoModal = class extends import_obsidian3.Modal {
     }
     const actions = contentEl.createDiv({ cls: "skillmanager-modal-actions" });
     actions.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
-    if (this.onInstallStandalone) {
+    if (this.item && this.onInstallStandalone) {
       const installBtn = actions.createEl("button", { text: "Install standalone copy\u2026" });
       installBtn.addEventListener("click", () => {
         var _a;
@@ -1036,21 +1115,24 @@ var PluginItemInfoModal = class extends import_obsidian3.Modal {
         (_a = this.onInstallStandalone) == null ? void 0 : _a.call(this);
       });
     }
-    const pluginToggleBtn = actions.createEl("button", {
-      text: this.plugin.enabled ? `Disable "${this.plugin.name}"` : `Enable "${this.plugin.name}"`,
-      cls: "mod-warning"
-    });
-    pluginToggleBtn.addEventListener("click", () => {
-      void (async () => {
-        try {
-          await this.onTogglePlugin();
-        } catch (e) {
-          new import_obsidian3.Notice(`Couldn't toggle "${this.plugin.name}": ` + errorMessage(e));
-          return;
-        }
-        this.close();
-      })();
-    });
+    if (this.onTogglePlugin) {
+      const pluginToggleBtn = actions.createEl("button", {
+        text: this.plugin.enabled ? `Disable "${this.plugin.name}"` : `Enable "${this.plugin.name}"`,
+        cls: "mod-warning"
+      });
+      pluginToggleBtn.addEventListener("click", () => {
+        void (async () => {
+          var _a;
+          try {
+            await ((_a = this.onTogglePlugin) == null ? void 0 : _a.call(this));
+          } catch (e) {
+            new import_obsidian3.Notice(`Couldn't toggle "${this.plugin.name}": ` + errorMessage(e));
+            return;
+          }
+          this.close();
+        })();
+      });
+    }
   }
   onClose() {
     this.contentEl.empty();
@@ -3406,6 +3488,14 @@ var LibraryView = class extends import_obsidian14.ItemView {
     /** Codex usage is derived from the CLI's session JSONL and loaded only when its tile is selected. */
     this.codexUsage = null;
     this.codexUsageLoading = false;
+    /** True while the Library's installed plugin-bundle browser is active. Unlike pluginFilter,
+     *  this swaps the content pane for bundle cards; clicking one enters the normal item grid. */
+    this.pluginBundlesMode = false;
+    this.pluginBundleSearch = "";
+    this.pluginBundleToolFilter = null;
+    this.pluginBundleGroupFilter = null;
+    this.pluginBundleTagFilter = null;
+    this.pluginBundleSortOrder = "name-asc";
     /** Independent from dashboardRankedExpanded — Top Skills & Agents and Ranked by cost are
      *  different lists and shouldn't share collapse state. */
     this.dashboardTopSkillsExpanded = false;
@@ -3840,6 +3930,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     this.toolsMode = false;
     this.selectedTool = null;
     this.dashboardMode = false;
+    this.pluginBundlesMode = false;
     this.detailReturnsToDashboard = false;
     this.mcpMode = false;
     this.mcpToolFilter = null;
@@ -3853,7 +3944,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     this.moreFieldsExpanded = false;
   }
   isScoped() {
-    return !!(this.typeFilter || this.toolFilter || this.collectionFilter || this.projectFilter || this.pluginFilter || this.favoritesOnly || this.discoverMode || this.toolsMode || this.dashboardMode || this.mcpMode);
+    return !!(this.typeFilter || this.toolFilter || this.collectionFilter || this.projectFilter || this.pluginFilter || this.favoritesOnly || this.discoverMode || this.toolsMode || this.dashboardMode || this.mcpMode || this.pluginBundlesMode);
   }
   filteredItems() {
     const query = this.search.trim().toLowerCase();
@@ -4108,24 +4199,6 @@ var LibraryView = class extends import_obsidian14.ItemView {
       this.discoverMode = true;
       this.render();
     });
-    this.renderNavRow(
-      sidebar,
-      "plug",
-      "MCP servers",
-      this.mcpServers.length,
-      this.mcpMode,
-      () => {
-        this.clearScopeFilters();
-        this.mcpMode = true;
-        this.render();
-      },
-      void 0,
-      false,
-      "default",
-      void 0,
-      false,
-      this.workspaceScopeTooltip()
-    );
     const attentionCount = this.getDashboardAttentionCount();
     this.renderNavRow(
       sidebar,
@@ -4156,8 +4229,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const sectionRenderers = {
       types: (s) => this.renderTypesSection(s),
       tools: (s) => this.renderToolsSection(s),
+      extensions: (s) => this.renderExtensionsSection(s),
       projects: (s) => this.renderProjectsSection(s),
-      plugins: (s) => this.renderPluginsSection(s),
       collections: (s) => this.renderCollectionsSection(s)
     };
     for (const key of this.getSettings().sectionOrder) {
@@ -4222,9 +4295,57 @@ var LibraryView = class extends import_obsidian14.ItemView {
     });
   }
   isSectionVisible(key) {
-    if (key === "plugins")
-      return this.discoveredPlugins.length > 0;
+    if (key === "extensions")
+      return this.mcpServers.length > 0 || this.discoveredPlugins.length > 0;
     return true;
+  }
+  renderExtensionsSection(sidebar) {
+    if (!this.renderCollapsibleHeading(sidebar, "extensions", "Extensions"))
+      return;
+    if (this.mcpServers.length > 0) {
+      this.renderNavRow(
+        sidebar,
+        "plug",
+        "MCP servers",
+        this.mcpServers.length,
+        this.mcpMode,
+        () => {
+          this.clearScopeFilters();
+          this.mcpMode = true;
+          this.render();
+        },
+        void 0,
+        false,
+        "default",
+        void 0,
+        false,
+        this.workspaceScopeTooltip()
+      );
+    }
+    if (this.discoveredPlugins.length > 0) {
+      this.renderNavRow(
+        sidebar,
+        "package",
+        "Plugin bundles",
+        this.discoveredPlugins.length,
+        this.pluginBundlesMode,
+        () => {
+          this.clearScopeFilters();
+          this.pluginBundlesMode = true;
+          this.pluginBundleSearch = "";
+          this.pluginBundleToolFilter = null;
+          this.pluginBundleGroupFilter = null;
+          this.pluginBundleTagFilter = null;
+          this.render();
+        },
+        void 0,
+        false,
+        "default",
+        void 0,
+        false,
+        "Installed plugin bundles, browsed separately from individual skills."
+      );
+    }
   }
   renderTypesSection(sidebar) {
     if (!this.renderCollapsibleHeading(sidebar, "types", "Types"))
@@ -4389,9 +4510,15 @@ var LibraryView = class extends import_obsidian14.ItemView {
       item,
       plugin,
       tool,
-      () => this.togglePlugin(tool, plugin),
+      tool.pluginsSettingsPath ? () => this.togglePlugin(tool, plugin) : void 0,
       plugin.repoUrl ? () => this.installPluginItemStandalone(item, plugin) : void 0
     ).open();
+  }
+  explainPluginBundleToggle(plugin) {
+    const tool = this.pluginBundleTool(plugin);
+    if (!tool)
+      return;
+    new PluginItemInfoModal(this.app, null, plugin, tool).open();
   }
   /** Prefills the real install pipeline with the plugin's own repo and the item's path relative
    *  to the plugin's install root — the same relative layout the repo itself uses, since the
@@ -4636,6 +4763,10 @@ var LibraryView = class extends import_obsidian14.ItemView {
   // ---------- content ----------
   renderContent(content) {
     var _a;
+    if (this.pluginBundlesMode) {
+      this.renderPluginBundlesContent(content);
+      return;
+    }
     if (this.discoverMode) {
       this.renderDiscoverContent(content);
       return;
@@ -4654,6 +4785,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
     }
     const items = this.filteredItems();
     const header = content.createDiv({ cls: "skillmanager-content-header" });
+    if (this.pluginFilter)
+      this.renderPluginLibraryBreadcrumb(header);
     const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
     titleRow.createEl("h2", { text: this.scopeTitle(), cls: "skillmanager-title" });
     titleRow.createSpan({ text: String(items.length), cls: "skillmanager-count-pill" });
@@ -5331,6 +5464,265 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const sizer = readingView.createDiv({ cls: "markdown-preview-sizer markdown-preview-section" });
     void import_obsidian14.MarkdownRenderer.render(this.app, stripFrontmatter(entry.manifestText), sizer, entry.name, this.markdownComponent);
   }
+  // ---------- Installed plugin bundles ----------
+  pluginBundleTool(plugin) {
+    return this.getSettings().tools.find((tool) => tool.id === plugin.toolId);
+  }
+  pluginBundleTags(plugin) {
+    return Array.from(
+      new Set(
+        this.items.filter((item) => item.pluginId === plugin.id).flatMap((item) => item.tags).filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+  }
+  pluginBundleItemCount(plugin) {
+    return this.items.filter((item) => item.pluginId === plugin.id).length;
+  }
+  filteredPluginBundles() {
+    const query = this.pluginBundleSearch.trim().toLowerCase();
+    const bundles = this.discoveredPlugins.filter((plugin) => {
+      var _a, _b, _c;
+      const tool = this.pluginBundleTool(plugin);
+      const tags = this.pluginBundleTags(plugin);
+      if (this.pluginBundleToolFilter && plugin.toolId !== this.pluginBundleToolFilter)
+        return false;
+      if (this.pluginBundleGroupFilter && ((_a = plugin.group) != null ? _a : "Other") !== this.pluginBundleGroupFilter)
+        return false;
+      if (this.pluginBundleTagFilter && !tags.includes(this.pluginBundleTagFilter))
+        return false;
+      if (query) {
+        const haystack = `${plugin.name} ${(_b = plugin.group) != null ? _b : ""} ${(_c = tool == null ? void 0 : tool.name) != null ? _c : ""} ${tags.join(" ")}`.toLowerCase();
+        if (!haystack.includes(query))
+          return false;
+      }
+      return true;
+    });
+    return bundles.sort((a, b) => {
+      if (this.pluginBundleSortOrder === "name-desc")
+        return b.name.localeCompare(a.name);
+      if (this.pluginBundleSortOrder === "items-desc")
+        return this.pluginBundleItemCount(b) - this.pluginBundleItemCount(a) || a.name.localeCompare(b.name);
+      if (this.pluginBundleSortOrder === "items-asc")
+        return this.pluginBundleItemCount(a) - this.pluginBundleItemCount(b) || a.name.localeCompare(b.name);
+      return a.name.localeCompare(b.name);
+    });
+  }
+  renderPluginBundlesContent(content) {
+    const bundles = this.filteredPluginBundles();
+    const header = content.createDiv({ cls: "skillmanager-content-header" });
+    const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
+    titleRow.createEl("h2", { text: "Plugin bundles", cls: "skillmanager-title" });
+    titleRow.createSpan({ text: String(bundles.length), cls: "skillmanager-count-pill" });
+    header.createDiv({
+      text: "Installed plugin bundles and the skills, agents, commands, and rules they provide. Manage each bundle from its owning tool.",
+      cls: "skillmanager-subtitle"
+    });
+    const toolbar = content.createDiv({ cls: "skillmanager-toolbar" });
+    const searchWrap = toolbar.createDiv({ cls: "skillmanager-search-wrap" });
+    const searchIcon = searchWrap.createSpan({ cls: "skillmanager-search-icon" });
+    (0, import_obsidian14.setIcon)(searchIcon, "search");
+    const searchInput = searchWrap.createEl("input", {
+      type: "text",
+      placeholder: "Search plugin bundles\u2026",
+      cls: "skillmanager-search"
+    });
+    searchInput.value = this.pluginBundleSearch;
+    const clearBtn = searchWrap.createEl("button", {
+      cls: "skillmanager-icon-btn skillmanager-search-clear",
+      attr: { "aria-label": "Clear search" }
+    });
+    (0, import_obsidian14.setIcon)(clearBtn, "x");
+    clearBtn.toggle(searchInput.value.length > 0);
+    clearBtn.addEventListener("click", () => {
+      this.pluginBundleSearch = "";
+      this.render();
+    });
+    this.renderPluginBundleFilterButton(toolbar, "tool");
+    this.renderPluginBundleFilterButton(toolbar, "group");
+    this.renderPluginBundleSortButton(toolbar);
+    const allTags = Array.from(new Set(this.discoveredPlugins.flatMap((plugin) => this.pluginBundleTags(plugin)))).sort((a, b) => a.localeCompare(b));
+    if (allTags.length > 0) {
+      const tagbar = content.createDiv({ cls: "skillmanager-tagbar" });
+      const allChip = tagbar.createEl("button", { text: "All tags", cls: "skillmanager-chip" });
+      if (!this.pluginBundleTagFilter)
+        allChip.addClass("is-active");
+      allChip.addEventListener("click", () => {
+        this.pluginBundleTagFilter = null;
+        this.render();
+      });
+      for (const tag of allTags) {
+        const chip = tagbar.createEl("button", { text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
+        if (this.pluginBundleTagFilter === tag)
+          chip.addClass("is-active");
+        chip.addEventListener("click", () => {
+          this.pluginBundleTagFilter = this.pluginBundleTagFilter === tag ? null : tag;
+          this.render();
+        });
+      }
+    }
+    const grid = content.createDiv({ cls: "skillmanager-items" });
+    if (bundles.length === 0) {
+      grid.createDiv({ text: "No plugin bundles match these filters.", cls: "skillmanager-empty" });
+    }
+    for (const plugin of bundles)
+      this.renderPluginBundleCard(grid, plugin);
+    searchInput.addEventListener("input", () => {
+      var _a;
+      this.pluginBundleSearch = searchInput.value;
+      clearBtn.toggle(searchInput.value.length > 0);
+      const next = this.filteredPluginBundles();
+      (_a = titleRow.querySelector(".skillmanager-count-pill")) == null ? void 0 : _a.setText(String(next.length));
+      grid.empty();
+      if (next.length === 0)
+        grid.createDiv({ text: "No plugin bundles match these filters.", cls: "skillmanager-empty" });
+      for (const plugin of next)
+        this.renderPluginBundleCard(grid, plugin);
+      searchInput.focus();
+    });
+  }
+  renderPluginBundleFilterButton(toolbar, kind) {
+    var _a;
+    const values = Array.from(
+      new Set(
+        this.discoveredPlugins.map((plugin) => {
+          var _a2, _b;
+          return kind === "tool" ? (_a2 = this.pluginBundleTool(plugin)) == null ? void 0 : _a2.name : (_b = plugin.group) != null ? _b : "Other";
+        }).filter((value) => !!value)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+    if (values.length < 2)
+      return;
+    const current = kind === "tool" ? this.pluginBundleToolFilter : this.pluginBundleGroupFilter;
+    const currentLabel = kind === "tool" ? (_a = this.getSettings().tools.find((tool) => tool.id === current)) == null ? void 0 : _a.name : current;
+    const btn = toolbar.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": `Filter by ${kind}` } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    (0, import_obsidian14.setIcon)(icon, "filter");
+    btn.createSpan({ text: current ? currentLabel != null ? currentLabel : current : kind === "tool" ? "All tools" : "All groups", cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    (0, import_obsidian14.setIcon)(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new import_obsidian14.Menu();
+      menu.addItem((item) => item.setTitle(kind === "tool" ? "All tools" : "All groups").setChecked(!current).onClick(() => {
+        if (kind === "tool")
+          this.pluginBundleToolFilter = null;
+        else
+          this.pluginBundleGroupFilter = null;
+        this.render();
+      }));
+      for (const value of values) {
+        menu.addItem((item) => {
+          var _a2;
+          return item.setTitle(value).setChecked(current === (kind === "tool" ? (_a2 = this.getSettings().tools.find((tool) => tool.name === value)) == null ? void 0 : _a2.id : value)).onClick(() => {
+            var _a3, _b;
+            if (kind === "tool")
+              this.pluginBundleToolFilter = (_b = (_a3 = this.getSettings().tools.find((tool) => tool.name === value)) == null ? void 0 : _a3.id) != null ? _b : null;
+            else
+              this.pluginBundleGroupFilter = value;
+            this.render();
+          });
+        });
+      }
+      menu.showAtMouseEvent(evt);
+    });
+  }
+  renderPluginBundleSortButton(toolbar) {
+    var _a;
+    const options = [
+      { key: "name-asc", label: "Name (A to Z)" },
+      { key: "name-desc", label: "Name (Z to A)" },
+      { key: "items-desc", label: "Items (high to low)" },
+      { key: "items-asc", label: "Items (low to high)" }
+    ];
+    const current = (_a = options.find((option) => option.key === this.pluginBundleSortOrder)) != null ? _a : options[0];
+    const btn = toolbar.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Sort by" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    (0, import_obsidian14.setIcon)(icon, "arrow-up-down");
+    btn.createSpan({ text: current.label, cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    (0, import_obsidian14.setIcon)(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new import_obsidian14.Menu();
+      for (const option of options)
+        menu.addItem((item) => item.setTitle(option.label).setChecked(this.pluginBundleSortOrder === option.key).onClick(() => {
+          this.pluginBundleSortOrder = option.key;
+          this.render();
+        }));
+      menu.showAtMouseEvent(evt);
+    });
+  }
+  renderPluginBundleCard(container, plugin) {
+    var _a;
+    const tool = this.pluginBundleTool(plugin);
+    const tags = this.pluginBundleTags(plugin);
+    const typeCounts = Object.keys(TYPE_LABELS).map((type) => ({ type, count: this.items.filter((item) => item.pluginId === plugin.id && item.type === type).length })).filter(({ count }) => count > 0);
+    const itemSummary = typeCounts.length > 0 ? typeCounts.map(({ type, count }) => `${count} ${TYPE_LABELS[type].toLowerCase().replace(/s$/, "")}${count === 1 ? "" : "s"}`).join(" \u2022 ") : "No library items scanned";
+    const card = container.createDiv({ cls: "skillmanager-card" });
+    if (!plugin.enabled)
+      card.addClass("is-off");
+    const head = card.createDiv({ cls: "skillmanager-card-head" });
+    head.createSpan({ text: plugin.name, cls: "skillmanager-card-name" });
+    head.createSpan({ text: "Plugin", cls: "skillmanager-card-type skillmanager-card-type-sm" });
+    const toggle = head.createEl("button", {
+      cls: `skillmanager-toggle${plugin.enabled ? " is-on" : ""}`,
+      attr: { "aria-label": plugin.enabled ? `Manage ${plugin.name} plugin` : `Manage disabled ${plugin.name} plugin` }
+    });
+    toggle.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      if (tool == null ? void 0 : tool.pluginsSettingsPath)
+        void this.togglePlugin(tool, plugin);
+      else
+        this.explainPluginBundleToggle(plugin);
+    });
+    if (tool) {
+      const toolCaption = card.createDiv({ cls: "skillmanager-card-tool" });
+      const toolIcon = toolCaption.createSpan({ cls: "skillmanager-card-tool-icon" });
+      this.renderIcon(toolIcon, tool.icon, tool.svgIcon);
+      toolCaption.createSpan({ text: tool.name });
+    }
+    card.createDiv({ text: itemSummary, cls: "skillmanager-card-desc" });
+    if (tags.length > 0) {
+      const tagRow = card.createDiv({ cls: "skillmanager-card-tags" });
+      for (const tag of tags)
+        tagRow.createSpan({ text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
+    }
+    const footer = card.createDiv({ cls: "skillmanager-card-footer" });
+    const source = footer.createDiv({ cls: "skillmanager-card-source" });
+    const sourceIcon = source.createSpan({ cls: "skillmanager-card-source-icon" });
+    (0, import_obsidian14.setIcon)(sourceIcon, "layers-3");
+    source.createSpan({ text: (_a = plugin.group) != null ? _a : "Installed plugin", cls: "skillmanager-card-source-text" });
+    const right = footer.createDiv({ cls: "skillmanager-card-footer-right" });
+    if (!plugin.enabled)
+      right.createSpan({ text: "Disabled", cls: "skillmanager-card-meta" });
+    card.addEventListener("click", () => {
+      this.pluginBundlesMode = false;
+      this.pluginFilter = plugin.id;
+      this.selectedItem = null;
+      this.selectedFilePath = null;
+      this.pendingDetailAnimation = "forward";
+      this.render();
+    });
+  }
+  renderPluginLibraryBreadcrumb(header) {
+    const plugin = this.discoveredPlugins.find((candidate) => candidate.id === this.pluginFilter);
+    if (!plugin)
+      return;
+    const crumbs = header.createDiv({ cls: "skillmanager-crumbs" });
+    const backBtn = crumbs.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Back to plugin bundles" } });
+    (0, import_obsidian14.setIcon)(backBtn, "arrow-left");
+    const back = () => {
+      this.pluginFilter = null;
+      this.pluginBundlesMode = true;
+      this.selectedItem = null;
+      this.selectedFilePath = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    backBtn.addEventListener("click", back);
+    const bundlesCrumb = crumbs.createEl("button", { cls: "skillmanager-crumb", text: "Plugin bundles" });
+    bundlesCrumb.addEventListener("click", back);
+    crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+    crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: plugin.name });
+  }
   // ---------- MCP servers ----------
   /** Read-only visibility into every MCP server found in a tool's own config files (see
    *  mcpScanners.ts) — no enable/disable/delete/start: this is an audit view, not a config
@@ -5635,7 +6027,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  real directory on disk right now — independent of enabled state or item count, since a
    *  correctly-configured tool with zero skills yet is still "detected." */
   toolIsDetected(tool) {
-    return Object.values(tool.paths).some((p) => p && (0, import_fs14.existsSync)(expandHome2(p)));
+    var _a;
+    return Object.values(tool.paths).some((p) => p && (0, import_fs14.existsSync)(expandHome2(p))) || (tool.pluginsRegistry ? (0, import_fs14.existsSync)(expandHome2(tool.pluginsRegistry)) : false) || ((_a = tool.pluginsPaths) != null ? _a : []).some((p) => p && (0, import_fs14.existsSync)(expandHome2(p)));
   }
   toolMatchesStatusFilter(tool) {
     switch (this.toolStatusFilter) {
@@ -5866,7 +6259,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     return adapter instanceof import_obsidian14.FileSystemAdapter ? adapter.getBasePath() : null;
   }
   renderToolDetailRail(panel, tool) {
-    var _a, _b, _c, _d, _e, _f, _g, _h;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     const crumbs = panel.createDiv({ cls: "skillmanager-crumbs" });
     const backBtn = crumbs.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Back" } });
     (0, import_obsidian14.setIcon)(backBtn, "arrow-left");
@@ -5989,6 +6382,65 @@ var LibraryView = class extends import_obsidian14.ItemView {
         void this.saveSettings().then(() => this.rescan());
       }
     );
+    body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Plugin bundles" });
+    body.createDiv({
+      cls: "setting-item-description",
+      text: "Optional: point at this tool's installed plugin registry or cache so bundled skills, agents, and commands show up in the Plugin bundles page."
+    });
+    if (tool.pluginsRegistry !== void 0 || tool.pluginsSettingsPath !== void 0) {
+      this.renderToolPathField(
+        body,
+        "Installed registry",
+        (_i = tool.pluginsRegistry) != null ? _i : "",
+        "~/.example/plugins/installed_plugins.json",
+        (raw) => expandHome2(raw),
+        (value) => {
+          if (value.trim())
+            tool.pluginsRegistry = value.trim();
+          else
+            delete tool.pluginsRegistry;
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
+    if (tool.pluginsPaths !== void 0 || tool.pluginsRegistry === void 0) {
+      this.renderToolPathField(
+        body,
+        "Installed cache",
+        (_k = (_j = tool.pluginsPaths) == null ? void 0 : _j[0]) != null ? _k : "",
+        "~/.example/plugins/cache",
+        (raw) => expandHome2(raw),
+        (value) => {
+          var _a2, _b2;
+          if (value.trim())
+            tool.pluginsPaths = [value.trim(), ...(_b2 = (_a2 = tool.pluginsPaths) == null ? void 0 : _a2.slice(1)) != null ? _b2 : []];
+          else if (tool.pluginsPaths) {
+            const rest = tool.pluginsPaths.slice(1);
+            if (rest.length > 0)
+              tool.pluginsPaths = rest;
+            else
+              delete tool.pluginsPaths;
+          }
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
+    if (tool.pluginsSettingsPath !== void 0) {
+      this.renderToolPathField(
+        body,
+        "Plugin settings",
+        tool.pluginsSettingsPath,
+        "~/.example/settings.json",
+        (raw) => expandHome2(raw),
+        (value) => {
+          if (value.trim())
+            tool.pluginsSettingsPath = value.trim();
+          else
+            delete tool.pluginsSettingsPath;
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
   }
   /** Same row shape as renderToolPathField, minus the found/not-found status pill — for a field
    *  that isn't a filesystem path (e.g. the JSON key a tool's MCP config nests its server map
@@ -8091,7 +8543,7 @@ var SkillManagerPlugin = class extends import_obsidian17.Plugin {
     var _a, _b;
     const loaded = await this.loadData();
     const mergedTools = DEFAULT_TOOLS.map((defaultTool) => {
-      var _a2, _b2, _c, _d, _e, _f, _g;
+      var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j;
       const saved = (_a2 = loaded == null ? void 0 : loaded.tools) == null ? void 0 : _a2.find((t) => t.id === defaultTool.id);
       if (!saved)
         return defaultTool;
@@ -8100,23 +8552,36 @@ var SkillManagerPlugin = class extends import_obsidian17.Plugin {
         paths: saved.paths,
         projectPaths: (_b2 = saved.projectPaths) != null ? _b2 : defaultTool.projectPaths,
         disabled: saved.disabled,
+        pluginsRegistry: (_c = saved.pluginsRegistry) != null ? _c : defaultTool.pluginsRegistry,
+        pluginsPaths: (_d = saved.pluginsPaths) != null ? _d : defaultTool.pluginsPaths,
+        pluginsSettingsPath: (_e = saved.pluginsSettingsPath) != null ? _e : defaultTool.pluginsSettingsPath,
         // Same "user-edited, carry over" treatment as paths/projectPaths above — these are the
         // fields the "All tools" detail rail's MCP servers section lets a user fill in for a
         // built-in tool with no confirmed default (see LibraryView.renderToolDetailRail).
-        mcpConfigPath: (_c = saved.mcpConfigPath) != null ? _c : defaultTool.mcpConfigPath,
-        projectMcpConfigPath: (_d = saved.projectMcpConfigPath) != null ? _d : defaultTool.projectMcpConfigPath,
-        mcpConfigKey: (_e = saved.mcpConfigKey) != null ? _e : defaultTool.mcpConfigKey,
+        mcpConfigPath: (_f = saved.mcpConfigPath) != null ? _f : defaultTool.mcpConfigPath,
+        projectMcpConfigPath: (_g = saved.projectMcpConfigPath) != null ? _g : defaultTool.projectMcpConfigPath,
+        mcpConfigKey: (_h = saved.mcpConfigKey) != null ? _h : defaultTool.mcpConfigKey,
         // Same treatment — user-edited via LibraryView's renderRuleAdditionalPaths.
-        ruleAdditionalPaths: (_f = saved.ruleAdditionalPaths) != null ? _f : defaultTool.ruleAdditionalPaths,
-        ruleAdditionalProjectPaths: (_g = saved.ruleAdditionalProjectPaths) != null ? _g : defaultTool.ruleAdditionalProjectPaths
+        ruleAdditionalPaths: (_i = saved.ruleAdditionalPaths) != null ? _i : defaultTool.ruleAdditionalPaths,
+        ruleAdditionalProjectPaths: (_j = saved.ruleAdditionalProjectPaths) != null ? _j : defaultTool.ruleAdditionalProjectPaths
       };
     });
     const customTools = ((_a = loaded == null ? void 0 : loaded.tools) != null ? _a : []).filter(
       (t) => t.custom && !DEFAULT_TOOLS.some((defaultTool) => defaultTool.id === t.id)
     );
     const savedOrder = ((_b = loaded == null ? void 0 : loaded.sectionOrder) != null ? _b : []).filter((key) => DEFAULT_SECTION_ORDER.includes(key));
+    const previousDefaultOrder = ["types", "tools", "extensions", "projects", "collections"];
+    const isPreviousDefault = savedOrder.length === previousDefaultOrder.length && savedOrder.every((key, i) => key === previousDefaultOrder[i]);
+    if (isPreviousDefault)
+      savedOrder.splice(0, savedOrder.length, ...DEFAULT_SECTION_ORDER);
     const missingKeys = DEFAULT_SECTION_ORDER.filter((key) => !savedOrder.includes(key));
-    const mergedSectionOrder = [...savedOrder, ...missingKeys];
+    const mergedSectionOrder = [...savedOrder];
+    for (const key of missingKeys) {
+      const defaultIndex = DEFAULT_SECTION_ORDER.indexOf(key);
+      const nextSavedKey = DEFAULT_SECTION_ORDER.slice(defaultIndex + 1).find((candidate) => mergedSectionOrder.includes(candidate));
+      const insertAt = nextSavedKey ? mergedSectionOrder.indexOf(nextSavedKey) : mergedSectionOrder.length;
+      mergedSectionOrder.splice(insertAt, 0, key);
+    }
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded, {
       tools: [...mergedTools, ...customTools],
       sectionOrder: mergedSectionOrder

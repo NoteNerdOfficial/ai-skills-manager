@@ -56,6 +56,13 @@ export interface ToolConfig {
   unconfirmedPaths?: Partial<Record<ItemType, string>>;
   /** Path to this tool's installed-plugins registry JSON, if it has one (e.g. Claude Code). */
   pluginsRegistry?: string;
+  /** Root(s) containing installed plugin bundles when the tool has no registry JSON — e.g.
+   *  Codex's ~/.codex/plugins/cache/<marketplace>/<plugin>/<version-or-hash>. */
+  pluginsPaths?: string[];
+  /** Per-plugin-bundle path overrides. Most tools reuse basename(paths[type]), but a tool can
+   *  call its plugin command folder something different from its global command folder (Codex
+   *  uses ~/.codex/prompts globally and commands/ inside plugin bundles). */
+  pluginPaths?: Partial<Record<ItemType, string>>;
   /** Path to the JSON file holding this tool's own per-plugin enable/disable state (e.g. Claude
    *  Code's ~/.claude/settings.json, under its "enabledPlugins" map), if it has one. Only a whole
    *  plugin can be toggled this way — there's no supported concept of disabling one skill inside
@@ -135,12 +142,14 @@ export interface ProjectWorkspace {
   path: string;
 }
 
-/** An installed tool plugin (e.g. a Claude Code plugin) — auto-discovered from that tool's
+/** An installed tool plugin (e.g. a Claude Code or Codex plugin) — auto-discovered from that tool's
  *  plugin registry, not user-registered like a ProjectWorkspace. Bundles its own skills/
  *  commands/agents together, so it's a source dimension, not an item type. */
 export interface PluginSource {
   id: string;
   name: string;
+  /** Marketplace/registry group that supplied this bundle, when the owning tool exposes one. */
+  group?: string;
   path: string;
   /** The ToolConfig this plugin was discovered under — needed to find its pluginsSettingsPath
    *  when toggling the whole plugin on/off. */
@@ -339,7 +348,7 @@ export interface SkillManagerPluginSettings {
 
 /** Canonical set of reorderable sidebar sections and their default order. "Library" isn't
  *  included — it's fixed at the top and never reorderable. */
-export const DEFAULT_SECTION_ORDER = ["types", "plugins", "tools", "projects", "collections"];
+export const DEFAULT_SECTION_ORDER = ["types", "extensions", "tools", "projects", "collections"];
 
 export const DEFAULT_TOOLS: ToolConfig[] = [
   {
@@ -456,6 +465,10 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
       skill: "~/.codex/skills",
       command: "~/.codex/prompts",
       agent: "~/.codex/agents",
+    },
+    pluginsPaths: ["~/.codex/plugins/cache"],
+    pluginPaths: {
+      command: "commands",
     },
     // ~/.codex/skills/.system/ is Codex's own bundled default skill set (e.g. review-agent) —
     // not something the user installed or wrote.

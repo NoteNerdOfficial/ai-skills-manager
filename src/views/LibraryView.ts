@@ -284,6 +284,14 @@ export class LibraryView extends ItemView {
   /** Codex usage is derived from the CLI's session JSONL and loaded only when its tile is selected. */
   private codexUsage: Map<string, ClaudeUsageStats> | null = null;
   private codexUsageLoading = false;
+  /** True while the Library's installed plugin-bundle browser is active. Unlike pluginFilter,
+   *  this swaps the content pane for bundle cards; clicking one enters the normal item grid. */
+  private pluginBundlesMode = false;
+  private pluginBundleSearch = "";
+  private pluginBundleToolFilter: string | null = null;
+  private pluginBundleGroupFilter: string | null = null;
+  private pluginBundleTagFilter: string | null = null;
+  private pluginBundleSortOrder: "name-asc" | "name-desc" | "items-desc" | "items-asc" = "name-asc";
   /** Independent from dashboardRankedExpanded — Top Skills & Agents and Ranked by cost are
    *  different lists and shouldn't share collapse state. */
   private dashboardTopSkillsExpanded = false;
@@ -769,6 +777,7 @@ export class LibraryView extends ItemView {
     this.toolsMode = false;
     this.selectedTool = null;
     this.dashboardMode = false;
+    this.pluginBundlesMode = false;
     this.detailReturnsToDashboard = false;
     this.mcpMode = false;
     this.mcpToolFilter = null;
@@ -793,7 +802,8 @@ export class LibraryView extends ItemView {
       this.discoverMode ||
       this.toolsMode ||
       this.dashboardMode ||
-      this.mcpMode
+      this.mcpMode ||
+      this.pluginBundlesMode
     );
   }
 
@@ -1059,24 +1069,6 @@ export class LibraryView extends ItemView {
       this.discoverMode = true;
       this.render();
     });
-    this.renderNavRow(
-      sidebar,
-      "plug",
-      "MCP servers",
-      this.mcpServers.length,
-      this.mcpMode,
-      () => {
-        this.clearScopeFilters();
-        this.mcpMode = true;
-        this.render();
-      },
-      undefined,
-      false,
-      "default",
-      undefined,
-      false,
-      this.workspaceScopeTooltip()
-    );
     const attentionCount = this.getDashboardAttentionCount();
     this.renderNavRow(
       sidebar,
@@ -1112,8 +1104,8 @@ export class LibraryView extends ItemView {
     const sectionRenderers: Record<string, (sidebar: HTMLElement) => void> = {
       types: (s) => this.renderTypesSection(s),
       tools: (s) => this.renderToolsSection(s),
+      extensions: (s) => this.renderExtensionsSection(s),
       projects: (s) => this.renderProjectsSection(s),
-      plugins: (s) => this.renderPluginsSection(s),
       collections: (s) => this.renderCollectionsSection(s),
     };
     for (const key of this.getSettings().sectionOrder) {
@@ -1179,8 +1171,56 @@ export class LibraryView extends ItemView {
   }
 
   private isSectionVisible(key: string): boolean {
-    if (key === "plugins") return this.discoveredPlugins.length > 0;
+    if (key === "extensions") return this.mcpServers.length > 0 || this.discoveredPlugins.length > 0;
     return true;
+  }
+
+  private renderExtensionsSection(sidebar: HTMLElement) {
+    if (!this.renderCollapsibleHeading(sidebar, "extensions", "Extensions")) return;
+    if (this.mcpServers.length > 0) {
+      this.renderNavRow(
+        sidebar,
+        "plug",
+        "MCP servers",
+        this.mcpServers.length,
+        this.mcpMode,
+        () => {
+          this.clearScopeFilters();
+          this.mcpMode = true;
+          this.render();
+        },
+        undefined,
+        false,
+        "default",
+        undefined,
+        false,
+        this.workspaceScopeTooltip()
+      );
+    }
+    if (this.discoveredPlugins.length > 0) {
+      this.renderNavRow(
+        sidebar,
+        "package",
+        "Plugin bundles",
+        this.discoveredPlugins.length,
+        this.pluginBundlesMode,
+        () => {
+          this.clearScopeFilters();
+          this.pluginBundlesMode = true;
+          this.pluginBundleSearch = "";
+          this.pluginBundleToolFilter = null;
+          this.pluginBundleGroupFilter = null;
+          this.pluginBundleTagFilter = null;
+          this.render();
+        },
+        undefined,
+        false,
+        "default",
+        undefined,
+        false,
+        "Installed plugin bundles, browsed separately from individual skills."
+      );
+    }
   }
 
   private renderTypesSection(sidebar: HTMLElement) {
@@ -1359,9 +1399,15 @@ export class LibraryView extends ItemView {
       item,
       plugin,
       tool,
-      () => this.togglePlugin(tool, plugin),
+      tool.pluginsSettingsPath ? () => this.togglePlugin(tool, plugin) : undefined,
       plugin.repoUrl ? () => this.installPluginItemStandalone(item, plugin) : undefined
     ).open();
+  }
+
+  private explainPluginBundleToggle(plugin: PluginSource) {
+    const tool = this.pluginBundleTool(plugin);
+    if (!tool) return;
+    new PluginItemInfoModal(this.app, null, plugin, tool).open();
   }
 
   /** Prefills the real install pipeline with the plugin's own repo and the item's path relative
@@ -1638,6 +1684,10 @@ export class LibraryView extends ItemView {
   // ---------- content ----------
 
   private renderContent(content: HTMLElement) {
+    if (this.pluginBundlesMode) {
+      this.renderPluginBundlesContent(content);
+      return;
+    }
     if (this.discoverMode) {
       this.renderDiscoverContent(content);
       return;
@@ -1658,6 +1708,7 @@ export class LibraryView extends ItemView {
     const items = this.filteredItems();
 
     const header = content.createDiv({ cls: "skillmanager-content-header" });
+    if (this.pluginFilter) this.renderPluginLibraryBreadcrumb(header);
     const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
     titleRow.createEl("h2", { text: this.scopeTitle(), cls: "skillmanager-title" });
     titleRow.createSpan({ text: String(items.length), cls: "skillmanager-count-pill" });
@@ -2432,6 +2483,253 @@ export class LibraryView extends ItemView {
     void MarkdownRenderer.render(this.app, stripFrontmatter(entry.manifestText), sizer, entry.name, this.markdownComponent);
   }
 
+  // ---------- Installed plugin bundles ----------
+
+  private pluginBundleTool(plugin: PluginSource): ToolConfig | undefined {
+    return this.getSettings().tools.find((tool) => tool.id === plugin.toolId);
+  }
+
+  private pluginBundleTags(plugin: PluginSource): string[] {
+    return Array.from(
+      new Set(
+        this.items
+          .filter((item) => item.pluginId === plugin.id)
+          .flatMap((item) => item.tags)
+          .filter(Boolean)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+  }
+
+  private pluginBundleItemCount(plugin: PluginSource): number {
+    return this.items.filter((item) => item.pluginId === plugin.id).length;
+  }
+
+  private filteredPluginBundles(): PluginSource[] {
+    const query = this.pluginBundleSearch.trim().toLowerCase();
+    const bundles = this.discoveredPlugins.filter((plugin) => {
+      const tool = this.pluginBundleTool(plugin);
+      const tags = this.pluginBundleTags(plugin);
+      if (this.pluginBundleToolFilter && plugin.toolId !== this.pluginBundleToolFilter) return false;
+      if (this.pluginBundleGroupFilter && (plugin.group ?? "Other") !== this.pluginBundleGroupFilter) return false;
+      if (this.pluginBundleTagFilter && !tags.includes(this.pluginBundleTagFilter)) return false;
+      if (query) {
+        const haystack = `${plugin.name} ${plugin.group ?? ""} ${tool?.name ?? ""} ${tags.join(" ")}`.toLowerCase();
+        if (!haystack.includes(query)) return false;
+      }
+      return true;
+    });
+    return bundles.sort((a, b) => {
+      if (this.pluginBundleSortOrder === "name-desc") return b.name.localeCompare(a.name);
+      if (this.pluginBundleSortOrder === "items-desc") return this.pluginBundleItemCount(b) - this.pluginBundleItemCount(a) || a.name.localeCompare(b.name);
+      if (this.pluginBundleSortOrder === "items-asc") return this.pluginBundleItemCount(a) - this.pluginBundleItemCount(b) || a.name.localeCompare(b.name);
+      return a.name.localeCompare(b.name);
+    });
+  }
+
+  private renderPluginBundlesContent(content: HTMLElement) {
+    const bundles = this.filteredPluginBundles();
+    const header = content.createDiv({ cls: "skillmanager-content-header" });
+    const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
+    titleRow.createEl("h2", { text: "Plugin bundles", cls: "skillmanager-title" });
+    titleRow.createSpan({ text: String(bundles.length), cls: "skillmanager-count-pill" });
+    header.createDiv({
+      text: "Installed plugin bundles and the skills, agents, commands, and rules they provide. Manage each bundle from its owning tool.",
+      cls: "skillmanager-subtitle",
+    });
+
+    const toolbar = content.createDiv({ cls: "skillmanager-toolbar" });
+    const searchWrap = toolbar.createDiv({ cls: "skillmanager-search-wrap" });
+    const searchIcon = searchWrap.createSpan({ cls: "skillmanager-search-icon" });
+    setIcon(searchIcon, "search");
+    const searchInput = searchWrap.createEl("input", {
+      type: "text",
+      placeholder: "Search plugin bundles…",
+      cls: "skillmanager-search",
+    });
+    searchInput.value = this.pluginBundleSearch;
+    const clearBtn = searchWrap.createEl("button", {
+      cls: "skillmanager-icon-btn skillmanager-search-clear",
+      attr: { "aria-label": "Clear search" },
+    });
+    setIcon(clearBtn, "x");
+    clearBtn.toggle(searchInput.value.length > 0);
+    clearBtn.addEventListener("click", () => {
+      this.pluginBundleSearch = "";
+      this.render();
+    });
+
+    this.renderPluginBundleFilterButton(toolbar, "tool");
+    this.renderPluginBundleFilterButton(toolbar, "group");
+    this.renderPluginBundleSortButton(toolbar);
+
+    const allTags = Array.from(new Set(this.discoveredPlugins.flatMap((plugin) => this.pluginBundleTags(plugin)))).sort((a, b) => a.localeCompare(b));
+    if (allTags.length > 0) {
+      const tagbar = content.createDiv({ cls: "skillmanager-tagbar" });
+      const allChip = tagbar.createEl("button", { text: "All tags", cls: "skillmanager-chip" });
+      if (!this.pluginBundleTagFilter) allChip.addClass("is-active");
+      allChip.addEventListener("click", () => {
+        this.pluginBundleTagFilter = null;
+        this.render();
+      });
+      for (const tag of allTags) {
+        const chip = tagbar.createEl("button", { text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
+        if (this.pluginBundleTagFilter === tag) chip.addClass("is-active");
+        chip.addEventListener("click", () => {
+          this.pluginBundleTagFilter = this.pluginBundleTagFilter === tag ? null : tag;
+          this.render();
+        });
+      }
+    }
+
+    const grid = content.createDiv({ cls: "skillmanager-items" });
+    if (bundles.length === 0) {
+      grid.createDiv({ text: "No plugin bundles match these filters.", cls: "skillmanager-empty" });
+    }
+    for (const plugin of bundles) this.renderPluginBundleCard(grid, plugin);
+
+    searchInput.addEventListener("input", () => {
+      this.pluginBundleSearch = searchInput.value;
+      clearBtn.toggle(searchInput.value.length > 0);
+      const next = this.filteredPluginBundles();
+      titleRow.querySelector(".skillmanager-count-pill")?.setText(String(next.length));
+      grid.empty();
+      if (next.length === 0) grid.createDiv({ text: "No plugin bundles match these filters.", cls: "skillmanager-empty" });
+      for (const plugin of next) this.renderPluginBundleCard(grid, plugin);
+      searchInput.focus();
+    });
+  }
+
+  private renderPluginBundleFilterButton(toolbar: HTMLElement, kind: "tool" | "group") {
+    const values = Array.from(
+      new Set(
+        this.discoveredPlugins
+          .map((plugin) => (kind === "tool" ? this.pluginBundleTool(plugin)?.name : plugin.group ?? "Other"))
+          .filter((value): value is string => !!value)
+      )
+    ).sort((a, b) => a.localeCompare(b));
+    if (values.length < 2) return;
+    const current = kind === "tool" ? this.pluginBundleToolFilter : this.pluginBundleGroupFilter;
+    const currentLabel = kind === "tool" ? this.getSettings().tools.find((tool) => tool.id === current)?.name : current;
+    const btn = toolbar.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": `Filter by ${kind}` } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    setIcon(icon, "filter");
+    btn.createSpan({ text: current ? currentLabel ?? current : kind === "tool" ? "All tools" : "All groups", cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new Menu();
+      menu.addItem((item) => item.setTitle(kind === "tool" ? "All tools" : "All groups").setChecked(!current).onClick(() => {
+        if (kind === "tool") this.pluginBundleToolFilter = null;
+        else this.pluginBundleGroupFilter = null;
+        this.render();
+      }));
+      for (const value of values) {
+        menu.addItem((item) => item.setTitle(value).setChecked(current === (kind === "tool" ? this.getSettings().tools.find((tool) => tool.name === value)?.id : value)).onClick(() => {
+          if (kind === "tool") this.pluginBundleToolFilter = this.getSettings().tools.find((tool) => tool.name === value)?.id ?? null;
+          else this.pluginBundleGroupFilter = value;
+          this.render();
+        }));
+      }
+      menu.showAtMouseEvent(evt);
+    });
+  }
+
+  private renderPluginBundleSortButton(toolbar: HTMLElement) {
+    const options: { key: typeof this.pluginBundleSortOrder; label: string }[] = [
+      { key: "name-asc", label: "Name (A to Z)" },
+      { key: "name-desc", label: "Name (Z to A)" },
+      { key: "items-desc", label: "Items (high to low)" },
+      { key: "items-asc", label: "Items (low to high)" },
+    ];
+    const current = options.find((option) => option.key === this.pluginBundleSortOrder) ?? options[0];
+    const btn = toolbar.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Sort by" } });
+    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
+    setIcon(icon, "arrow-up-down");
+    btn.createSpan({ text: current.label, cls: "skillmanager-sort-btn-label" });
+    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
+    setIcon(chevron, "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new Menu();
+      for (const option of options) menu.addItem((item) => item.setTitle(option.label).setChecked(this.pluginBundleSortOrder === option.key).onClick(() => {
+        this.pluginBundleSortOrder = option.key;
+        this.render();
+      }));
+      menu.showAtMouseEvent(evt);
+    });
+  }
+
+  private renderPluginBundleCard(container: HTMLElement, plugin: PluginSource) {
+    const tool = this.pluginBundleTool(plugin);
+    const tags = this.pluginBundleTags(plugin);
+    const typeCounts = (Object.keys(TYPE_LABELS) as ItemType[])
+      .map((type) => ({ type, count: this.items.filter((item) => item.pluginId === plugin.id && item.type === type).length }))
+      .filter(({ count }) => count > 0);
+    const itemSummary = typeCounts.length > 0
+      ? typeCounts.map(({ type, count }) => `${count} ${TYPE_LABELS[type].toLowerCase().replace(/s$/, "")}${count === 1 ? "" : "s"}`).join(" • ")
+      : "No library items scanned";
+    const card = container.createDiv({ cls: "skillmanager-card" });
+    if (!plugin.enabled) card.addClass("is-off");
+    const head = card.createDiv({ cls: "skillmanager-card-head" });
+    head.createSpan({ text: plugin.name, cls: "skillmanager-card-name" });
+    head.createSpan({ text: "Plugin", cls: "skillmanager-card-type skillmanager-card-type-sm" });
+    const toggle = head.createEl("button", {
+      cls: `skillmanager-toggle${plugin.enabled ? " is-on" : ""}`,
+      attr: { "aria-label": plugin.enabled ? `Manage ${plugin.name} plugin` : `Manage disabled ${plugin.name} plugin` },
+    });
+    toggle.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      if (tool?.pluginsSettingsPath) void this.togglePlugin(tool, plugin);
+      else this.explainPluginBundleToggle(plugin);
+    });
+    if (tool) {
+      const toolCaption = card.createDiv({ cls: "skillmanager-card-tool" });
+      const toolIcon = toolCaption.createSpan({ cls: "skillmanager-card-tool-icon" });
+      this.renderIcon(toolIcon, tool.icon, tool.svgIcon);
+      toolCaption.createSpan({ text: tool.name });
+    }
+    card.createDiv({ text: itemSummary, cls: "skillmanager-card-desc" });
+    if (tags.length > 0) {
+      const tagRow = card.createDiv({ cls: "skillmanager-card-tags" });
+      for (const tag of tags) tagRow.createSpan({ text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
+    }
+    const footer = card.createDiv({ cls: "skillmanager-card-footer" });
+    const source = footer.createDiv({ cls: "skillmanager-card-source" });
+    const sourceIcon = source.createSpan({ cls: "skillmanager-card-source-icon" });
+    setIcon(sourceIcon, "layers-3");
+    source.createSpan({ text: plugin.group ?? "Installed plugin", cls: "skillmanager-card-source-text" });
+    const right = footer.createDiv({ cls: "skillmanager-card-footer-right" });
+    if (!plugin.enabled) right.createSpan({ text: "Disabled", cls: "skillmanager-card-meta" });
+    card.addEventListener("click", () => {
+      this.pluginBundlesMode = false;
+      this.pluginFilter = plugin.id;
+      this.selectedItem = null;
+      this.selectedFilePath = null;
+      this.pendingDetailAnimation = "forward";
+      this.render();
+    });
+  }
+
+  private renderPluginLibraryBreadcrumb(header: HTMLElement) {
+    const plugin = this.discoveredPlugins.find((candidate) => candidate.id === this.pluginFilter);
+    if (!plugin) return;
+    const crumbs = header.createDiv({ cls: "skillmanager-crumbs" });
+    const backBtn = crumbs.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Back to plugin bundles" } });
+    setIcon(backBtn, "arrow-left");
+    const back = () => {
+      this.pluginFilter = null;
+      this.pluginBundlesMode = true;
+      this.selectedItem = null;
+      this.selectedFilePath = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    backBtn.addEventListener("click", back);
+    const bundlesCrumb = crumbs.createEl("button", { cls: "skillmanager-crumb", text: "Plugin bundles" });
+    bundlesCrumb.addEventListener("click", back);
+    crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+    crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: plugin.name });
+  }
+
   // ---------- MCP servers ----------
 
   /** Read-only visibility into every MCP server found in a tool's own config files (see
@@ -2772,7 +3070,9 @@ export class LibraryView extends ItemView {
    *  real directory on disk right now — independent of enabled state or item count, since a
    *  correctly-configured tool with zero skills yet is still "detected." */
   private toolIsDetected(tool: ToolConfig): boolean {
-    return Object.values(tool.paths).some((p) => p && existsSync(expandHome(p)));
+    return Object.values(tool.paths).some((p) => p && existsSync(expandHome(p)))
+      || (tool.pluginsRegistry ? existsSync(expandHome(tool.pluginsRegistry)) : false)
+      || (tool.pluginsPaths ?? []).some((p) => p && existsSync(expandHome(p)));
   }
 
   private toolMatchesStatusFilter(tool: ToolConfig): boolean {
@@ -3138,6 +3438,58 @@ export class LibraryView extends ItemView {
         void this.saveSettings().then(() => this.rescan());
       }
     );
+
+    body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Plugin bundles" });
+    body.createDiv({
+      cls: "setting-item-description",
+      text: "Optional: point at this tool's installed plugin registry or cache so bundled skills, agents, and commands show up in the Plugin bundles page.",
+    });
+    if (tool.pluginsRegistry !== undefined || tool.pluginsSettingsPath !== undefined) {
+      this.renderToolPathField(
+        body,
+        "Installed registry",
+        tool.pluginsRegistry ?? "",
+        "~/.example/plugins/installed_plugins.json",
+        (raw) => expandHome(raw),
+        (value) => {
+          if (value.trim()) tool.pluginsRegistry = value.trim();
+          else delete tool.pluginsRegistry;
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
+    if (tool.pluginsPaths !== undefined || tool.pluginsRegistry === undefined) {
+      this.renderToolPathField(
+        body,
+        "Installed cache",
+        tool.pluginsPaths?.[0] ?? "",
+        "~/.example/plugins/cache",
+        (raw) => expandHome(raw),
+        (value) => {
+          if (value.trim()) tool.pluginsPaths = [value.trim(), ...(tool.pluginsPaths?.slice(1) ?? [])];
+          else if (tool.pluginsPaths) {
+            const rest = tool.pluginsPaths.slice(1);
+            if (rest.length > 0) tool.pluginsPaths = rest;
+            else delete tool.pluginsPaths;
+          }
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
+    if (tool.pluginsSettingsPath !== undefined) {
+      this.renderToolPathField(
+        body,
+        "Plugin settings",
+        tool.pluginsSettingsPath,
+        "~/.example/settings.json",
+        (raw) => expandHome(raw),
+        (value) => {
+          if (value.trim()) tool.pluginsSettingsPath = value.trim();
+          else delete tool.pluginsSettingsPath;
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
   }
 
   /** Same row shape as renderToolPathField, minus the found/not-found status pill — for a field

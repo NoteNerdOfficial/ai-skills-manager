@@ -44,11 +44,13 @@ Point Discover at a GitHub repo (or a specific subfolder) and it walks it for `S
 **Check for updates, with a real diff**
 For anything installed through the plugin, "Check for updates" fetches the source repo and shows exactly what changed, including companion files like `references/` and `scripts/` alongside the main manifest, before you apply anything. "Restore" reverts an item back to the exact commit it was installed at. An optional background interval can check every tracked source on its own and flag what's stale, without ever applying an update for you.
 
-**Claude Code plugin awareness**
-Reads Claude Code's installed-plugins registry so skills, agents, and commands bundled inside an installed Claude Code plugin show up in the library too, tagged with the plugin they came from.
+**Claude Code and Codex plugin awareness**
+Reads Claude Code's installed-plugins registry and Codex's installed plugin cache so skills, agents, and commands bundled inside installed plugins show up in the library too, tagged with the plugin they came from. Codex plugins are read-only here because AI Skills Manager has no supported Codex setting for enabling or disabling an installed plugin. Manage Codex plugins from Codex itself.
+
+Installed bundles are browsable from **Library → Plugin bundles**, with search, tool/group/tag filters, sorting, and a breadcrumb back from a bundle's item list.
 
 **Dashboard: context cost, usage, and overlaps**
-A dedicated tab that estimates the context footprint of everything you currently have enabled, broken down by tool and ranked item by item. For Claude Code specifically, it reads your real `~/.claude/projects` session transcripts to build a "Top Skills & Agents" usage ranking and to flag prune candidates that have never fired or gone stale, instead of guessing from file age. Everywhere else, a file-age-based heuristic flags large items that haven't been touched in a while. A separate "Possible overlaps" list catches enabled items sharing an exact name (an unambiguous collision) or near-duplicate descriptions, likely competing for the same trigger conditions, with a side-by-side compare before you disable one.
+A dedicated tab that estimates the context footprint of everything you currently have enabled, broken down by tool and ranked item by item. For Claude Code and Codex, it reads their session history (`~/.claude/projects` and `~/.codex/sessions`) to build a "Top Skills & Agents" usage ranking. Claude Code usage data also flags prune candidates that have never fired or gone stale, instead of guessing from file age. Everywhere else, including Codex prune recommendations, a file-age-based heuristic flags large items that haven't been touched in a while. A separate "Possible overlaps" list catches enabled items sharing an exact name (an unambiguous collision) or near-duplicate descriptions, likely competing for the same trigger conditions, with a side-by-side compare before you disable one.
 
 Any prune or overlap suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself.
 
@@ -114,6 +116,8 @@ AI Skills Manager is desktop-only: it reads and writes files directly on disk (a
 - **MCP config editor app**: macOS only; which app "Open config file" on an MCP server should use, overriding the OS's default file association.
 - **Tools**: every tool's global and project-scoped paths, editable per type, with a live "found/not found" check against your actual filesystem. Managed from the "All tools" page in the library sidebar.
 - **Project workspaces**: managed from the Workspaces section of the library sidebar rather than the settings tab; add, edit, or remove project folders (beyond the current vault) to scan for project-local skills.
+
+![All tools page showing configured tools, item counts, and enable or disable controls](images/all-tools.png)
 
 ## Development
 

@@ -78,4 +78,28 @@ describe("scanAllPlugins", () => {
     expect(items).toHaveLength(1);
     expect(items[0].enabled).toBe(false);
   });
+
+  it("discovers Codex plugins from versioned cache folders and scans their commands folder", () => {
+    const cache = join(root, "codex-cache", "openai-curated", "demo", "1.2.3");
+    mkdirSync(join(cache, ".codex-plugin"), { recursive: true });
+    writeFileSync(join(cache, ".codex-plugin", "plugin.json"), JSON.stringify({ name: "Demo", repository: "https://github.com/acme/demo" }));
+    mkdirSync(join(cache, "commands"), { recursive: true });
+    writeFileSync(join(cache, "commands", "ship.md"), "---\nname: ship\ndescription: Ship it\n---\n");
+
+    const tool: ToolConfig = {
+      id: "codex",
+      name: "Codex",
+      icon: "code-2",
+      paths: { skill: "~/.codex/skills", command: "~/.codex/prompts", agent: "~/.codex/agents" },
+      pluginsPaths: [join(root, "codex-cache")],
+      pluginPaths: { command: "commands" },
+    };
+    const result = scanAllPlugins([tool]);
+    expect(result.plugins).toEqual([
+      expect.objectContaining({ id: "codex:openai-curated:demo", name: "Demo", enabled: true, repoUrl: "https://github.com/acme/demo" }),
+    ]);
+    expect(result.items).toEqual([
+      expect.objectContaining({ name: "ship", type: "command", pluginId: "codex:openai-curated:demo", description: "Ship it" }),
+    ]);
+  });
 });

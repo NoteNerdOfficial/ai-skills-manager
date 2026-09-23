@@ -158,8 +158,8 @@ export default class SkillManagerPlugin extends Plugin {
 
   async loadSettings() {
     const loaded = (await this.loadData()) as Partial<SkillManagerPluginSettings> | null;
-    // Only `paths`/`projectPaths`/`disabled` are ever user-edited (via the "All tools" page);
-    // icon/name/pluginsRegistry are code-defined. Rebuilding from DEFAULT_TOOLS each load means
+    // Only path/configuration fields and `disabled` are user-edited (via the "All tools" page);
+    // icon/name are code-defined. Rebuilding from DEFAULT_TOOLS each load means
     // adding or changing one of those later reaches existing users instead of being silently
     // overwritten by a stale persisted copy of the old shape — which is exactly what happened
     // before this fix (and would happen again for projectPaths if it weren't carried over too).
@@ -171,6 +171,9 @@ export default class SkillManagerPlugin extends Plugin {
         paths: saved.paths,
         projectPaths: saved.projectPaths ?? defaultTool.projectPaths,
         disabled: saved.disabled,
+        pluginsRegistry: saved.pluginsRegistry ?? defaultTool.pluginsRegistry,
+        pluginsPaths: saved.pluginsPaths ?? defaultTool.pluginsPaths,
+        pluginsSettingsPath: saved.pluginsSettingsPath ?? defaultTool.pluginsSettingsPath,
         // Same "user-edited, carry over" treatment as paths/projectPaths above — these are the
         // fields the "All tools" detail rail's MCP servers section lets a user fill in for a
         // built-in tool with no confirmed default (see LibraryView.renderToolDetailRail).
@@ -192,8 +195,20 @@ export default class SkillManagerPlugin extends Plugin {
     // section added by a later update still shows up (appended) instead of silently vanishing
     // because it's missing from an older saved order list.
     const savedOrder = (loaded?.sectionOrder ?? []).filter((key) => DEFAULT_SECTION_ORDER.includes(key));
+    const previousDefaultOrder = ["types", "tools", "extensions", "projects", "collections"];
+    const isPreviousDefault = savedOrder.length === previousDefaultOrder.length && savedOrder.every((key, i) => key === previousDefaultOrder[i]);
+    if (isPreviousDefault) savedOrder.splice(0, savedOrder.length, ...DEFAULT_SECTION_ORDER);
     const missingKeys = DEFAULT_SECTION_ORDER.filter((key) => !savedOrder.includes(key));
-    const mergedSectionOrder = [...savedOrder, ...missingKeys];
+    const mergedSectionOrder = [...savedOrder];
+    // Insert newly introduced sections at their default position instead of appending them to
+    // the end of an existing user's order. This keeps Extensions between Tools and Workspaces
+    // while preserving every reorder the user already made around it.
+    for (const key of missingKeys) {
+      const defaultIndex = DEFAULT_SECTION_ORDER.indexOf(key);
+      const nextSavedKey = DEFAULT_SECTION_ORDER.slice(defaultIndex + 1).find((candidate) => mergedSectionOrder.includes(candidate));
+      const insertAt = nextSavedKey ? mergedSectionOrder.indexOf(nextSavedKey) : mergedSectionOrder.length;
+      mergedSectionOrder.splice(insertAt, 0, key);
+    }
 
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded, {
       tools: [...mergedTools, ...customTools],

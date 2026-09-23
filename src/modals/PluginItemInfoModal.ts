@@ -9,10 +9,10 @@ import { ItemMetadata, PluginSource, ToolConfig } from "../types";
 export class PluginItemInfoModal extends Modal {
   constructor(
     app: App,
-    private item: ItemMetadata,
+    private item: ItemMetadata | null,
     private plugin: PluginSource,
     private tool: ToolConfig,
-    private onTogglePlugin: () => void | Promise<void>,
+    private onTogglePlugin?: () => void | Promise<void>,
     private onInstallStandalone?: () => void
   ) {
     super(app);
@@ -21,12 +21,22 @@ export class PluginItemInfoModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: `"${this.item.name}" can't be toggled on its own` });
-    contentEl.createEl("p", {
-      cls: "skillmanager-modal-meta",
-      text: `It's bundled in the "${this.plugin.name}" plugin. ${this.tool.name} only supports enabling or disabling a plugin as a whole — there's no way to turn off just one skill inside it.`,
-    });
-    if (this.onInstallStandalone) {
+    if (this.item) {
+      contentEl.createEl("h3", { text: `"${this.item.name}" can't be toggled on its own` });
+      contentEl.createEl("p", {
+        cls: "skillmanager-modal-meta",
+        text: this.onTogglePlugin
+          ? `It's bundled in the "${this.plugin.name}" plugin. ${this.tool.name} only supports enabling or disabling a plugin as a whole — there's no way to turn off just one skill inside it.`
+          : `It's bundled in the "${this.plugin.name}" plugin managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable this plugin here.`,
+      });
+    } else {
+      contentEl.createEl("h3", { text: `"${this.plugin.name}" can't be toggled here` });
+      contentEl.createEl("p", {
+        cls: "skillmanager-modal-meta",
+        text: `This plugin is managed by ${this.tool.name}. Use ${this.tool.name} to enable or disable it as a whole.`,
+      });
+    }
+    if (this.item && this.onInstallStandalone) {
       contentEl.createEl("p", {
         cls: "skillmanager-modal-meta",
         text: `Want to manage "${this.item.name}" by itself instead? Install it separately via Discover, straight from the plugin's own repo. That copy lives outside the plugin and toggles individually like any other skill.`,
@@ -35,28 +45,30 @@ export class PluginItemInfoModal extends Modal {
 
     const actions = contentEl.createDiv({ cls: "skillmanager-modal-actions" });
     actions.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
-    if (this.onInstallStandalone) {
+    if (this.item && this.onInstallStandalone) {
       const installBtn = actions.createEl("button", { text: "Install standalone copy…" });
       installBtn.addEventListener("click", () => {
         this.close();
         this.onInstallStandalone?.();
       });
     }
-    const pluginToggleBtn = actions.createEl("button", {
-      text: this.plugin.enabled ? `Disable "${this.plugin.name}"` : `Enable "${this.plugin.name}"`,
-      cls: "mod-warning",
-    });
-    pluginToggleBtn.addEventListener("click", () => {
-      void (async () => {
-        try {
-          await this.onTogglePlugin();
-        } catch (e) {
-          new Notice(`Couldn't toggle "${this.plugin.name}": ` + errorMessage(e));
-          return;
-        }
-        this.close();
-      })();
-    });
+    if (this.onTogglePlugin) {
+      const pluginToggleBtn = actions.createEl("button", {
+        text: this.plugin.enabled ? `Disable "${this.plugin.name}"` : `Enable "${this.plugin.name}"`,
+        cls: "mod-warning",
+      });
+      pluginToggleBtn.addEventListener("click", () => {
+        void (async () => {
+          try {
+            await this.onTogglePlugin?.();
+          } catch (e) {
+            new Notice(`Couldn't toggle "${this.plugin.name}": ` + errorMessage(e));
+            return;
+          }
+          this.close();
+        })();
+      });
+    }
   }
 
   onClose() {

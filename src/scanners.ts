@@ -370,16 +370,26 @@ function readPluginEnabledMap(settingsPath: string | undefined): Record<string, 
  *  real installs here), so a miss is the common case, not an error — an install-from-URL escape
  *  hatch (see LibraryView's explainPluginToggle) is a bonus when it's there, never assumed. Only
  *  a github.com URL is any use to us, since InstallFromGitHubModal only understands that host. */
-function readPluginRepoUrl(installPath: string): string | undefined {
-  const manifestPath = join(installPath, ".claude-plugin", "plugin.json");
-  if (!existsSync(manifestPath)) return undefined;
-  try {
-    const raw = JSON.parse(readFileSync(manifestPath, "utf-8")) as { repository?: unknown };
-    const repo = typeof raw.repository === "string" ? raw.repository : undefined;
-    return repo && /^https?:\/\/(www\.)?github\.com\//.test(repo) ? repo : undefined;
-  } catch {
-    return undefined;
+function readPluginManifest(installPath: string): { name?: string; repository?: string } {
+  for (const folder of [".claude-plugin", ".codex-plugin"]) {
+    const manifestPath = join(installPath, folder, "plugin.json");
+    if (!existsSync(manifestPath)) continue;
+    try {
+      const raw = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: unknown; repository?: unknown };
+      return {
+        name: typeof raw.name === "string" ? raw.name : undefined,
+        repository: typeof raw.repository === "string" ? raw.repository : undefined,
+      };
+    } catch {
+      return {};
+    }
   }
+  return {};
+}
+
+function readPluginRepoUrl(installPath: string): string | undefined {
+  const repo = readPluginManifest(installPath).repository;
+  return repo && /^https?:\/\/(www\.)?github\.com\//.test(repo) ? repo : undefined;
 }
 
 function readInstalledPlugins(registryPath: string, toolId: string, pluginsSettingsPath: string | undefined): PluginSource[] {
@@ -396,6 +406,7 @@ function readInstalledPlugins(registryPath: string, toolId: string, pluginsSetti
         plugins.push({
           id: key,
           name: key.split("@")[0],
+          group: key.split("@")[1],
           path: installPath,
           toolId,
           enabled: enabledMap[key] ?? true,
@@ -409,6 +420,65 @@ function readInstalledPlugins(registryPath: string, toolId: string, pluginsSetti
   }
 }
 
+/** Codex keeps installed bundles in a versioned cache rather than a registry JSON. Only
+ * directories with a .codex-plugin marker count; this avoids treating marketplace source trees
+ * or arbitrary folders in the cache as installed plugins. */
+function readCachedPlugins(cachePaths: string[], toolId: string): PluginSource[] {
+  const plugins: PluginSource[] = [];
+  const seen = new Set<string>();
+  const seenPluginIds = new Set<string>();
+  for (const cachePath of cachePaths) {
+    if (!existsSync(cachePath)) continue;
+    let marketplaces: string[];
+    try {
+      marketplaces = readdirSync(cachePath);
+    } catch {
+      continue;
+    }
+    for (const marketplace of marketplaces) {
+      const marketplacePath = join(cachePath, marketplace);
+      let pluginNames: string[];
+      try {
+        pluginNames = readdirSync(marketplacePath);
+      } catch {
+        continue;
+      }
+      for (const pluginName of pluginNames) {
+        const pluginPath = join(marketplacePath, pluginName);
+        let versions: string[];
+        try {
+          versions = readdirSync(pluginPath);
+        } catch {
+          continue;
+        }
+        for (const version of versions) {
+          const installPath = join(pluginPath, version);
+          if (!existsSync(join(installPath, ".codex-plugin"))) continue;
+          const pluginId = `codex:${marketplace}:${pluginName}`;
+          // A cache can retain more than one version/hash during an update. The sidebar models
+          // the logical installed plugin, so expose one entry and scan the first valid bundle.
+          if (seenPluginIds.has(pluginId)) continue;
+          const realInstallPath = resolveRealPath(installPath);
+          if (seen.has(realInstallPath)) continue;
+          seen.add(realInstallPath);
+          seenPluginIds.add(pluginId);
+          const manifest = readPluginManifest(installPath);
+          plugins.push({
+            id: pluginId,
+            name: manifest.name || pluginName,
+            group: marketplace,
+            path: installPath,
+            toolId,
+            enabled: true,
+            repoUrl: readPluginRepoUrl(installPath),
+          });
+        }
+      }
+    }
+  }
+  return plugins;
+}
+
 /** Installed tool plugins bundle their own skills/commands/agents at a versioned install path,
  *  entirely separate from that tool's global directories — confirmed against a real Claude Code
  *  plugin install, which is why they were invisible to scanTool. Returns the discovered items
@@ -418,12 +488,14 @@ export function scanAllPlugins(tools: ToolConfig[]): { items: DiscoveredItem[]; 
   const items: DiscoveredItem[] = [];
   const plugins: PluginSource[] = [];
   for (const tool of tools) {
-    if (!tool.pluginsRegistry) continue;
-    const discovered = readInstalledPlugins(expandHome(tool.pluginsRegistry), tool.id, tool.pluginsSettingsPath);
+    const discovered = tool.pluginsRegistry
+      ? readInstalledPlugins(expandHome(tool.pluginsRegistry), tool.id, tool.pluginsSettingsPath)
+      : readCachedPlugins((tool.pluginsPaths ?? []).map(expandHome), tool.id);
     plugins.push(...discovered);
     for (const plugin of discovered) {
       for (const [type, rawPath] of Object.entries(tool.paths) as [ItemType, string][]) {
-        const found = scanDirectory(join(plugin.path, toPluginRelative(rawPath)), tool, type, null, plugin.id);
+        const pluginPath = tool.pluginPaths?.[type] ?? toPluginRelative(rawPath);
+        const found = scanDirectory(join(plugin.path, pluginPath), tool, type, null, plugin.id);
         // A whole disabled plugin means the tool loads none of its skills, regardless of which
         // folder a given one physically sits in — reflect that on every item rather than only the
         // ones already sitting in a .skillmanager-disabled folder from back when per-item toggling
