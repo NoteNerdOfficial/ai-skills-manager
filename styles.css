@@ -291,7 +291,8 @@
   border: 1px solid var(--background-modifier-border);
   border-radius: 10px;
   background: var(--background-primary);
-  max-width: 620px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .skillmanager-workspace-banner-icon {
@@ -1963,7 +1964,8 @@ input.skillmanager-tag-add-input {
 .skillmanager-modal-meta {
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
-  word-break: break-all;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 .skillmanager-modal-body {

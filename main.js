@@ -7075,7 +7075,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       "Available",
       formatTokens(availableChars).replace("~", ""),
       "skillmanager-dash-stat-accent",
-      "Estimated name-and-description metadata exposed before a skill or agent is invoked. Commands and rules are not included until tool-specific loading policies are modeled."
+      "Estimated name-and-description metadata exposed while a skill or agent is available. For tools that preload this metadata, it can add to the model's context on every turn even when never invoked. Actual behavior varies by tool; commands and rules are not included until their loading policies are modeled."
     );
     this.renderDashboardStat(
       headerStats,
@@ -7543,7 +7543,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       new InfoModal(
         this.app,
         "Why this matters",
-        "For skills and agents, the available estimate represents metadata exposed before invocation. The instruction body is counted separately under On invoke; companion files are loaded on demand. Commands and rules remain tool-dependent until their loading policies are modeled."
+        "An enabled skill or agent may create recurring context overhead before it is ever used. Its name and description can be exposed to the model on each turn so the model knows the capability exists. The instruction body is separate: it is loaded only when the skill or agent is invoked. Unused items may therefore add a small recurring metadata cost, while large instruction bodies mainly affect turns where they are loaded. Actual behavior varies by tool, and commands and rules remain tool-dependent until their loading policies are modeled."
       ).open();
     });
     const now = Date.now();
@@ -7770,7 +7770,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       const availableChars = `${item.name}
 ${item.description}`.length;
       const invocationChars = stripFrontmatter(this.detailContent).length;
-      row("Available", formatTokens(availableChars), "Estimated metadata exposed before invocation: the item's name and description.");
+      row("Available", formatTokens(availableChars), "Estimated name-and-description metadata exposed while this skill or agent is available. For tools that preload it, this can add to the model's context on every turn even when never invoked. Actual behavior varies by tool.");
       row("On invoke", formatTokens(invocationChars), "Estimated instruction-body tokens loaded when this skill or agent is invoked.");
     } else if (filePath === item.sourcePath) {
       row("Context", "Tool-dependent", "Commands and rules have tool-specific loading behavior. Their context cost is not estimated yet.");
