@@ -8903,7 +8903,7 @@ var SkillManagerSettingTab = class extends import_obsidian16.PluginSettingTab {
           },
           {
             name: "Confirm before enabling or disabling",
-            desc: "Show a confirmation naming the exact folder move before a card's toggle, or a Dashboard Disable/Restore action, actually moves anything on disk.",
+            desc: "Show a confirmation naming the exact folder move before a card toggle or a dashboard disable/restore action moves anything on disk.",
             control: {
               type: "toggle",
               key: "confirmBeforeToggle",
@@ -9074,7 +9074,7 @@ var SkillManagerSettingTab = class extends import_obsidian16.PluginSettingTab {
       })
     );
     new import_obsidian16.Setting(containerEl).setName("Confirm before enabling or disabling").setDesc(
-      "On by default: a card's toggle, and a Dashboard Disable/Restore action, show a confirmation naming the exact folder move before anything actually moves on disk. Turn off to skip straight to the move."
+      "Show a confirmation naming the exact folder move before a card toggle or a dashboard disable/restore action moves anything on disk."
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.confirmBeforeToggle).onChange(async (value) => {
         this.plugin.settings.confirmBeforeToggle = value;
