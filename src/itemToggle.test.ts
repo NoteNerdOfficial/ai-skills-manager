@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,11 +6,12 @@ import { DISABLED_DIRNAME, TrashFn, deleteItem, previewToggle, toggleItemEnabled
 import { ItemMetadata, ToolConfig } from "./types";
 
 // vi.spyOn can't redefine a property on Node's own "fs" ESM namespace object ("Module namespace
-// is not configurable in ESM"), so proving deleteItem never falls back to a direct rmSync goes
-// through a real module mock instead — vi.hoisted keeps this control reachable from inside the
-// (hoisted-to-the-top) vi.mock factory below.
-const { rmSyncCalls } = vi.hoisted(() => ({
+// is not configurable in ESM"), so proving deleteItem/togglePluginEnabled never fall back to a
+// direct rmSync/copyFileSync goes through a real module mock instead — vi.hoisted keeps these
+// two controls reachable from inside the (hoisted-to-the-top) vi.mock factory below.
+const { rmSyncCalls, copyFileSyncControl } = vi.hoisted(() => ({
   rmSyncCalls: [] as unknown[][],
+  copyFileSyncControl: { shouldFail: false },
 }));
 
 vi.mock("fs", async (importOriginal) => {
@@ -20,6 +21,10 @@ vi.mock("fs", async (importOriginal) => {
     rmSync: (...args: Parameters<typeof actual.rmSync>) => {
       rmSyncCalls.push(args);
       return actual.rmSync(...args);
+    },
+    copyFileSync: (...args: Parameters<typeof actual.copyFileSync>) => {
+      if (copyFileSyncControl.shouldFail) throw new Error("disk full");
+      return actual.copyFileSync(...args);
     },
   };
 });
@@ -363,5 +368,38 @@ describe("togglePluginEnabled", () => {
 
   it("throws when the settings file doesn't exist", () => {
     expect(() => togglePluginEnabled(makeTool(join(root, "missing.json")), "foo@bar", true)).toThrow(/wasn't found/);
+  });
+
+  it("backs up the settings file before rewriting it, and never overwrites an earlier backup", () => {
+    const settingsPath = join(root, "settings.json");
+    const original = JSON.stringify({ enabledPlugins: { "foo@bar": true } }, null, 2);
+    writeFileSync(settingsPath, original);
+
+    togglePluginEnabled(makeTool(settingsPath), "foo@bar", true);
+    const afterFirstToggle = readFileSync(settingsPath, "utf-8");
+    togglePluginEnabled(makeTool(settingsPath), "foo@bar", false);
+
+    const backupNames = readdirSync(root)
+      .filter((f) => f.startsWith("settings.json.skillmanager-bak-"))
+      .sort();
+    // One backup per toggle call — a same-second collision gets a "-1" numeric suffix rather
+    // than clobbering the first backup (see backupSettingsFile's own comment).
+    expect(backupNames.length).toBe(2);
+    expect(readFileSync(join(root, backupNames[0]), "utf-8")).toBe(original);
+    expect(readFileSync(join(root, backupNames[1]), "utf-8")).toBe(afterFirstToggle);
+  });
+
+  it("does not rewrite the settings file when the backup copy itself fails", () => {
+    const settingsPath = join(root, "settings.json");
+    const original = JSON.stringify({ enabledPlugins: { "foo@bar": true } }, null, 2);
+    writeFileSync(settingsPath, original);
+    copyFileSyncControl.shouldFail = true;
+
+    try {
+      expect(() => togglePluginEnabled(makeTool(settingsPath), "foo@bar", true)).toThrow("disk full");
+      expect(readFileSync(settingsPath, "utf-8")).toBe(original); // untouched — the write never ran
+    } finally {
+      copyFileSyncControl.shouldFail = false;
+    }
   });
 });

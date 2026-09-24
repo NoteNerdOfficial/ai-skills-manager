@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { linkableUnit } from "./fsUnit";
@@ -79,15 +79,52 @@ export function previewToggle(item: ItemMetadata): ToggleMovePreview {
   return { willDisable: true, fromPath: unit.path, toPath: join(parentDir, DISABLED_DIRNAME, unit.name) };
 }
 
+/** YYYYMMDD-HHMMSS, local time — just enough resolution to sort correctly alongside a plain
+ *  directory listing without dragging in a date-formatting dependency for one string. */
+function backupTimestamp(now: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+
+/** Copies settingsPath to a sibling "<name>.skillmanager-bak-<timestamp>" before it's about to
+ *  be overwritten, so a bad plugin-bundle toggle (or any other corruption of the tool's own
+ *  settings file) can always be recovered by hand. COPYFILE_EXCL refuses to silently clobber an
+ *  existing file at the backup's own path; on that collision (two toggles landing in the same
+ *  second) a numeric suffix is appended instead of overwriting the earlier backup — "one backup
+ *  per write" is the whole point of this existing. Throws (and so aborts the write that would
+ *  have followed it — see togglePluginEnabled) if the copy can't be made at all. */
+function backupSettingsFile(settingsPath: string): void {
+  const base = `${settingsPath}.skillmanager-bak-${backupTimestamp(new Date())}`;
+  let target = base;
+  let suffix = 0;
+  for (;;) {
+    try {
+      copyFileSync(settingsPath, target, constants.COPYFILE_EXCL);
+      return;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      suffix++;
+      target = `${base}-${suffix}`;
+    }
+  }
+}
+
 /** Flips whether the tool loads an installed plugin at all, by writing straight into the
  *  tool's own settings JSON (e.g. Claude Code's ~/.claude/settings.json "enabledPlugins" map) —
  *  the same file and key the tool's own plugin enable/disable UI would write to, unlike
  *  toggleItemEnabled's file-move trick. This is the only granularity the tool actually supports:
- *  every item bundled in the plugin turns on or off as one unit. */
+ *  every item bundled in the plugin turns on or off as one unit.
+ *
+ *  Backs the file up first (see backupSettingsFile) — this reads, then wholesale rewrites, a
+ *  file the tool itself owns and that can carry a lot more than just plugin state (permissions,
+ *  other settings), so a parse/write mistake here is worth being able to undo by hand. If the
+ *  backup can't be made, the rewrite doesn't happen either. */
 export function togglePluginEnabled(tool: ToolConfig, pluginId: string, currentlyEnabled: boolean): void {
   if (!tool.pluginsSettingsPath) throw new Error(`${tool.name} has no known plugin settings file.`);
   const settingsPath = expandHome(tool.pluginsSettingsPath);
   if (!existsSync(settingsPath)) throw new Error(`${tool.name}'s settings file wasn't found at ${settingsPath}.`);
+
+  backupSettingsFile(settingsPath);
 
   const raw = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown> & {
     enabledPlugins?: Record<string, boolean>;
