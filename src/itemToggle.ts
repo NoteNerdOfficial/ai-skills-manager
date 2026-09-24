@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { linkableUnit } from "./fsUnit";
@@ -73,21 +73,35 @@ export function togglePluginEnabled(tool: ToolConfig, pluginId: string, currentl
   writeFileSync(settingsPath, JSON.stringify(raw, null, 2) + "\n");
 }
 
-/** Removes the on-disk unit backing this card. For a real skill/agent/command/rule, this is an
- *  uninstall — the actual file or folder is gone for good. For a project-scoped symlink instance,
- *  `sourcePath` (and so `unit.path`) is the symlink itself, not the global skill it points to, so
- *  this degrades to exactly the existing "unlink" behavior (see projectLink.ts's
- *  removeFromProject) without needing to special-case it.
+/** A callback that moves a real path to the OS's own trash/recycle bin, resolving once it's
+ *  actually there (or rejecting if it isn't) — deliberately just a function, not an Electron
+ *  import of its own, so this stays a plain Node module. LibraryView supplies the real one via
+ *  Electron's `shell.trashItem` (see its electronShell()); tests inject a fake. */
+export type TrashFn = (path: string) => Promise<void>;
+
+/** Removes the on-disk unit backing this card. For a real skill/agent/command/rule, this moves
+ *  the file or folder to the OS trash/recycle bin via the injected `trash` function — recoverable
+ *  by hand from there, unlike the permanent rmSync this used to do. For a project-scoped symlink
+ *  instance, `sourcePath` (and so `unit.path`) is the symlink itself, not the global skill it
+ *  points to: that case is never routed through `trash` at all, just unlinked directly, exactly
+ *  matching the existing "unlink only, never touch the real target" behavior (see
+ *  projectLink.ts's removeFromProject) — trashing a symlink would still only be trashing the
+ *  link, so there's nothing trash-specific to gain by going through Electron for it, and it keeps
+ *  this path working even where Electron's shell isn't reachable at all.
  *
  *  Refuses anything with a pluginId, same reasoning as toggleItemEnabled's guard: the file lives
  *  inside the tool's own plugin manager (for Claude Code, a git-tracked cache directory it can
  *  re-clone or update at any time), not a personal skills folder we own the lifecycle of.
  *  Permanently deleting a file out of that directory is a plugin uninstall, and the tool already
- *  has its own supported way to do that — this app has no business doing it via rm. */
-export function deleteItem(item: ItemMetadata): void {
+ *  has its own supported way to do that — this app has no business doing it via rm (or trash). */
+export async function deleteItem(item: ItemMetadata, trash: TrashFn): Promise<void> {
   if (item.pluginId !== null) {
     throw new Error(`"${item.name}" is part of an installed plugin — remove the whole plugin from where it was installed instead.`);
   }
   const unit = linkableUnit(item.sourcePath);
-  rmSync(unit.path, { recursive: true, force: true });
+  if (lstatSync(unit.path).isSymbolicLink()) {
+    unlinkSync(unit.path);
+    return;
+  }
+  await trash(unit.path);
 }

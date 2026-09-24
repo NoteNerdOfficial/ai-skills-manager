@@ -1,9 +1,41 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DISABLED_DIRNAME, deleteItem, toggleItemEnabled, togglePluginEnabled } from "./itemToggle";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DISABLED_DIRNAME, TrashFn, deleteItem, toggleItemEnabled, togglePluginEnabled } from "./itemToggle";
 import { ItemMetadata, ToolConfig } from "./types";
+
+// vi.spyOn can't redefine a property on Node's own "fs" ESM namespace object ("Module namespace
+// is not configurable in ESM"), so proving deleteItem never falls back to a direct rmSync goes
+// through a real module mock instead — vi.hoisted keeps this control reachable from inside the
+// (hoisted-to-the-top) vi.mock factory below.
+const { rmSyncCalls } = vi.hoisted(() => ({
+  rmSyncCalls: [] as unknown[][],
+}));
+
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>();
+  return {
+    ...actual,
+    rmSync: (...args: Parameters<typeof actual.rmSync>) => {
+      rmSyncCalls.push(args);
+      return actual.rmSync(...args);
+    },
+  };
+});
+
+/** Fails the test loudly if deleteItem ever reaches for the real OS trash during a symlink
+ *  delete — see the "removes only the link" test below. */
+const unreachableTrash: TrashFn = () => {
+  throw new Error("trash() should never be called for a symlink delete");
+};
+
+/** Stands in for the real Electron shell.trashItem in tests that only care that deleteItem moved
+ *  the right path out of its original location — actually removes it, same observable effect a
+ *  real trash call has on the original location. */
+const fakeTrashThatRemoves: TrashFn = async (path) => {
+  rmSync(path, { recursive: true, force: true });
+};
 
 function makeItem(sourcePath: string): ItemMetadata {
   return {
@@ -154,31 +186,62 @@ describe("toggleItemEnabled / deleteItem", () => {
     expect(readFileSync(target, "utf-8")).toBe("content");
   });
 
-  it("refuses to delete a plugin-bundled item, leaving the file untouched", () => {
+  it("refuses to delete a plugin-bundled item, leaving the file untouched", async () => {
     const filePath = join(root, "ask-matt.md");
     writeFileSync(filePath, "content");
     const item = { ...makeItem(filePath), pluginId: "mattpocock-skills@claude-plugins-official" };
 
-    expect(() => deleteItem(item)).toThrow(/installed plugin/);
+    await expect(deleteItem(item, fakeTrashThatRemoves)).rejects.toThrow(/installed plugin/);
     expect(existsSync(filePath)).toBe(true);
   });
 
-  it("deleteItem removes a flat file", () => {
+  it("deleteItem moves a flat file out via the injected trash function", async () => {
     const filePath = join(root, "backend.md");
     writeFileSync(filePath, "content");
-    deleteItem(makeItem(filePath));
+    await deleteItem(makeItem(filePath), fakeTrashThatRemoves);
     expect(existsSync(filePath)).toBe(false);
   });
 
-  it("deleteItem removes a skill folder recursively", () => {
+  it("deleteItem moves a skill folder out via the injected trash function, recursively", async () => {
     const skillDir = join(root, "pdf-editing");
     mkdirSync(join(skillDir, "scripts"), { recursive: true });
     writeFileSync(join(skillDir, "SKILL.md"), "manifest");
     writeFileSync(join(skillDir, "scripts", "helper.py"), "print(1)");
 
-    deleteItem(makeItem(join(skillDir, "SKILL.md")));
+    await deleteItem(makeItem(join(skillDir, "SKILL.md")), fakeTrashThatRemoves);
 
     expect(existsSync(skillDir)).toBe(false);
+  });
+
+  it("deleteItem calls the injected trash function with the real path, never rmSync directly", async () => {
+    const skillDir = join(root, "pdf-editing");
+    mkdirSync(skillDir);
+    writeFileSync(join(skillDir, "SKILL.md"), "manifest");
+    rmSyncCalls.length = 0;
+    // Deliberately does NOT touch the filesystem — proves deleteItem itself never falls back to
+    // a direct rmSync/rm when the trash function is the one actually responsible for the move,
+    // and that the real unit path (not some other path) was handed to it.
+    const trash: TrashFn = vi.fn(async () => {});
+
+    await deleteItem(makeItem(join(skillDir, "SKILL.md")), trash);
+
+    expect(trash).toHaveBeenCalledWith(skillDir);
+    expect(trash).toHaveBeenCalledTimes(1);
+    expect(rmSyncCalls).toEqual([]);
+    expect(existsSync(skillDir)).toBe(true); // the fake trash fn never actually removed it
+  });
+
+  it("deleteItem throws and leaves the folder in place when the trash function rejects", async () => {
+    const skillDir = join(root, "pdf-editing");
+    mkdirSync(skillDir);
+    writeFileSync(join(skillDir, "SKILL.md"), "manifest");
+    const rejectingTrash: TrashFn = async () => {
+      throw new Error("trash unavailable");
+    };
+
+    await expect(deleteItem(makeItem(join(skillDir, "SKILL.md")), rejectingTrash)).rejects.toThrow("trash unavailable");
+
+    expect(existsSync(skillDir)).toBe(true);
   });
 
   it("refuses to toggle a plugin-bundled item individually, leaving the file untouched", () => {
@@ -190,10 +253,12 @@ describe("toggleItemEnabled / deleteItem", () => {
     expect(existsSync(filePath)).toBe(true);
   });
 
-  it("deleteItem on a project-linked symlink removes only the link, never the real target", () => {
+  it("deleteItem on a project-linked symlink removes only the link, never the real target, and never calls trash", async () => {
     // This is the case that matters most: uninstalling a project-scoped instance of a shared
     // global skill must never reach through the symlink and delete the global copy other
-    // projects still depend on.
+    // projects still depend on. It also must never route through the OS trash — trashing a
+    // symlink would still just be trashing the link, so this stays a plain unlink even when
+    // Electron's shell isn't reachable at all.
     const globalSkillDir = join(root, "global-skills", "pdf-editing");
     mkdirSync(globalSkillDir, { recursive: true });
     writeFileSync(join(globalSkillDir, "SKILL.md"), "manifest");
@@ -204,7 +269,7 @@ describe("toggleItemEnabled / deleteItem", () => {
     const linkPath = join(projectDir, "pdf-editing");
     symlinkSync(globalSkillDir, linkPath, "dir");
 
-    deleteItem(makeItem(join(linkPath, "SKILL.md")));
+    await deleteItem(makeItem(join(linkPath, "SKILL.md")), unreachableTrash);
 
     expect(existsSync(linkPath)).toBe(false); // the link is gone
     expect(existsSync(globalSkillDir)).toBe(true); // the real global skill is untouched

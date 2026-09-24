@@ -2945,10 +2945,15 @@ export class LibraryView extends ItemView {
   /** Obsidian desktop runs on Electron with Node integration enabled for plugins, so its own
    *  `window.require` reaches Electron's `shell` without adding an `electron` devDependency just
    *  for type declarations (the package itself is already external — see esbuild.config.mjs —
-   *  but has no types installed). Undefined on a build without Node integration (e.g. mobile). */
-  private electronShell(): { openPath(path: string): Promise<string> } | null {
-    const req = (window as unknown as { require?: (id: string) => { shell: { openPath(path: string): Promise<string> } } })
-      .require;
+   *  but has no types installed). Undefined on a build without Node integration (e.g. mobile).
+   *  `trashItem` is included alongside the existing `openPath` here (same object, one call) so
+   *  confirmDelete can route a real delete through the OS trash rather than a permanent rm. */
+  private electronShell(): { openPath(path: string): Promise<string>; trashItem(path: string): Promise<void> } | null {
+    const req = (
+      window as unknown as {
+        require?: (id: string) => { shell: { openPath(path: string): Promise<string>; trashItem(path: string): Promise<void> } };
+      }
+    ).require;
     return req ? req("electron").shell : null;
   }
 
@@ -4171,9 +4176,13 @@ export class LibraryView extends ItemView {
    *  never the real file it resolves to (see deleteItem's own comment). That's true whether the
    *  symlink is a project's local link into the shared library (isProjectLinked below) or a
    *  tool's own global symlink out to some other store (e.g. a skill kept outside the library and
-   *  symlinked into ~/.claude/skills) — so both get the safe "unlink" wording, not the "permanent
-   *  delete" one, which previously only applied to the project case even though the global case
-   *  is equally non-destructive. */
+   *  symlinked into ~/.claude/skills) — so both get the safe "unlink" wording, not the "moved to
+   *  the trash" one, which previously only applied to the project case even though the global
+   *  case is equally non-destructive.
+   *
+   *  A real (non-symlink) delete now moves the item to the OS Recycle Bin/Trash via Electron's
+   *  shell.trashItem (see deleteItem/electronShell) instead of permanently removing it, so the
+   *  copy here says so rather than "can't be undone." */
   private confirmDelete(item: ItemMetadata) {
     const unitPath = linkableUnit(item.sourcePath).path;
     const isSymlink = this.isSymlinkedItem(item);
@@ -4185,11 +4194,13 @@ export class LibraryView extends ItemView {
         ? isProjectLinked
           ? `This removes the project's symlink to "${item.name}". The skill itself stays in your library.`
           : `This removes the symlink to "${item.name}" at ${unitPath}. The file it points to, at ${item.realPath}, isn't touched.`
-        : `This permanently deletes "${item.name}" from disk at ${unitPath}. This can't be undone from Obsidian.`,
+        : `This moves "${item.name}" to the Recycle Bin/Trash from ${unitPath}. You can restore it from there if this was a mistake.`,
       isSymlink ? "Unlink" : "Delete",
       async () => {
         try {
-          deleteItem(item);
+          const shell = this.electronShell();
+          if (!shell) throw new Error("Can't move files to the Recycle Bin/Trash on this device — try Obsidian's desktop app.");
+          await deleteItem(item, (path) => shell.trashItem(path));
           await this.rescan();
         } catch (e) {
           new Notice(`Couldn't delete "${item.name}": ` + errorMessage(e));
