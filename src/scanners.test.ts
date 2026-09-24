@@ -205,3 +205,55 @@ describe("ruleAdditionalPaths / ruleAdditionalProjectPaths", () => {
     expect(claudeCode?.ruleAdditionalProjectPaths).toEqual([{ path: ".claude/rules", singleFile: false }]);
   });
 });
+
+describe("index/readme-like flat files are excluded from skill/agent/command, kept for rule", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "skillmanager-index-exclusion-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("a skills folder with an index/readme sibling only lists the real skill", () => {
+    const skillsDir = join(root, "skills");
+    mkdirSync(join(skillsDir, "demo-skill"), { recursive: true });
+    writeFileSync(join(skillsDir, "demo-skill", "SKILL.md"), "---\nname: demo-skill\n---\n");
+    writeFileSync(join(skillsDir, "skills_index.md"), "auto-generated index, not a skill");
+    writeFileSync(join(skillsDir, "README.md"), "documents this folder, not a skill");
+    writeFileSync(join(skillsDir, "notes-index.md"), "another index-style file");
+
+    const tool: ToolConfig = { id: "test", name: "Test", icon: "box", paths: { skill: skillsDir } };
+    const items = scanTool(tool);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("demo-skill");
+  });
+
+  it("a commands folder keeps a real command and drops README.md", () => {
+    const commandsDir = join(root, "commands");
+    mkdirSync(commandsDir, { recursive: true });
+    writeFileSync(join(commandsDir, "deploy.md"), "---\nname: deploy\n---\n");
+    writeFileSync(join(commandsDir, "README.md"), "documents this folder, not a command");
+
+    const tool: ToolConfig = { id: "test", name: "Test", icon: "box", paths: { command: commandsDir } };
+    const items = scanTool(tool);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("deploy");
+  });
+
+  it("a rules folder keeps README.md, since a tool's rules loader reads every .md in it", () => {
+    const rulesDir = join(root, "rules");
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(join(rulesDir, "README.md"), "---\nname: README\n---\nactually a rule file here");
+
+    const tool: ToolConfig = { id: "test", name: "Test", icon: "box", paths: { rule: rulesDir } };
+    const items = scanTool(tool);
+
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("README");
+  });
+});
