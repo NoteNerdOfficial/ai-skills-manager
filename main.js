@@ -65,6 +65,13 @@ var DEFAULT_TOOLS = [
       rule: "CLAUDE.md"
     },
     singleFileRule: true,
+    // Documented at https://code.claude.com/docs/en/memory: "~/.claude/rules/" for user-level
+    // rules and ".claude/rules/" for project-level rules, alongside (not instead of) the single
+    // CLAUDE.md file above — "All .md files are discovered recursively, so you can organize
+    // rules into subdirectories." Without these, a rules/ folder next to CLAUDE.md was never
+    // scanned at all.
+    ruleAdditionalPaths: [{ path: "~/.claude/rules", singleFile: false }],
+    ruleAdditionalProjectPaths: [{ path: ".claude/rules", singleFile: false }],
     pluginsRegistry: "~/.claude/plugins/installed_plugins.json",
     pluginsSettingsPath: "~/.claude/settings.json",
     // ~/.claude/skills/synced/<workspace>_<user>/ is a vendor-managed cache of Claude Code's own
@@ -392,7 +399,8 @@ var DEFAULT_SETTINGS = {
   dashboardRecentlyDisabled: {},
   dashboardDisregarded: {},
   workspaceHintDismissed: false,
-  mcpConfigEditorApp: ""
+  mcpConfigEditorApp: "",
+  confirmBeforeToggle: true
 };
 
 // src/settings.ts
@@ -483,6 +491,34 @@ function toggleItemEnabled(item) {
     moveEntry(unit.path, target, unit.isDirectory);
   }
 }
+function previewToggle(item) {
+  const unit = linkableUnit(item.sourcePath);
+  const parentDir = (0, import_path2.dirname)(unit.path);
+  if ((0, import_path2.basename)(parentDir) === DISABLED_DIRNAME) {
+    return { willDisable: false, fromPath: unit.path, toPath: (0, import_path2.join)((0, import_path2.dirname)(parentDir), unit.name) };
+  }
+  return { willDisable: true, fromPath: unit.path, toPath: (0, import_path2.join)(parentDir, DISABLED_DIRNAME, unit.name) };
+}
+function backupTimestamp(now) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+function backupSettingsFile(settingsPath) {
+  const base = `${settingsPath}.skillmanager-bak-${backupTimestamp(/* @__PURE__ */ new Date())}`;
+  let target = base;
+  let suffix = 0;
+  for (; ; ) {
+    try {
+      (0, import_fs.copyFileSync)(settingsPath, target, import_fs.constants.COPYFILE_EXCL);
+      return;
+    } catch (e) {
+      if (e.code !== "EEXIST")
+        throw e;
+      suffix++;
+      target = `${base}-${suffix}`;
+    }
+  }
+}
 function togglePluginEnabled(tool, pluginId, currentlyEnabled) {
   var _a;
   if (!tool.pluginsSettingsPath)
@@ -490,16 +526,21 @@ function togglePluginEnabled(tool, pluginId, currentlyEnabled) {
   const settingsPath = expandHome(tool.pluginsSettingsPath);
   if (!(0, import_fs.existsSync)(settingsPath))
     throw new Error(`${tool.name}'s settings file wasn't found at ${settingsPath}.`);
+  backupSettingsFile(settingsPath);
   const raw = JSON.parse((0, import_fs.readFileSync)(settingsPath, "utf-8"));
   raw.enabledPlugins = { ...(_a = raw.enabledPlugins) != null ? _a : {}, [pluginId]: !currentlyEnabled };
   (0, import_fs.writeFileSync)(settingsPath, JSON.stringify(raw, null, 2) + "\n");
 }
-function deleteItem(item) {
+async function deleteItem(item, trash) {
   if (item.pluginId !== null) {
     throw new Error(`"${item.name}" is part of an installed plugin \u2014 remove the whole plugin from where it was installed instead.`);
   }
   const unit = linkableUnit(item.sourcePath);
-  (0, import_fs.rmSync)(unit.path, { recursive: true, force: true });
+  if ((0, import_fs.lstatSync)(unit.path).isSymbolicLink()) {
+    (0, import_fs.unlinkSync)(unit.path);
+    return;
+  }
+  await trash(unit.path);
 }
 
 // src/scanners.ts
@@ -568,6 +609,11 @@ function makeEntryId(toolId, type, projectId, pluginId, name, identityPath) {
 }
 var MAX_SCAN_DEPTH = 4;
 var SKIP_DIRNAMES = /* @__PURE__ */ new Set([DISABLED_DIRNAME, "node_modules", ".git"]);
+function isIndexLikeFileName(fileName) {
+  const lower = fileName.toLowerCase();
+  const base = lower.replace(/\.md$/, "");
+  return base === "readme" || base === "index" || base.endsWith("_index") || base.endsWith("-index");
+}
 function scanEntries(dir, tool, type, projectId, pluginId, enabled, depth = 0) {
   if (!(0, import_fs2.existsSync)(dir) || depth > MAX_SCAN_DEPTH)
     return [];
@@ -610,6 +656,8 @@ function scanEntries(dir, tool, type, projectId, pluginId, enabled, depth = 0) {
       continue;
     }
     if (entry.endsWith(".md")) {
+      if (type !== "rule" && isIndexLikeFileName(entry))
+        continue;
       const baseName = entry.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
       const meta = readSourceMeta(entryPath);
       items.push({
@@ -3908,6 +3956,31 @@ var LibraryView = class extends import_obsidian15.ItemView {
     }
     await this.rescan();
   }
+  /** Gate in front of every enable/disable that moves a real file or folder — a card's toggle,
+   *  the Dashboard's Disable/Restore actions, and the broken-symlinks "Enable source" shortcut
+   *  all route through here rather than calling toggleEnabled (or whatever Dashboard bookkeeping
+   *  wraps it) directly, so a stray click doesn't silently move something on disk. Skipped
+   *  entirely when confirmBeforeToggle (Settings, on by default) is off. `perform` is whatever
+   *  that call site already did — this only decides whether it runs immediately or behind a
+   *  confirmation naming the exact move, worded from previewToggle so it can never drift from
+   *  what toggleItemEnabled itself is about to do. */
+  confirmToggle(item, perform) {
+    if (!this.getSettings().confirmBeforeToggle) {
+      void perform();
+      return;
+    }
+    const preview = previewToggle(item);
+    const toolText = this.toolLabel(item).text;
+    new ConfirmModal(
+      this.app,
+      preview.willDisable ? `Disable "${item.name}"?` : `Enable "${item.name}"?`,
+      preview.willDisable ? `This moves "${item.name}" to ${preview.toPath}, so ${toolText} stops seeing it.` : `This moves "${item.name}" back to ${preview.toPath}, so ${toolText} can see it again.`,
+      preview.willDisable ? "Disable" : "Enable",
+      async () => {
+        await perform();
+      }
+    ).open();
+  }
   /** Quick unlink for a card the user is looking at directly, rather than routing through the
    *  project presence modal — removeFromProject already refuses anything that isn't actually a
    *  symlink, so this can't run against a Local card even if one somehow triggers it. */
@@ -6050,7 +6123,9 @@ var LibraryView = class extends import_obsidian15.ItemView {
   /** Obsidian desktop runs on Electron with Node integration enabled for plugins, so its own
    *  `window.require` reaches Electron's `shell` without adding an `electron` devDependency just
    *  for type declarations (the package itself is already external — see esbuild.config.mjs —
-   *  but has no types installed). Undefined on a build without Node integration (e.g. mobile). */
+   *  but has no types installed). Undefined on a build without Node integration (e.g. mobile).
+   *  `trashItem` is included alongside the existing `openPath` here (same object, one call) so
+   *  confirmDelete can route a real delete through the OS trash rather than a permanent rm. */
   electronShell() {
     const req = window.require;
     return req ? req("electron").shell : null;
@@ -6993,7 +7068,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       if (item.pluginId !== null) {
         this.explainPluginToggle(item);
       } else {
-        void this.toggleEnabled(item);
+        this.confirmToggle(item, () => this.toggleEnabled(item));
       }
     });
     const toolInfo = this.toolLabel(item);
@@ -7157,9 +7232,13 @@ var LibraryView = class extends import_obsidian15.ItemView {
    *  never the real file it resolves to (see deleteItem's own comment). That's true whether the
    *  symlink is a project's local link into the shared library (isProjectLinked below) or a
    *  tool's own global symlink out to some other store (e.g. a skill kept outside the library and
-   *  symlinked into ~/.claude/skills) — so both get the safe "unlink" wording, not the "permanent
-   *  delete" one, which previously only applied to the project case even though the global case
-   *  is equally non-destructive. */
+   *  symlinked into ~/.claude/skills) — so both get the safe "unlink" wording, not the "moved to
+   *  the trash" one, which previously only applied to the project case even though the global
+   *  case is equally non-destructive.
+   *
+   *  A real (non-symlink) delete now moves the item to the OS Recycle Bin/Trash via Electron's
+   *  shell.trashItem (see deleteItem/electronShell) instead of permanently removing it, so the
+   *  copy here says so rather than "can't be undone." */
   confirmDelete(item) {
     const unitPath = linkableUnit(item.sourcePath).path;
     const isSymlink = this.isSymlinkedItem(item);
@@ -7167,11 +7246,14 @@ var LibraryView = class extends import_obsidian15.ItemView {
     new ConfirmModal(
       this.app,
       isSymlink ? isProjectLinked ? "Unlink from project?" : "Unlink?" : `Delete "${item.name}"?`,
-      isSymlink ? isProjectLinked ? `This removes the project's symlink to "${item.name}". The skill itself stays in your library.` : `This removes the symlink to "${item.name}" at ${unitPath}. The file it points to, at ${item.realPath}, isn't touched.` : `This permanently deletes "${item.name}" from disk at ${unitPath}. This can't be undone from Obsidian.`,
+      isSymlink ? isProjectLinked ? `This removes the project's symlink to "${item.name}". The skill itself stays in your library.` : `This removes the symlink to "${item.name}" at ${unitPath}. The file it points to, at ${item.realPath}, isn't touched.` : `This moves "${item.name}" to the Recycle Bin/Trash from ${unitPath}. You can restore it from there if this was a mistake.`,
       isSymlink ? "Unlink" : "Delete",
       async () => {
         try {
-          deleteItem(item);
+          const shell = this.electronShell();
+          if (!shell)
+            throw new Error("Can't move files to the Recycle Bin/Trash on this device \u2014 try Obsidian's desktop app.");
+          await deleteItem(item, (path) => shell.trashItem(path));
           await this.rescan();
         } catch (e) {
           new import_obsidian15.Notice(`Couldn't delete "${item.name}": ` + errorMessage(e));
@@ -7582,7 +7664,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
         const enableBtn = actions.createEl("button", { text: "Enable source", cls: "skillmanager-dash-action-btn" });
         enableBtn.addEventListener("click", (evt) => {
           evt.stopPropagation();
-          void this.toggleEnabled(disabledSource);
+          this.confirmToggle(disabledSource, () => this.toggleEnabled(disabledSource));
         });
       }
       const revealBtn = actions.createEl("button", { text: this.fileManagerLabel(), cls: "skillmanager-dash-action-btn" });
@@ -7694,7 +7776,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
       restoreBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
-        void this.restoreFromDashboard(item);
+        this.confirmToggle(item, () => this.restoreFromDashboard(item));
       });
     }
   }
@@ -7758,7 +7840,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
           pair.b,
           pair.score,
           pair.sameName,
-          (item) => void this.disableFromDashboard(item),
+          (item) => this.confirmToggle(item, () => this.disableFromDashboard(item)),
           (item) => this.confirmDelete(item),
           (item) => this.openItemFromDashboard(item)
         ).open();
@@ -7777,7 +7859,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
         cls: "skillmanager-dash-row-meta"
       });
       const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
-      restoreBtn.addEventListener("click", () => void this.restoreFromDashboard(item));
+      restoreBtn.addEventListener("click", () => this.confirmToggle(item, () => this.restoreFromDashboard(item)));
     }
     if (totalCount > DASHBOARD_RANKED_COLLAPSED_COUNT) {
       const toggleBtn = section.createEl("button", {
@@ -7922,7 +8004,12 @@ var LibraryView = class extends import_obsidian15.ItemView {
     const metaRow = info.createDiv({ cls: "skillmanager-dash-row-meta" });
     metaRow.createSpan({ text: metaText });
     metaRow.createSpan({ text: methodLabel, cls: "skillmanager-card-type skillmanager-dash-method-tag" });
-    this.renderDashboardDisregardableActions(row, item.entryId, "Disable", () => void this.disableFromDashboard(item));
+    this.renderDashboardDisregardableActions(
+      row,
+      item.entryId,
+      "Disable",
+      () => this.confirmToggle(item, () => this.disableFromDashboard(item))
+    );
   }
   // ---------- selection: one detail rail, breadcrumbed between the file list and a file ----------
   /** A folder-based skill with more than one file gets a tree; everything else (a flat
@@ -8813,6 +8900,15 @@ var SkillManagerSettingTab = class extends import_obsidian16.PluginSettingTab {
               key: "showEmptySidebarRows",
               defaultValue: false
             }
+          },
+          {
+            name: "Confirm before enabling or disabling",
+            desc: "Show a confirmation naming the exact folder move before a card's toggle, or a Dashboard Disable/Restore action, actually moves anything on disk.",
+            control: {
+              type: "toggle",
+              key: "confirmBeforeToggle",
+              defaultValue: true
+            }
           }
         ]
       },
@@ -8867,6 +8963,8 @@ var SkillManagerSettingTab = class extends import_obsidian16.PluginSettingTab {
         return String(settings[key]);
       case "showEmptySidebarRows":
         return settings.showEmptySidebarRows;
+      case "confirmBeforeToggle":
+        return settings.confirmBeforeToggle;
       default:
         return void 0;
     }
@@ -8902,6 +9000,10 @@ var SkillManagerSettingTab = class extends import_obsidian16.PluginSettingTab {
           this.plugin.settings.showEmptySidebarRows = value;
           this.plugin.refreshOpenViews();
         }
+        break;
+      case "confirmBeforeToggle":
+        if (typeof value === "boolean")
+          this.plugin.settings.confirmBeforeToggle = value;
         break;
       case "mcpConfigEditorApp":
         if (typeof value === "string")
@@ -8969,6 +9071,14 @@ var SkillManagerSettingTab = class extends import_obsidian16.PluginSettingTab {
         this.plugin.settings.showEmptySidebarRows = value;
         await this.plugin.saveSettings();
         this.plugin.refreshOpenViews();
+      })
+    );
+    new import_obsidian16.Setting(containerEl).setName("Confirm before enabling or disabling").setDesc(
+      "On by default: a card's toggle, and a Dashboard Disable/Restore action, show a confirmation naming the exact folder move before anything actually moves on disk. Turn off to skip straight to the move."
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.confirmBeforeToggle).onChange(async (value) => {
+        this.plugin.settings.confirmBeforeToggle = value;
+        await this.plugin.saveSettings();
       })
     );
     new import_obsidian16.Setting(containerEl).setName("MCP servers").setHeading();
