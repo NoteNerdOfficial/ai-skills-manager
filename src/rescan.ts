@@ -1,6 +1,7 @@
 import { App, FileSystemAdapter } from "obsidian";
-import { ItemMetadata, McpServerEntry, PluginSource, ProjectWorkspace, SkillManagerPluginSettings } from "./types";
-import { scanAllPlugins, scanAllProjects, scanAllTools } from "./scanners";
+import { dirname } from "path";
+import { BrokenSymlink, ItemMetadata, McpServerEntry, PluginSource, ProjectWorkspace, SkillManagerPluginSettings } from "./types";
+import { scanAllPlugins, scanAllProjects, scanAllTools, scanBrokenSymlinks } from "./scanners";
 import { scanMcpServers } from "./mcpScanners";
 import { ShadowNoteStore } from "./store";
 
@@ -27,6 +28,7 @@ export interface RescanResult {
   items: ItemMetadata[];
   plugins: PluginSource[];
   mcpServers: McpServerEntry[];
+  brokenSymlinks: BrokenSymlink[];
 }
 
 /** Re-scans every configured tool/project/plugin directory and syncs the shadow-note store to
@@ -58,13 +60,23 @@ export async function performRescan(
     ...scanAllProjects(settings.tools, projects),
     ...pluginScan.items,
   ];
+  const brokenSymlinks = scanBrokenSymlinks(settings.tools, projects);
   for (const item of discovered) {
     await store.ensureItem(item);
   }
-  await store.pruneMissing(new Set(discovered.map((d) => d.entryId)));
+  // A project-local symlink can become temporarily dangling when its shared source is disabled.
+  // Keep its shadow note (and therefore its library card) around so the grid doesn't silently
+  // reflow and the user can still see/remove the exact broken link from the Dashboard context.
+  const existing = await store.list();
+  const brokenPaths = new Set(brokenSymlinks.map((link) => link.path));
+  const retainedBrokenIds = existing
+    .filter((item) => brokenPaths.has(item.sourcePath) || brokenPaths.has(dirname(item.sourcePath)))
+    .map((item) => item.entryId);
+  await store.pruneMissing(new Set([...discovered.map((d) => d.entryId), ...retainedBrokenIds]));
   return {
     items: await store.list(),
     plugins: pluginScan.plugins,
     mcpServers: includeMcpServers ? scanMcpServers(settings.tools, projects) : [],
+    brokenSymlinks,
   };
 }

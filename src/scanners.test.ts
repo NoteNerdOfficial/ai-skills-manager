@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { scanAllPlugins } from "./scanners";
+import { scanAllPlugins, scanAllTools, scanBrokenSymlinks } from "./scanners";
 import { ToolConfig } from "./types";
 
 function makeTool(pluginsRegistry: string, pluginsSettingsPath: string): ToolConfig {
@@ -101,5 +101,45 @@ describe("scanAllPlugins", () => {
     expect(result.items).toEqual([
       expect.objectContaining({ name: "ship", type: "command", pluginId: "codex:openai-curated:demo", description: "Ship it" }),
     ]);
+  });
+});
+
+describe("broken symlink scanning", () => {
+  it("reports a dangling link without treating it as a normal item", () => {
+    const root = mkdtempSync(join(tmpdir(), "skillmanager-broken-link-"));
+    try {
+      const skills = join(root, "skills");
+      mkdirSync(skills);
+      symlinkSync(join(root, "missing-skill"), join(skills, "missing-skill"), "dir");
+      const tool: ToolConfig = { id: "test", name: "Test", icon: "box", paths: { skill: skills } };
+
+      expect(scanAllTools([tool])).toEqual([]);
+      expect(scanBrokenSymlinks([tool], [])).toEqual([
+        expect.objectContaining({ path: join(skills, "missing-skill"), target: join(root, "missing-skill"), tool: "test", type: "skill" }),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps two discovered paths to one real file as separate entries", () => {
+    const root = mkdtempSync(join(tmpdir(), "skillmanager-shared-link-"));
+    try {
+      const target = join(root, "shared.md");
+      const first = join(root, "one");
+      const second = join(root, "two");
+      writeFileSync(target, "---\nname: shared\n---\ncontent");
+      mkdirSync(first);
+      mkdirSync(second);
+      symlinkSync(target, join(first, "shared.md"));
+      symlinkSync(target, join(second, "shared.md"));
+      const tool: ToolConfig = { id: "test", name: "Test", icon: "box", paths: { agent: first, command: second } };
+      const items = scanAllTools([tool]);
+      expect(items).toHaveLength(2);
+      expect(new Set(items.map((item) => item.entryId)).size).toBe(2);
+      expect(new Set(items.map((item) => item.realPath)).size).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

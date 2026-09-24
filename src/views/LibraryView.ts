@@ -4,6 +4,7 @@ import { cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } fro
 import { basename, dirname, join, relative, sep } from "path";
 import {
   Collection,
+  BrokenSymlink,
   DiscoverEntry,
   EnabledFilter,
   ItemMetadata,
@@ -23,7 +24,7 @@ import {
 } from "../types";
 import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, expandHome, toProjectRelative } from "../scanners";
 import { addToProject, removeFromProject } from "../projectLink";
-import { deleteItem, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
+import { deleteItem, DISABLED_DIRNAME, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
 import { ShadowNoteStore } from "../store";
 import { deleteCollectionAndSync, upsertCollectionAndSync } from "../collections";
@@ -78,6 +79,7 @@ import { originLabel as resolveOriginLabel, sourceLabel as resolveSourceLabel, t
 import { ClonedRepo, remoteHeadCommit, shallowCloneAtCommit, shallowCloneRepo } from "../git";
 import { renderDiffBody } from "../diff/renderDiff";
 import { computeCompanionChanges, CompanionRow } from "../diff/companions";
+import { UnchangedUpdateModal } from "../modals/UnchangedUpdateModal";
 
 export const LIBRARY_VIEW_TYPE = "skillmanager-library-view";
 
@@ -265,6 +267,8 @@ export class LibraryView extends ItemView {
    *  the same places — the sidebar renders far more often than the Dashboard itself, so this must
    *  stay a cache, not a recompute-on-every-render. */
   private dashboardAttentionCount: number | null = null;
+  private brokenSymlinks: BrokenSymlink[] = [];
+  private knownBrokenSymlinkKeys = new Set<string>();
   /** Which "Source size by tool" card is selected — filters the ranked list below to just that tool;
    *  null means "All tools." */
   private dashboardActiveTool: string | null = null;
@@ -273,6 +277,9 @@ export class LibraryView extends ItemView {
   private dashboardTypeFilter: ItemType | null = null;
   /** Whether the ranked list is showing everything or just the top DASHBOARD_RANKED_COLLAPSED_COUNT. */
   private dashboardRankedExpanded = false;
+  private dashboardBrokenSymlinksExpanded = false;
+  private dashboardPruneExpanded = false;
+  private dashboardOverlapExpanded = false;
   /** Live-tracked scroll offset of the dashboard's scrollable body, restored on the next render
    *  the same way libraryScrollTop/dockedScrollTop work for the main grid. */
   private dashboardScrollTop = 0;
@@ -420,6 +427,13 @@ export class LibraryView extends ItemView {
     const result = await performRescan(this.app, this.getSettings(), this.store);
     this.discoveredPlugins = result.plugins;
     this.mcpServers = result.mcpServers;
+    this.brokenSymlinks = result.brokenSymlinks;
+    const brokenKeys = new Set(this.brokenSymlinks.map((link) => link.path));
+    const newBroken = this.brokenSymlinks.filter((link) => !this.knownBrokenSymlinkKeys.has(link.path));
+    if (newBroken.length > 0) {
+      new Notice(`${newBroken.length} broken symlink${newBroken.length === 1 ? "" : "s"} found. Review ${newBroken.length === 1 ? "it" : "them"} in the Dashboard.`);
+    }
+    this.knownBrokenSymlinkKeys = brokenKeys;
     this.items = result.items;
     if (this.selectedItem) {
       const previousSourcePath = this.selectedItem.sourcePath;
@@ -638,7 +652,9 @@ export class LibraryView extends ItemView {
    *  click behavior wherever it appears, whether that's a global card or a project-scoped one
    *  resolved back to its global source. Always opens the picker; nothing here unlinks directly. */
   private renderProjectLinkButton(container: HTMLElement, globalItem: ItemMetadata) {
-    const linkedSomewhere = this.items.some((i) => i.projectId && i.realPath === globalItem.realPath);
+    const linkedSomewhere = this.items.some(
+      (i) => i.projectId && i.projectId !== globalItem.projectId && i.realPath === globalItem.realPath
+    );
     const btn = container.createEl("button", {
       cls: `skillmanager-icon-btn${linkedSomewhere ? " is-present" : ""}`,
       attr: { "aria-label": linkedSomewhere ? "Manage project links" : "Link into a workspace" },
@@ -3831,7 +3847,10 @@ export class LibraryView extends ItemView {
    *  (search/type/tool filtered it out, or it's genuinely project-native with no global
    *  counterpart) falls back to its own standalone card rather than silently disappearing. */
   private groupedRows(items: ItemMetadata[]): ItemMetadata[] {
-    if (this.projectFilter) return items;
+    // The unscoped All page is an inventory of physical entries, so show the source and every
+    // project/tool symlink as its own card. Narrowed views can still collapse linked instances
+    // against their global sibling to keep a project link from looking like a duplicate.
+    if (this.projectFilter || !this.isScoped()) return items;
 
     const rows: ItemMetadata[] = [];
     for (const item of items) {
@@ -3913,6 +3932,7 @@ export class LibraryView extends ItemView {
 
     // Surfaced in the footer-right as the link icon — same slot whether the card is global or a
     // Linked project instance, so both states read from the same place on the card.
+    const isBroken = this.isBrokenSymlink(item);
     const isLinked = item.projectId !== null && this.isSymlinkedItem(item);
 
     if (item.sourceRepo) {
@@ -3921,7 +3941,12 @@ export class LibraryView extends ItemView {
         attr: { "aria-label": "Check for updates" },
       });
       setIcon(syncBtn, "refresh-cw");
+      // Keep the card shortcut completely isolated from the card's selection click. Obsidian
+      // can synthesize/retarget clicks around icon buttons, so stopping only the final click is
+      // not sufficient in every host version.
+      syncBtn.addEventListener("pointerdown", (evt) => evt.stopPropagation());
       syncBtn.addEventListener("click", (evt) => {
+        evt.preventDefault();
         evt.stopPropagation();
         void this.quickCheckForUpdate(item, syncBtn);
       });
@@ -3968,12 +3993,16 @@ export class LibraryView extends ItemView {
     const origin = footer.createDiv({ cls: "skillmanager-card-source" });
     const originIcon = origin.createSpan({ cls: "skillmanager-card-source-icon" });
     this.renderIcon(originIcon, originInfo.icon);
-    origin.createSpan({ text: originInfo.text, cls: "skillmanager-card-source-text" });
+    origin.createSpan({
+      text: `${this.isSymlinkedItem(item) ? "Symlink" : "Source"} · ${originInfo.text}`,
+      cls: "skillmanager-card-source-text",
+      attr: { title: `${this.isSymlinkedItem(item) ? "Symlink" : "Source"} · ${originInfo.text}` },
+    });
 
     const rightGroup = footer.createDiv({ cls: "skillmanager-card-footer-right" });
     if (item.projectId === null) {
       this.renderProjectLinkButton(rightGroup, item);
-    } else if (isLinked) {
+    } else if (isLinked || isBroken) {
       // Same button as the global card, opening the same picker — clicking a project-scoped
       // card's link icon is no longer a one-click destroy, just the same deliberate "manage
       // links" action, scoped back to the underlying global item so an add here always
@@ -3986,17 +4015,23 @@ export class LibraryView extends ItemView {
         // being scanned (e.g. sitting outside any configured tool path), so there's nothing to
         // open a picker on. Offer a direct unlink instead, previewed on hover.
         const unlinkBtn = rightGroup.createEl("button", {
-          cls: "skillmanager-icon-btn skillmanager-card-link-btn",
+          cls: `skillmanager-icon-btn skillmanager-card-link-btn${isBroken ? " is-broken" : ""}`,
           attr: { "aria-label": "Linked, but its library source can't be found. Click to unlink from this project" },
         });
-        setIcon(unlinkBtn, "link");
-        unlinkBtn.addEventListener("mouseenter", () => setIcon(unlinkBtn, "unlink"));
-        unlinkBtn.addEventListener("mouseleave", () => setIcon(unlinkBtn, "link"));
+        setIcon(unlinkBtn, isBroken ? "unlink" : "link");
+        if (!isBroken) {
+          unlinkBtn.addEventListener("mouseenter", () => setIcon(unlinkBtn, "unlink"));
+          unlinkBtn.addEventListener("mouseleave", () => setIcon(unlinkBtn, "link"));
+        }
         unlinkBtn.addEventListener("click", (evt) => {
           evt.stopPropagation();
-          void this.unlinkFromProject(item);
+        void this.unlinkFromProject(item);
         });
       }
+    } else {
+      // Project-native items are valid sources too. They can be linked into another project even
+      // though they do not themselves point at a shared global source.
+      this.renderProjectLinkButton(rightGroup, item);
     }
     if (item.favorite) {
       const star = rightGroup.createSpan({ cls: "skillmanager-card-star" });
@@ -4174,6 +4209,14 @@ export class LibraryView extends ItemView {
     return item.realPath !== item.sourcePath;
   }
 
+  /** A retained project-link card whose target disappeared (usually because its shared source
+   *  was disabled). Its unlink control removes the dangling link and the card then disappears on
+   *  the next rescan. */
+  private isBrokenSymlink(item: ItemMetadata): boolean {
+    if (item.projectId === null) return false;
+    return this.brokenSymlinks.some((link) => link.path === item.sourcePath || link.path === dirname(item.sourcePath));
+  }
+
   /** A small inline "link" icon for a dashboard row's name, only rendered when the item is a
    *  symlink — lets Prune/Overlap rows (and the overlap Compare modal) tell two identically-named
    *  items apart instead of looking like plain duplicates. */
@@ -4214,7 +4257,7 @@ export class LibraryView extends ItemView {
       const metrics = this.getDashboardMetrics();
       const { usagePrune, mtimePrune } = this.getDashboardPruneSplit(metrics, false);
       const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
-      this.dashboardAttentionCount = usagePrune.length + mtimePrune.length + overlapPairs.length;
+      this.dashboardAttentionCount = usagePrune.length + mtimePrune.length + overlapPairs.length + this.brokenSymlinks.length;
     }
     return this.dashboardAttentionCount;
   }
@@ -4329,6 +4372,7 @@ export class LibraryView extends ItemView {
     );
     this.renderDashboardStat(headerStats, "Prune", String(pruneCount), pruneCount ? "skillmanager-dash-stat-danger" : "");
     this.renderDashboardStat(headerStats, "Overlaps", String(overlapPairs.length), overlapPairs.length ? "skillmanager-dash-stat-accent" : "");
+    this.renderDashboardStat(headerStats, "Broken links", String(this.brokenSymlinks.length), this.brokenSymlinks.length ? "skillmanager-dash-stat-danger" : "");
     header.createDiv({ cls: "skillmanager-dash-divider" });
 
     const body = content.createDiv({ cls: "skillmanager-body skillmanager-dash-body" });
@@ -4355,6 +4399,7 @@ export class LibraryView extends ItemView {
       const topUsed = usage ? rankTopUsedItems(items, usage) : [];
       this.renderDashboardTopUsed(body, topUsed, !usage, isClaude ? "Claude Code" : "Codex");
     }
+    this.renderDashboardBrokenSymlinks(body, this.brokenSymlinks);
     const columns = body.createDiv({ cls: "skillmanager-dash-columns" });
     this.renderDashboardPruneCandidates(columns, usagePrune, mtimePrune);
     this.renderDashboardOverlaps(columns, overlapPairs, metrics.map((m) => m.item));
@@ -4562,6 +4607,67 @@ export class LibraryView extends ItemView {
     row.createDiv({ text: formatTokens(charCount), cls: "skillmanager-dash-row-cost" });
   }
 
+  private renderDashboardBrokenSymlinks(body: HTMLElement, links: BrokenSymlink[]) {
+    const section = body.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-ranked skillmanager-dash-flat-section" });
+    this.renderDashboardSectionHead(section, "Broken symlinks");
+    section.createDiv({
+      text: "These links point to files or folders that are missing or currently disabled. Enable the source when available, or reveal the link to inspect or remove it.",
+      cls: "skillmanager-subtitle",
+    });
+    const rows = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
+    if (links.length === 0) {
+      rows.createDiv({ text: "No broken symlinks found.", cls: "skillmanager-empty" });
+      return;
+    }
+    const shown = this.dashboardBrokenSymlinksExpanded ? links : links.slice(0, DASHBOARD_RANKED_COLLAPSED_COUNT);
+    for (const link of shown) {
+      const disabledSource = this.disabledSourceForBrokenLink(link);
+      const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-broken-row" });
+      const identity = row.createDiv({ cls: "skillmanager-dash-broken-identity" });
+      identity.createSpan({
+        text: disabledSource ? "Source disabled" : "Source missing",
+        cls: `skillmanager-dash-broken-status${disabledSource ? " is-disabled" : " is-missing"}`,
+      });
+      identity.createDiv({
+        text: `${this.getSettings().tools.find((tool) => tool.id === link.tool)?.name ?? link.tool} · ${TYPE_LABELS[link.type]}`,
+        cls: "skillmanager-dash-row-meta",
+      });
+      const paths = row.createDiv({ cls: "skillmanager-dash-broken-paths" });
+      paths.createDiv({ text: link.path, cls: "skillmanager-dash-path" });
+      paths.createDiv({ text: `→ ${link.targetPath}`, cls: "skillmanager-dash-path-target" });
+      const actions = row.createDiv({ cls: "skillmanager-dash-row-actions" });
+      if (disabledSource) {
+        const enableBtn = actions.createEl("button", { text: "Enable source", cls: "skillmanager-dash-action-btn" });
+        enableBtn.addEventListener("click", (evt) => {
+          evt.stopPropagation();
+          void this.toggleEnabled(disabledSource);
+        });
+      }
+      const revealBtn = actions.createEl("button", { text: this.fileManagerLabel(), cls: "skillmanager-dash-action-btn" });
+      revealBtn.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        void this.openContainingFolder(link.path);
+      });
+    }
+    if (links.length > DASHBOARD_RANKED_COLLAPSED_COUNT) {
+      const toggleBtn = section.createEl("button", {
+        text: this.dashboardBrokenSymlinksExpanded ? "Show fewer" : `Show all (${links.length})`,
+        cls: "skillmanager-dash-toggle",
+      });
+      toggleBtn.addEventListener("click", () => {
+        this.dashboardBrokenSymlinksExpanded = !this.dashboardBrokenSymlinksExpanded;
+        this.render();
+      });
+    }
+  }
+
+  private disabledSourceForBrokenLink(link: BrokenSymlink): ItemMetadata | null {
+    const disabledPath = join(dirname(link.targetPath), DISABLED_DIRNAME, basename(link.targetPath));
+    return this.items.find(
+      (item) => !item.enabled && item.projectId === null && linkableUnit(item.sourcePath).path === disabledPath
+    ) ?? null;
+  }
+
   /** entryId -> the moment it was disabled from this list, dropped once the item's been enabled
    *  again or DASHBOARD_RESTORE_WINDOW_MS has passed since. */
   private pruneExpiredDashboardRestores(): Record<string, number> {
@@ -4650,8 +4756,7 @@ export class LibraryView extends ItemView {
    *  the restore-row shape (name, "Disabled Xd ago," a Restore button) is identical either way. */
   private renderDashboardRestoreRows(rows: HTMLElement, now: number, restoreRows: { item: ItemMetadata; disabledAt: number }[]) {
     for (const { item, disabledAt } of restoreRows) {
-      const row = rows.createDiv({ cls: "skillmanager-dash-flag-row is-clickable" });
-      row.addEventListener("click", () => this.openItemFromDashboard(item));
+      const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
       const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
       const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
       this.renderSymlinkIcon(nameRow, item);
@@ -4693,7 +4798,7 @@ export class LibraryView extends ItemView {
   }
 
   private renderDashboardOverlaps(columns: HTMLElement, pairs: OverlapPair[], enabledItems: ItemMetadata[]) {
-    const section = columns.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-callout" });
+    const section = columns.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-callout skillmanager-dash-flat-section" });
     this.renderDashboardSectionHead(section, "Possible overlaps");
     section.createDiv({
       text: "Not usage-based: enabled items that share an identical name, or have near-duplicate descriptions, likely fighting over the same trigger conditions.",
@@ -4707,13 +4812,18 @@ export class LibraryView extends ItemView {
       .map((r) => ({ ...r, match: this.findDashboardOverlapRestoreMatch(r.item, enabledItems) }))
       .filter((r): r is { item: ItemMetadata; disabledAt: number; match: ItemMetadata } => !!r.match);
 
-    const rows = section.createDiv({ cls: "skillmanager-dash-callout-rows" });
+    const rows = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
     if (pairs.length === 0 && restoreRows.length === 0) {
       rows.createDiv({ text: "No overlapping descriptions found.", cls: "skillmanager-empty" });
       return;
     }
+    const totalCount = pairs.length + restoreRows.length;
+    const maxRows = this.dashboardOverlapExpanded ? totalCount : DASHBOARD_RANKED_COLLAPSED_COUNT;
+    let rendered = 0;
     for (const pair of pairs) {
-      const row = rows.createDiv({ cls: "skillmanager-dash-flag-row" });
+      if (rendered >= maxRows) break;
+      rendered++;
+      const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
       const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
       const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
       this.renderOverlapPairName(nameRow, pair.a, pair.b);
@@ -4735,7 +4845,9 @@ export class LibraryView extends ItemView {
       });
     }
     for (const { item, disabledAt, match } of restoreRows) {
-      const row = rows.createDiv({ cls: "skillmanager-dash-flag-row" });
+      if (rendered >= maxRows) break;
+      rendered++;
+      const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
       const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
       const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
       this.renderOverlapPairName(nameRow, item, match);
@@ -4745,6 +4857,16 @@ export class LibraryView extends ItemView {
       });
       const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
       restoreBtn.addEventListener("click", () => void this.restoreFromDashboard(item));
+    }
+    if (totalCount > DASHBOARD_RANKED_COLLAPSED_COUNT) {
+      const toggleBtn = section.createEl("button", {
+        text: this.dashboardOverlapExpanded ? "Show fewer" : `Show all (${totalCount})`,
+        cls: "skillmanager-dash-toggle",
+      });
+      toggleBtn.addEventListener("click", () => {
+        this.dashboardOverlapExpanded = !this.dashboardOverlapExpanded;
+        this.render();
+      });
     }
   }
 
@@ -4827,7 +4949,7 @@ export class LibraryView extends ItemView {
     usageCandidates: { item: ItemMetadata; stats: ClaudeUsageStats }[],
     mtimeCandidates: DashboardMetric[]
   ) {
-    const section = body.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-callout" });
+    const section = body.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-callout skillmanager-dash-flat-section" });
     this.renderDashboardSectionHead(section, "Prune candidates");
     section.createDiv({
       text: `Claude Code skills and agents flagged by real usage (never invoked, or idle ${USAGE_STALE_DAYS}+ days). Everything else flagged by file edit history, since there's no usage signal for those.`,
@@ -4851,32 +4973,52 @@ export class LibraryView extends ItemView {
       .map(([entryId, disabledAt]) => ({ item: this.items.find((i) => i.entryId === entryId), disabledAt }))
       .filter((r): r is { item: ItemMetadata; disabledAt: number } => !!r.item && !r.item.enabled);
 
-    const rows = section.createDiv({ cls: "skillmanager-dash-callout-rows" });
-    if (usageCandidates.length === 0 && mtimeCandidates.length === 0 && restoreRows.length === 0) {
+    const rows = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
+    const totalCount = usageCandidates.length + mtimeCandidates.length + restoreRows.length;
+    if (totalCount === 0) {
       rows.createDiv({ text: "Nothing flagged. Nice.", cls: "skillmanager-empty" });
       return;
     }
+    const maxRows = this.dashboardPruneExpanded ? totalCount : DASHBOARD_RANKED_COLLAPSED_COUNT;
+    let rendered = 0;
     for (const { item, stats } of usageCandidates) {
+      if (rendered >= maxRows) break;
       const metaText = stats.lastUsedMs === 0 ? "Never invoked" : `Not invoked in ${dashboardRelativeAge(now - stats.lastUsedMs)}`;
       this.renderDashboardPruneRow(rows, item, metaText, "Usage");
+      rendered++;
     }
     for (const { item, charCount, mtimeMs } of mtimeCandidates) {
+      if (rendered >= maxRows) break;
       const metaText = `${formatTokens(charCount)} · last touched ${mtimeMs ? formatDate(mtimeMs) : "unknown"}`;
       this.renderDashboardPruneRow(rows, item, metaText, "File age");
+      rendered++;
     }
-    this.renderDashboardRestoreRows(rows, now, restoreRows);
+    for (const { item, disabledAt } of restoreRows) {
+      if (rendered >= maxRows) break;
+      this.renderDashboardRestoreRows(rows, now, [{ item, disabledAt }]);
+      rendered++;
+    }
+    if (totalCount > DASHBOARD_RANKED_COLLAPSED_COUNT) {
+      const toggleBtn = section.createEl("button", {
+        text: this.dashboardPruneExpanded ? "Show fewer" : `Show all (${totalCount})`,
+        cls: "skillmanager-dash-toggle",
+      });
+      toggleBtn.addEventListener("click", () => {
+        this.dashboardPruneExpanded = !this.dashboardPruneExpanded;
+        this.render();
+      });
+    }
   }
 
   private renderDashboardPruneRow(rows: HTMLElement, item: ItemMetadata, metaText: string, methodLabel: string) {
-    const row = rows.createDiv({ cls: "skillmanager-dash-flag-row is-clickable" });
-    row.addEventListener("click", () => this.openItemFromDashboard(item));
+    const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
     const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
     const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
     this.renderSymlinkIcon(nameRow, item);
     nameRow.createSpan({ text: item.name });
     const metaRow = info.createDiv({ cls: "skillmanager-dash-row-meta" });
     metaRow.createSpan({ text: metaText });
-    metaRow.createSpan({ text: methodLabel, cls: "skillmanager-dash-method-tag" });
+    metaRow.createSpan({ text: methodLabel, cls: "skillmanager-card-type skillmanager-dash-method-tag" });
     this.renderDashboardDisregardableActions(row, item.entryId, "Disable", () => void this.disableFromDashboard(item));
   }
 
@@ -4952,8 +5094,9 @@ export class LibraryView extends ItemView {
     if (filePath) this.loadFileContent(item, filePath);
     this.renderIdentityBand(panel, item, filePath);
 
-    if (this.review && this.review.entryId === item.entryId) {
-      this.renderDiffReview(panel);
+    const review = this.review?.entryId === item.entryId ? this.review : null;
+    if (review?.status === "ready") {
+      this.renderDiffReview(panel, review);
     } else if (tree && !this.selectedFilePath) {
       const list = panel.createDiv({ cls: "skillmanager-tree" });
       this.renderTreeNodes(list, tree, 0);
@@ -4961,6 +5104,7 @@ export class LibraryView extends ItemView {
     } else if (filePath) {
       this.renderFileBody(panel, item, filePath);
     }
+    if (review && review.status !== "ready") this.renderReviewStatus(panel, review, item);
   }
 
   /** A plain, unstyled trail — no button chrome, just text — plus a leading back icon that
@@ -5004,7 +5148,9 @@ export class LibraryView extends ItemView {
    *  any file in the tree, not just the manifest. */
   private renderIdentityBand(panel: HTMLElement, item: ItemMetadata, filePath: string | null) {
     const isManifest = !!filePath && filePath === item.sourcePath;
-    const isReviewing = this.review !== null && this.review.entryId === item.entryId;
+    // Loading/error states stay layered over the normal preview. Only a ready review replaces
+    // the file body with diff content.
+    const isReviewing = this.review?.status === "ready" && this.review.entryId === item.entryId;
 
     const header = panel.createDiv({ cls: "skillmanager-detail-header" });
     header.createEl("h3", {
@@ -5166,14 +5312,26 @@ export class LibraryView extends ItemView {
   private renderSourceButtons(actions: HTMLElement, item: ItemMetadata) {
     const checkBtn = actions.createEl("button", { cls: "skillmanager-detail-source-btn" });
     this.setSourceBtnContent(checkBtn, "refresh-cw", "Check for updates");
-    checkBtn.addEventListener("click", () => void this.checkForUpdate(item, checkBtn));
+    this.isolateReviewAction(checkBtn, () => void this.checkForUpdate(item, checkBtn));
 
     // No ls-remote check needed first — the restore target is already known (whatever commit
     // was recorded at install/last-update time), unlike "Check for updates" which has to ask
     // the remote what's changed.
     const restoreBtn = actions.createEl("button", { cls: "skillmanager-detail-source-btn" });
     this.setSourceBtnContent(restoreBtn, "history", "Restore installed");
-    restoreBtn.addEventListener("click", () => void this.startReview(item, "restore"));
+    this.isolateReviewAction(restoreBtn, () => void this.startReview(item, "restore"));
+  }
+
+  /** Review actions live inside the selected item's detail rail. Keep their pointer/click events
+   * from reaching any surrounding navigation or preview controls, which otherwise makes a
+   * review request look like a normal file-preview/edit action in some Obsidian versions. */
+  private isolateReviewAction(button: HTMLButtonElement, action: () => void) {
+    button.addEventListener("pointerdown", (evt) => evt.stopPropagation());
+    button.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      action();
+    });
   }
 
   /** Rebuilds a source button's icon + label together — setText()/setIcon() alone would each
@@ -5247,6 +5405,25 @@ export class LibraryView extends ItemView {
       const newText = existsSync(newPrimary) ? readFileSync(newPrimary, "utf-8") : "";
       const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
 
+      // The lightweight update check compares repository commits, so a repo can be newer even
+      // when this particular flat command/file (and any companion files) is unchanged. Do not
+      // show a context-only "diff" in that case; it is misleading and makes the update look
+      // broken. Advancing the tracked commit is safe because there is nothing from this item to
+      // apply.
+      if (oldText === newText && companions.length === 0) {
+        const newCommit = clone.commit;
+        clone.cleanup();
+        this.render();
+        new UnchangedUpdateModal(this.app, item.name, async () => {
+          if (mode === "update") {
+            await this.store.update(item.entryId, { sourceCommit: newCommit });
+            this.syncStatus.set(item.entryId, "current");
+          }
+          this.render();
+        }).open();
+        return;
+      }
+
       this.review = {
         status: "ready",
         entryId: item.entryId,
@@ -5267,31 +5444,8 @@ export class LibraryView extends ItemView {
     this.render();
   }
 
-  private renderDiffReview(panel: HTMLElement) {
-    const review = this.review;
-    if (!review) return;
+  private renderDiffReview(panel: HTMLElement, review: Extract<ReviewState, { status: "ready" }>) {
     const verb = review.mode === "restore" ? "Restore" : "Update";
-
-    if (review.status === "loading") {
-      panel.createDiv({
-        cls: "skillmanager-modal-meta",
-        text: review.mode === "restore" ? "Fetching the installed version…" : "Fetching upstream changes…",
-      });
-      return;
-    }
-
-    if (review.status === "error") {
-      panel.createDiv({
-        cls: "skillmanager-modal-meta",
-        text: `Couldn't fetch ${review.mode === "restore" ? "the installed version" : "the update"}: ${review.message}`,
-      });
-      const dismissBtn = panel.createEl("button", { text: "Dismiss", cls: "skillmanager-btn-neutral" });
-      dismissBtn.addEventListener("click", () => {
-        this.review = null;
-        this.render();
-      });
-      return;
-    }
 
     renderDiffBody(panel.createDiv(), review.oldText, review.newText);
 
@@ -5311,6 +5465,30 @@ export class LibraryView extends ItemView {
       this.render();
     });
     actions.createEl("button", { text: verb, cls: "mod-cta" }).addEventListener("click", () => void this.applyReview());
+  }
+
+  private renderReviewStatus(
+    panel: HTMLElement,
+    review: Extract<ReviewState, { status: "loading" | "error" }>,
+    item: ItemMetadata
+  ) {
+    const status = panel.createDiv({ cls: "skillmanager-review-status" });
+    status.createDiv({
+      cls: "skillmanager-modal-meta",
+      text: review.status === "loading"
+        ? review.mode === "restore" ? "Fetching the installed version…" : "Fetching upstream changes…"
+        : `Couldn't fetch ${review.mode === "restore" ? "the installed version" : "the update"}: ${review.message}`,
+    });
+    if (review.status === "error") {
+      const actions = status.createDiv({ cls: "skillmanager-modal-actions" });
+      actions.createEl("button", { text: "Retry", cls: "mod-cta" }).addEventListener("click", () => {
+        void this.startReview(item, review.mode);
+      });
+      actions.createEl("button", { text: "Dismiss", cls: "skillmanager-btn-neutral" }).addEventListener("click", () => {
+        this.cleanupReview();
+        this.render();
+      });
+    }
   }
 
   private async applyReview() {
@@ -5341,7 +5519,7 @@ export class LibraryView extends ItemView {
    *  deliberately independent of the interactive review's state machine (rather than sharing
    *  code with it) so a bulk run can never collide with a review the user has open elsewhere.
    *  Used only by bulkUpdateAll; throws on failure so the caller can keep the batch going. */
-  private async silentUpdateItem(item: ItemMetadata): Promise<void> {
+  private async silentUpdateItem(item: ItemMetadata): Promise<boolean> {
     const sourceRepo = item.sourceRepo;
     if (!sourceRepo) throw new Error("no source repo");
     let clone: ClonedRepo | null = null;
@@ -5356,6 +5534,13 @@ export class LibraryView extends ItemView {
       }
 
       const unit = linkableUnit(item.sourcePath);
+      const oldPrimary = unit.isDirectory ? join(unit.path, "SKILL.md") : unit.path;
+      const newPrimary = unit.isDirectory ? join(newRoot, "SKILL.md") : newRoot;
+      const primaryChanged = !existsSync(oldPrimary) || !existsSync(newPrimary)
+        ? existsSync(oldPrimary) !== existsSync(newPrimary)
+        : !readFileSync(oldPrimary).equals(readFileSync(newPrimary));
+      const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
+      const changed = primaryChanged || companions.length > 0;
       if (unit.isDirectory) {
         rmSync(unit.path, { recursive: true, force: true });
         cpSync(newRoot, unit.path, { recursive: true });
@@ -5363,6 +5548,7 @@ export class LibraryView extends ItemView {
         cpSync(newRoot, unit.path);
       }
       await this.store.update(item.entryId, { sourceCommit: clone.commit });
+      return changed;
     } finally {
       clone?.cleanup();
     }
@@ -5439,22 +5625,30 @@ export class LibraryView extends ItemView {
     this.cleanupReview();
     const stale = this.items.filter((i) => this.syncStatus.get(i.entryId) === "stale");
     let updated = 0;
+    let unchanged = 0;
     let errors = 0;
     for (let i = 0; i < stale.length; i++) {
       const item = stale[i];
       btn.setText(`Updating ${i + 1}/${stale.length}…`);
       await new Promise((resolve) => window.setTimeout(resolve, 0));
       try {
-        await this.silentUpdateItem(item);
+        const changed = await this.silentUpdateItem(item);
         this.syncStatus.set(item.entryId, "current");
-        updated++;
+        if (changed) updated++;
+        else unchanged++;
       } catch {
         errors++;
       }
     }
     this.bulkUpdateInProgress = false;
     await this.rescan();
-    new Notice(errors > 0 ? `Updated ${updated}, ${errors} failed.` : `Updated ${updated} skill${updated === 1 ? "" : "s"}.`);
+    new Notice(
+      errors > 0
+        ? `Updated ${updated}, accepted ${unchanged} unchanged, ${errors} failed.`
+        : unchanged > 0
+          ? `Updated ${updated}; accepted ${unchanged} unchanged.`
+          : `Updated ${updated} skill${updated === 1 ? "" : "s"}.`
+    );
   }
 
   private renderTreeNodes(container: HTMLElement, nodes: TreeNode[], depth: number) {

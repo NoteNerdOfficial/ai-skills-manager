@@ -1,9 +1,9 @@
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync, type Stats } from "fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "fs";
 import { homedir } from "os";
-import { basename, dirname, join, sep } from "path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "path";
 import { slug } from "./format";
 import { DISABLED_DIRNAME } from "./itemToggle";
-import { DiscoveredItem, ItemType, PluginSource, ProjectWorkspace, RulePathEntry, ToolConfig } from "./types";
+import { BrokenSymlink, DiscoveredItem, ItemType, PluginSource, ProjectWorkspace, RulePathEntry, ToolConfig } from "./types";
 
 export function expandHome(rawPath: string): string {
   return rawPath.startsWith("~") ? join(homedir(), rawPath.slice(1)) : rawPath;
@@ -86,14 +86,24 @@ function resolveRealPath(sourcePath: string): string {
   }
 }
 
+/** Keeps an item's identity stable across the enable/disable move while still distinguishing
+ *  two same-named entries found in different directories. */
+function stableEntryPath(sourcePath: string): string {
+  return sourcePath
+    .split(sep)
+    .filter((segment) => segment !== DISABLED_DIRNAME)
+    .join(sep);
+}
+
 export function makeEntryId(
   toolId: string,
   type: ItemType,
   projectId: string | null,
   pluginId: string | null,
-  name: string
+  name: string,
+  identityPath?: string
 ): string {
-  return slug(`${toolId}-${type}-${projectId ?? "global"}-${pluginId ?? "none"}-${name}`);
+  return slug(`${toolId}-${type}-${projectId ?? "global"}-${pluginId ?? "none"}-${name}-${identityPath ?? name}`);
 }
 
 const MAX_SCAN_DEPTH = 4;
@@ -140,7 +150,7 @@ function scanEntries(
       if (existsSync(manifest)) {
         const meta = readSourceMeta(manifest);
         items.push({
-          entryId: makeEntryId(tool.id, type, projectId, pluginId, entry),
+          entryId: makeEntryId(tool.id, type, projectId, pluginId, entry, stableEntryPath(manifest)),
           sourcePath: manifest,
           realPath: resolveRealPath(manifest),
           tool: tool.id,
@@ -163,7 +173,7 @@ function scanEntries(
       const baseName = entry.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
       const meta = readSourceMeta(entryPath);
       items.push({
-        entryId: makeEntryId(tool.id, type, projectId, pluginId, baseName),
+        entryId: makeEntryId(tool.id, type, projectId, pluginId, baseName, stableEntryPath(entryPath)),
         sourcePath: entryPath,
         realPath: resolveRealPath(entryPath),
         tool: tool.id,
@@ -233,7 +243,7 @@ function scanSingleFile(
     if (!existsSync(path) || !statSync(path).isFile()) continue;
     const meta = readSourceMeta(path);
     items.push({
-      entryId: makeEntryId(tool.id, type, projectId, pluginId, fileName),
+      entryId: makeEntryId(tool.id, type, projectId, pluginId, fileName, stableEntryPath(path)),
       sourcePath: path,
       realPath: resolveRealPath(path),
       tool: tool.id,
@@ -316,6 +326,82 @@ export function scanTool(tool: ToolConfig): DiscoveredItem[] {
 
 export function scanAllTools(tools: ToolConfig[]): DiscoveredItem[] {
   return tools.flatMap(scanTool);
+}
+
+function collectBrokenSymlinks(
+  root: string,
+  tool: ToolConfig,
+  type: ItemType,
+  projectId: string | null,
+  output: BrokenSymlink[],
+  seen: Set<string>
+): void {
+  let stat;
+  try {
+    stat = lstatSync(root);
+  } catch {
+    return;
+  }
+  if (stat.isSymbolicLink()) {
+    try {
+      statSync(root);
+    } catch {
+      if (!seen.has(root)) {
+        seen.add(root);
+        const target = readlinkSync(root);
+        output.push({
+          path: root,
+          target,
+          targetPath: isAbsolute(target) ? target : resolve(dirname(root), target),
+          tool: tool.id,
+          type,
+          projectId,
+        });
+      }
+    }
+    return;
+  }
+  if (!stat.isDirectory() || basename(root) === DISABLED_DIRNAME) return;
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return;
+  }
+  for (const entry of entries) collectBrokenSymlinks(join(root, entry), tool, type, projectId, output, seen);
+}
+
+function collectBrokenForGlobalTool(tool: ToolConfig, roots: BrokenSymlink[], seen: Set<string>): void {
+  for (const type of Object.keys(tool.paths) as ItemType[]) {
+    const dir = resolveToolDir(tool, type, null);
+    if (dir) collectBrokenSymlinks(dir, tool, type, null, roots, seen);
+  }
+  for (const entry of tool.ruleAdditionalPaths ?? []) {
+    if (entry.path.trim()) collectBrokenSymlinks(expandHome(entry.path), tool, "rule", null, roots, seen);
+  }
+}
+
+/** Finds dangling links separately from the normal scanner, which intentionally skips anything
+ *  whose target cannot be read. */
+export function scanBrokenSymlinks(tools: ToolConfig[], projects: ProjectWorkspace[]): BrokenSymlink[] {
+  const output: BrokenSymlink[] = [];
+  const seen = new Set<string>();
+  for (const tool of tools) {
+    collectBrokenForGlobalTool(tool, output, seen);
+    for (const project of projects) {
+      for (const type of new Set<ItemType>([
+        ...(Object.keys(tool.paths) as ItemType[]),
+        ...(Object.keys(tool.projectPaths ?? {}) as ItemType[]),
+      ])) {
+        const dir = resolveToolDir(tool, type, project);
+        if (dir) collectBrokenSymlinks(dir, tool, type, project.id, output, seen);
+      }
+      for (const entry of tool.ruleAdditionalProjectPaths ?? []) {
+        if (entry.path.trim()) collectBrokenSymlinks(join(expandHome(project.path), entry.path), tool, "rule", project.id, output, seen);
+      }
+    }
+  }
+  return output;
 }
 
 /** Project-scoped tools usually mirror the global layout rooted at the project folder instead

@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DISABLED_DIRNAME, deleteItem, toggleItemEnabled, togglePluginEnabled } from "./itemToggle";
 import { ItemMetadata, ToolConfig } from "./types";
@@ -133,6 +133,25 @@ describe("toggleItemEnabled / deleteItem", () => {
     expect(lstatSync(disabledLinkPath).isSymbolicLink()).toBe(true);
     expect(readlinkSync(disabledLinkPath)).toBe(globalSkillDir);
     expect(existsSync(join(disabledLinkPath, "SKILL.md"))).toBe(true);
+  });
+
+  it("moves only the selected link when multiple links share one target", () => {
+    const target = join(root, "shared", "review.md");
+    mkdirSync(join(root, "shared"), { recursive: true });
+    writeFileSync(target, "content");
+    const claudeLink = join(root, "claude", "review.md");
+    const codexLink = join(root, "codex", "review.md");
+    mkdirSync(dirname(claudeLink), { recursive: true });
+    mkdirSync(dirname(codexLink), { recursive: true });
+    symlinkSync(target, claudeLink, "file");
+    symlinkSync(target, codexLink, "file");
+
+    toggleItemEnabled(makeItem(claudeLink));
+
+    expect(existsSync(join(root, "claude", DISABLED_DIRNAME, "review.md"))).toBe(true);
+    expect(lstatSync(codexLink).isSymbolicLink()).toBe(true);
+    expect(readFileSync(codexLink, "utf-8")).toBe("content");
+    expect(readFileSync(target, "utf-8")).toBe("content");
   });
 
   it("refuses to delete a plugin-bundled item, leaving the file untouched", () => {

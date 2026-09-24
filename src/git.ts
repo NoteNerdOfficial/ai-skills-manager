@@ -6,10 +6,20 @@ import { errorMessage } from "./errors";
 
 function git(args: string[], cwd?: string): string {
   try {
-    return execFileSync("git", args, { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 }).trim();
+    return execFileSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024,
+      // Update reviews run from the view and must not remain in a loading state forever when
+      // GitHub, a proxy, or git's credential/network layer stops responding.
+      timeout: 45_000,
+    }).trim();
   } catch (e) {
     if (e instanceof Error && (e as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error("Git isn't installed, or isn't on your PATH. Install Git to use Discover, install-from-GitHub, and update checks.");
+    }
+    if (e instanceof Error && ((e as NodeJS.ErrnoException).code === "ETIMEDOUT" || (e as NodeJS.ErrnoException & { killed?: boolean }).killed)) {
+      throw new Error("GitHub did not respond within 45 seconds. Check your connection and try again.");
     }
     throw e;
   }

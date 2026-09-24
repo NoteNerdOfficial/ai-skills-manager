@@ -184,6 +184,16 @@ export interface DiscoveredItem {
   enabled: boolean;
 }
 
+/** A filesystem symlink whose target could not be resolved during a tool scan. */
+export interface BrokenSymlink {
+  path: string;
+  target: string;
+  targetPath: string;
+  tool: string;
+  type: ItemType;
+  projectId: string | null;
+}
+
 export interface ItemMetadata {
   entryId: string;
   sourcePath: string;

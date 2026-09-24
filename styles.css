@@ -1131,6 +1131,10 @@ input.skillmanager-search {
   color: var(--color-green);
 }
 
+.skillmanager-icon-btn.skillmanager-card-link-btn.is-broken {
+  color: var(--color-red);
+}
+
 /* Any "check for updates" trigger (the card header shortcut, or the source row's button below)
    spins its icon while the on-demand ls-remote check is in flight. */
 .is-syncing .svg-icon {
@@ -1827,6 +1831,22 @@ input.skillmanager-tag-add-input {
   padding-top: 16px;
 }
 
+.skillmanager-review-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.skillmanager-review-status .skillmanager-modal-actions {
+  flex-shrink: 0;
+}
+
 /* The body renders through the same markdown-preview-view/-sizer classes Obsidian's own
    reading view uses, so the active theme's note styling (headings, code fences, callouts,
    tables) applies verbatim. These overrides neutralize the full-pane sizing (height, scroll,
@@ -2346,6 +2366,12 @@ input.skillmanager-tag-add-input {
   padding: 16px;
 }
 
+.skillmanager-dash-flat-section {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
 .skillmanager-dash-section-head {
   display: flex;
   align-items: center;
@@ -2425,13 +2451,10 @@ input.skillmanager-tag-add-input {
    see the Dashboard's Claude Code-contextual Prune candidates section. */
 .skillmanager-dash-method-tag {
   margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 999px;
+  padding: 0 6px;
   font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  color: var(--text-faint);
-  background: var(--background-modifier-border);
+  line-height: 1.6;
+  text-transform: none;
 }
 
 .skillmanager-dash-bar-track {
@@ -2736,6 +2759,16 @@ input.skillmanager-tag-add-input {
   padding: 10px 12px;
 }
 
+.skillmanager-dash-ranked-list .skillmanager-dash-broken-row:hover {
+  background: transparent;
+  cursor: default;
+}
+
+.skillmanager-dash-ranked-list .skillmanager-dash-static-row:hover {
+  background: transparent;
+  cursor: default;
+}
+
 .skillmanager-dash-toggle {
   display: block;
   width: 100%;
@@ -2761,7 +2794,7 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-columns {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 16px;
   margin-top: 28px;
 }
@@ -2769,6 +2802,7 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-columns > .skillmanager-dash-section {
   flex: 1 1 280px;
   min-width: 280px;
+  min-height: 320px;
   display: flex;
   flex-direction: column;
 }
@@ -2779,4 +2813,56 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-dash-callout-rows {
   margin-top: 4px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.skillmanager-dash-path,
+.skillmanager-dash-path-target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.skillmanager-dash-broken-row {
+  align-items: center;
+}
+
+.skillmanager-dash-broken-identity {
+  flex: 0 1 220px;
+  min-width: 170px;
+}
+
+.skillmanager-dash-broken-paths {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.skillmanager-dash-broken-status {
+  display: inline-block;
+  width: fit-content;
+  margin-bottom: 3px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.skillmanager-dash-broken-status.is-disabled {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 14%, transparent);
+}
+
+.skillmanager-dash-broken-status.is-missing {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 14%, transparent);
+}
+
+.skillmanager-dash-path-target {
+  flex: 0 1 45%;
+  color: var(--text-faint);
 }
