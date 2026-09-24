@@ -24,7 +24,7 @@ import {
 } from "../types";
 import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, expandHome, toProjectRelative } from "../scanners";
 import { addToProject, removeFromProject } from "../projectLink";
-import { deleteItem, DISABLED_DIRNAME, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
+import { deleteItem, DISABLED_DIRNAME, previewToggle, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
 import { ShadowNoteStore } from "../store";
 import { deleteCollectionAndSync, upsertCollectionAndSync } from "../collections";
@@ -609,6 +609,34 @@ export class LibraryView extends ItemView {
       return;
     }
     await this.rescan();
+  }
+
+  /** Gate in front of every enable/disable that moves a real file or folder — a card's toggle,
+   *  the Dashboard's Disable/Restore actions, and the broken-symlinks "Enable source" shortcut
+   *  all route through here rather than calling toggleEnabled (or whatever Dashboard bookkeeping
+   *  wraps it) directly, so a stray click doesn't silently move something on disk. Skipped
+   *  entirely when confirmBeforeToggle (Settings, on by default) is off. `perform` is whatever
+   *  that call site already did — this only decides whether it runs immediately or behind a
+   *  confirmation naming the exact move, worded from previewToggle so it can never drift from
+   *  what toggleItemEnabled itself is about to do. */
+  private confirmToggle(item: ItemMetadata, perform: () => void | Promise<void>) {
+    if (!this.getSettings().confirmBeforeToggle) {
+      void perform();
+      return;
+    }
+    const preview = previewToggle(item);
+    const toolText = this.toolLabel(item).text;
+    new ConfirmModal(
+      this.app,
+      preview.willDisable ? `Disable "${item.name}"?` : `Enable "${item.name}"?`,
+      preview.willDisable
+        ? `This moves "${item.name}" to ${preview.toPath}, so ${toolText} stops seeing it.`
+        : `This moves "${item.name}" back to ${preview.toPath}, so ${toolText} can see it again.`,
+      preview.willDisable ? "Disable" : "Enable",
+      async () => {
+        await perform();
+      }
+    ).open();
   }
 
   /** Quick unlink for a card the user is looking at directly, rather than routing through the
@@ -3968,7 +3996,7 @@ export class LibraryView extends ItemView {
       if (item.pluginId !== null) {
         this.explainPluginToggle(item);
       } else {
-        void this.toggleEnabled(item);
+        this.confirmToggle(item, () => this.toggleEnabled(item));
       }
     });
 
@@ -4651,7 +4679,7 @@ export class LibraryView extends ItemView {
         const enableBtn = actions.createEl("button", { text: "Enable source", cls: "skillmanager-dash-action-btn" });
         enableBtn.addEventListener("click", (evt) => {
           evt.stopPropagation();
-          void this.toggleEnabled(disabledSource);
+          this.confirmToggle(disabledSource, () => this.toggleEnabled(disabledSource));
         });
       }
       const revealBtn = actions.createEl("button", { text: this.fileManagerLabel(), cls: "skillmanager-dash-action-btn" });
@@ -4779,7 +4807,7 @@ export class LibraryView extends ItemView {
       const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
       restoreBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
-        void this.restoreFromDashboard(item);
+        this.confirmToggle(item, () => this.restoreFromDashboard(item));
       });
     }
   }
@@ -4849,7 +4877,7 @@ export class LibraryView extends ItemView {
           pair.b,
           pair.score,
           pair.sameName,
-          (item) => void this.disableFromDashboard(item),
+          (item) => this.confirmToggle(item, () => this.disableFromDashboard(item)),
           (item) => this.confirmDelete(item),
           (item) => this.openItemFromDashboard(item)
         ).open();
@@ -4867,7 +4895,7 @@ export class LibraryView extends ItemView {
         cls: "skillmanager-dash-row-meta",
       });
       const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
-      restoreBtn.addEventListener("click", () => void this.restoreFromDashboard(item));
+      restoreBtn.addEventListener("click", () => this.confirmToggle(item, () => this.restoreFromDashboard(item)));
     }
     if (totalCount > DASHBOARD_RANKED_COLLAPSED_COUNT) {
       const toggleBtn = section.createEl("button", {
@@ -5030,7 +5058,9 @@ export class LibraryView extends ItemView {
     const metaRow = info.createDiv({ cls: "skillmanager-dash-row-meta" });
     metaRow.createSpan({ text: metaText });
     metaRow.createSpan({ text: methodLabel, cls: "skillmanager-card-type skillmanager-dash-method-tag" });
-    this.renderDashboardDisregardableActions(row, item.entryId, "Disable", () => void this.disableFromDashboard(item));
+    this.renderDashboardDisregardableActions(row, item.entryId, "Disable", () =>
+      this.confirmToggle(item, () => this.disableFromDashboard(item))
+    );
   }
 
   // ---------- selection: one detail rail, breadcrumbed between the file list and a file ----------

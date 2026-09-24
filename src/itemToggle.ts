@@ -56,6 +56,29 @@ export function toggleItemEnabled(item: ItemMetadata): void {
   }
 }
 
+export interface ToggleMovePreview {
+  /** True when this call would DISABLE the item (moving it in under DISABLED_DIRNAME); false
+   *  when it would RE-ENABLE it (moving it back out) — mirrors the branch toggleItemEnabled
+   *  above takes, based on whether the item's current folder already IS a .skillmanager-disabled
+   *  sibling. */
+  willDisable: boolean;
+  fromPath: string;
+  toPath: string;
+}
+
+/** Pure preview of what toggleItemEnabled above would actually do to this item's unit on disk —
+ *  no filesystem writes. Kept here, right beside the real move logic, so a caller that wants to
+ *  word a confirmation prompt around the exact source/destination paths (see LibraryView's
+ *  confirmToggle) can never drift from what toggleItemEnabled itself would do. */
+export function previewToggle(item: ItemMetadata): ToggleMovePreview {
+  const unit = linkableUnit(item.sourcePath);
+  const parentDir = dirname(unit.path);
+  if (basename(parentDir) === DISABLED_DIRNAME) {
+    return { willDisable: false, fromPath: unit.path, toPath: join(dirname(parentDir), unit.name) };
+  }
+  return { willDisable: true, fromPath: unit.path, toPath: join(parentDir, DISABLED_DIRNAME, unit.name) };
+}
+
 /** Flips whether the tool loads an installed plugin at all, by writing straight into the
  *  tool's own settings JSON (e.g. Claude Code's ~/.claude/settings.json "enabledPlugins" map) —
  *  the same file and key the tool's own plugin enable/disable UI would write to, unlike

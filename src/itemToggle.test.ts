@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DISABLED_DIRNAME, TrashFn, deleteItem, toggleItemEnabled, togglePluginEnabled } from "./itemToggle";
+import { DISABLED_DIRNAME, TrashFn, deleteItem, previewToggle, toggleItemEnabled, togglePluginEnabled } from "./itemToggle";
 import { ItemMetadata, ToolConfig } from "./types";
 
 // vi.spyOn can't redefine a property on Node's own "fs" ESM namespace object ("Module namespace
@@ -275,6 +275,44 @@ describe("toggleItemEnabled / deleteItem", () => {
     expect(existsSync(globalSkillDir)).toBe(true); // the real global skill is untouched
     expect(existsSync(join(globalSkillDir, "SKILL.md"))).toBe(true);
     expect(existsSync(join(globalSkillDir, "helper.py"))).toBe(true);
+  });
+});
+
+describe("previewToggle", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "skillmanager-preview-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("previews an enabled item as a disable move, without touching the filesystem", () => {
+    const filePath = join(root, "backend.md");
+    writeFileSync(filePath, "content");
+
+    const preview = previewToggle(makeItem(filePath));
+
+    expect(preview.willDisable).toBe(true);
+    expect(preview.fromPath).toBe(filePath);
+    expect(preview.toPath).toBe(join(root, DISABLED_DIRNAME, "backend.md"));
+    expect(existsSync(filePath)).toBe(true); // still where it started — preview never moves it
+    expect(existsSync(preview.toPath)).toBe(false);
+  });
+
+  it("previews a disabled item as an enable move, matching where toggleItemEnabled would actually put it", () => {
+    const filePath = join(root, "backend.md");
+    writeFileSync(filePath, "content");
+    toggleItemEnabled(makeItem(filePath)); // disable it for real first
+    const disabledPath = join(root, DISABLED_DIRNAME, "backend.md");
+
+    const preview = previewToggle(makeItem(disabledPath));
+
+    expect(preview.willDisable).toBe(false);
+    expect(preview.fromPath).toBe(disabledPath);
+    expect(preview.toPath).toBe(filePath);
   });
 });
 

@@ -354,6 +354,12 @@ export interface SkillManagerPluginSettings {
    *  for that file, which for an extension like .json or .toml can land on an unexpected app
    *  (e.g. Xcode, if it's claimed that association) — set this to override it. macOS only. */
   mcpConfigEditorApp: string;
+  /** On by default: a card's toggle, a Dashboard Disable/Restore action, and the broken-symlinks
+   *  "Enable source" shortcut all show a confirmation naming the exact folder move (see
+   *  LibraryView's confirmToggle) before toggleItemEnabled actually moves anything on disk.
+   *  Turning this off skips straight to the move, for anyone who finds the prompt gets in the
+   *  way of a workflow that toggles items often. */
+  confirmBeforeToggle: boolean;
 }
 
 /** Canonical set of reorderable sidebar sections and their default order. "Library" isn't
@@ -723,4 +729,5 @@ export const DEFAULT_SETTINGS: SkillManagerPluginSettings = {
   dashboardDisregarded: {},
   workspaceHintDismissed: false,
   mcpConfigEditorApp: "",
+  confirmBeforeToggle: true,
 };
