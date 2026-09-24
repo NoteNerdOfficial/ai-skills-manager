@@ -386,6 +386,13 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
       rule: "CLAUDE.md",
     },
     singleFileRule: true,
+    // Documented at https://code.claude.com/docs/en/memory: "~/.claude/rules/" for user-level
+    // rules and ".claude/rules/" for project-level rules, alongside (not instead of) the single
+    // CLAUDE.md file above — "All .md files are discovered recursively, so you can organize
+    // rules into subdirectories." Without these, a rules/ folder next to CLAUDE.md was never
+    // scanned at all.
+    ruleAdditionalPaths: [{ path: "~/.claude/rules", singleFile: false }],
+    ruleAdditionalProjectPaths: [{ path: ".claude/rules", singleFile: false }],
     pluginsRegistry: "~/.claude/plugins/installed_plugins.json",
     pluginsSettingsPath: "~/.claude/settings.json",
     // ~/.claude/skills/synced/<workspace>_<user>/ is a vendor-managed cache of Claude Code's own

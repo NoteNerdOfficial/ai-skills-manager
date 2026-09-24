@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { scanAllPlugins, scanAllTools, scanBrokenSymlinks } from "./scanners";
-import { ToolConfig } from "./types";
+import { scanAllPlugins, scanAllTools, scanBrokenSymlinks, scanProject, scanTool } from "./scanners";
+import { ProjectWorkspace, ToolConfig } from "./types";
 
 function makeTool(pluginsRegistry: string, pluginsSettingsPath: string): ToolConfig {
   return {
@@ -141,5 +141,67 @@ describe("broken symlink scanning", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("ruleAdditionalPaths / ruleAdditionalProjectPaths", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "skillmanager-rule-extra-paths-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("scans a tool's extra global rules directory recursively, ignoring a non-.md sibling", () => {
+    const rulesDir = join(root, "rules");
+    mkdirSync(join(rulesDir, "sub"), { recursive: true });
+    writeFileSync(join(rulesDir, "a.md"), "---\nname: a\n---\n");
+    writeFileSync(join(rulesDir, "sub", "b.md"), "---\nname: b\n---\n");
+    writeFileSync(join(rulesDir, "c.md.bak-2026"), "stale backup, not a rule");
+
+    const tool: ToolConfig = {
+      id: "test",
+      name: "Test",
+      icon: "box",
+      paths: {},
+      ruleAdditionalPaths: [{ path: rulesDir, singleFile: false }],
+    };
+
+    const items = scanTool(tool);
+    expect(items).toHaveLength(2);
+    expect(new Set(items.map((item) => item.name))).toEqual(new Set(["a", "b"]));
+    expect(items.every((item) => item.type === "rule")).toBe(true);
+  });
+
+  it("scans a tool's extra project-scoped rules directory the same way", () => {
+    const projectRoot = join(root, "myproject");
+    const rulesDir = join(projectRoot, ".claude", "rules");
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(join(rulesDir, "a.md"), "content");
+
+    const tool: ToolConfig = {
+      id: "claude-code",
+      name: "Claude Code",
+      icon: "asterisk",
+      paths: {},
+      ruleAdditionalProjectPaths: [{ path: ".claude/rules", singleFile: false }],
+    };
+    const project: ProjectWorkspace = { id: "p1", name: "myproject", path: projectRoot };
+
+    const items = scanProject([tool], project);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toEqual(expect.objectContaining({ name: "a", type: "rule", projectId: "p1" }));
+  });
+
+  it("Claude Code's DEFAULT_TOOLS entry scans ~/.claude/rules and <project>/.claude/rules by default", async () => {
+    // Regression guard for the actual fix: without a ruleAdditionalPaths default on the built-in
+    // Claude Code tool entry, a rules/ folder next to CLAUDE.md was never scanned at all.
+    const { DEFAULT_TOOLS } = await import("./types");
+    const claudeCode = DEFAULT_TOOLS.find((tool) => tool.id === "claude-code");
+    expect(claudeCode?.ruleAdditionalPaths).toEqual([{ path: "~/.claude/rules", singleFile: false }]);
+    expect(claudeCode?.ruleAdditionalProjectPaths).toEqual([{ path: ".claude/rules", singleFile: false }]);
   });
 });
