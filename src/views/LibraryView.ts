@@ -24,7 +24,7 @@ import {
 } from "../types";
 import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, expandHome, toProjectRelative } from "../scanners";
 import { addToProject, removeFromProject } from "../projectLink";
-import { deleteItem, DISABLED_DIRNAME, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
+import { deleteItem, DISABLED_DIRNAME, previewToggle, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
 import { ShadowNoteStore } from "../store";
 import { deleteCollectionAndSync, upsertCollectionAndSync } from "../collections";
@@ -609,6 +609,34 @@ export class LibraryView extends ItemView {
       return;
     }
     await this.rescan();
+  }
+
+  /** Gate in front of every enable/disable that moves a real file or folder — a card's toggle,
+   *  the Dashboard's Disable/Restore actions, and the broken-symlinks "Enable source" shortcut
+   *  all route through here rather than calling toggleEnabled (or whatever Dashboard bookkeeping
+   *  wraps it) directly, so a stray click doesn't silently move something on disk. Skipped
+   *  entirely when confirmBeforeToggle (Settings, on by default) is off. `perform` is whatever
+   *  that call site already did — this only decides whether it runs immediately or behind a
+   *  confirmation naming the exact move, worded from previewToggle so it can never drift from
+   *  what toggleItemEnabled itself is about to do. */
+  private confirmToggle(item: ItemMetadata, perform: () => void | Promise<void>) {
+    if (!this.getSettings().confirmBeforeToggle) {
+      void perform();
+      return;
+    }
+    const preview = previewToggle(item);
+    const toolText = this.toolLabel(item).text;
+    new ConfirmModal(
+      this.app,
+      preview.willDisable ? `Disable "${item.name}"?` : `Enable "${item.name}"?`,
+      preview.willDisable
+        ? `This moves "${item.name}" to ${preview.toPath}, so ${toolText} stops seeing it.`
+        : `This moves "${item.name}" back to ${preview.toPath}, so ${toolText} can see it again.`,
+      preview.willDisable ? "Disable" : "Enable",
+      async () => {
+        await perform();
+      }
+    ).open();
   }
 
   /** Quick unlink for a card the user is looking at directly, rather than routing through the
@@ -2945,10 +2973,15 @@ export class LibraryView extends ItemView {
   /** Obsidian desktop runs on Electron with Node integration enabled for plugins, so its own
    *  `window.require` reaches Electron's `shell` without adding an `electron` devDependency just
    *  for type declarations (the package itself is already external — see esbuild.config.mjs —
-   *  but has no types installed). Undefined on a build without Node integration (e.g. mobile). */
-  private electronShell(): { openPath(path: string): Promise<string> } | null {
-    const req = (window as unknown as { require?: (id: string) => { shell: { openPath(path: string): Promise<string> } } })
-      .require;
+   *  but has no types installed). Undefined on a build without Node integration (e.g. mobile).
+   *  `trashItem` is included alongside the existing `openPath` here (same object, one call) so
+   *  confirmDelete can route a real delete through the OS trash rather than a permanent rm. */
+  private electronShell(): { openPath(path: string): Promise<string>; trashItem(path: string): Promise<void> } | null {
+    const req = (
+      window as unknown as {
+        require?: (id: string) => { shell: { openPath(path: string): Promise<string>; trashItem(path: string): Promise<void> } };
+      }
+    ).require;
     return req ? req("electron").shell : null;
   }
 
@@ -3963,7 +3996,7 @@ export class LibraryView extends ItemView {
       if (item.pluginId !== null) {
         this.explainPluginToggle(item);
       } else {
-        void this.toggleEnabled(item);
+        this.confirmToggle(item, () => this.toggleEnabled(item));
       }
     });
 
@@ -4171,9 +4204,13 @@ export class LibraryView extends ItemView {
    *  never the real file it resolves to (see deleteItem's own comment). That's true whether the
    *  symlink is a project's local link into the shared library (isProjectLinked below) or a
    *  tool's own global symlink out to some other store (e.g. a skill kept outside the library and
-   *  symlinked into ~/.claude/skills) — so both get the safe "unlink" wording, not the "permanent
-   *  delete" one, which previously only applied to the project case even though the global case
-   *  is equally non-destructive. */
+   *  symlinked into ~/.claude/skills) — so both get the safe "unlink" wording, not the "moved to
+   *  the trash" one, which previously only applied to the project case even though the global
+   *  case is equally non-destructive.
+   *
+   *  A real (non-symlink) delete now moves the item to the OS Recycle Bin/Trash via Electron's
+   *  shell.trashItem (see deleteItem/electronShell) instead of permanently removing it, so the
+   *  copy here says so rather than "can't be undone." */
   private confirmDelete(item: ItemMetadata) {
     const unitPath = linkableUnit(item.sourcePath).path;
     const isSymlink = this.isSymlinkedItem(item);
@@ -4185,11 +4222,13 @@ export class LibraryView extends ItemView {
         ? isProjectLinked
           ? `This removes the project's symlink to "${item.name}". The skill itself stays in your library.`
           : `This removes the symlink to "${item.name}" at ${unitPath}. The file it points to, at ${item.realPath}, isn't touched.`
-        : `This permanently deletes "${item.name}" from disk at ${unitPath}. This can't be undone from Obsidian.`,
+        : `This moves "${item.name}" to the Recycle Bin/Trash from ${unitPath}. You can restore it from there if this was a mistake.`,
       isSymlink ? "Unlink" : "Delete",
       async () => {
         try {
-          deleteItem(item);
+          const shell = this.electronShell();
+          if (!shell) throw new Error("Can't move files to the Recycle Bin/Trash on this device — try Obsidian's desktop app.");
+          await deleteItem(item, (path) => shell.trashItem(path));
           await this.rescan();
         } catch (e) {
           new Notice(`Couldn't delete "${item.name}": ` + errorMessage(e));
@@ -4640,7 +4679,7 @@ export class LibraryView extends ItemView {
         const enableBtn = actions.createEl("button", { text: "Enable source", cls: "skillmanager-dash-action-btn" });
         enableBtn.addEventListener("click", (evt) => {
           evt.stopPropagation();
-          void this.toggleEnabled(disabledSource);
+          this.confirmToggle(disabledSource, () => this.toggleEnabled(disabledSource));
         });
       }
       const revealBtn = actions.createEl("button", { text: this.fileManagerLabel(), cls: "skillmanager-dash-action-btn" });
@@ -4768,7 +4807,7 @@ export class LibraryView extends ItemView {
       const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
       restoreBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
-        void this.restoreFromDashboard(item);
+        this.confirmToggle(item, () => this.restoreFromDashboard(item));
       });
     }
   }
@@ -4838,7 +4877,7 @@ export class LibraryView extends ItemView {
           pair.b,
           pair.score,
           pair.sameName,
-          (item) => void this.disableFromDashboard(item),
+          (item) => this.confirmToggle(item, () => this.disableFromDashboard(item)),
           (item) => this.confirmDelete(item),
           (item) => this.openItemFromDashboard(item)
         ).open();
@@ -4856,7 +4895,7 @@ export class LibraryView extends ItemView {
         cls: "skillmanager-dash-row-meta",
       });
       const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
-      restoreBtn.addEventListener("click", () => void this.restoreFromDashboard(item));
+      restoreBtn.addEventListener("click", () => this.confirmToggle(item, () => this.restoreFromDashboard(item)));
     }
     if (totalCount > DASHBOARD_RANKED_COLLAPSED_COUNT) {
       const toggleBtn = section.createEl("button", {
@@ -5019,7 +5058,9 @@ export class LibraryView extends ItemView {
     const metaRow = info.createDiv({ cls: "skillmanager-dash-row-meta" });
     metaRow.createSpan({ text: metaText });
     metaRow.createSpan({ text: methodLabel, cls: "skillmanager-card-type skillmanager-dash-method-tag" });
-    this.renderDashboardDisregardableActions(row, item.entryId, "Disable", () => void this.disableFromDashboard(item));
+    this.renderDashboardDisregardableActions(row, item.entryId, "Disable", () =>
+      this.confirmToggle(item, () => this.disableFromDashboard(item))
+    );
   }
 
   // ---------- selection: one detail rail, breadcrumbed between the file list and a file ----------

@@ -109,6 +109,17 @@ export function makeEntryId(
 const MAX_SCAN_DEPTH = 4;
 const SKIP_DIRNAMES = new Set([DISABLED_DIRNAME, "node_modules", ".git"]);
 
+/** A flat .md file whose basename is an index/readme convention rather than an actual
+ *  skill/agent/command a user wrote — e.g. a loose ~/.claude/skills/skills_index.md previously
+ *  got listed as a skill of its own. Case-insensitive, matching how these filesystems actually
+ *  behave. Deliberately narrow (exact "readme"/"index", or an "*_index"/"*-index" suffix) so a
+ *  legitimately named item never disappears because it happens to contain "index" somewhere. */
+function isIndexLikeFileName(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  const base = lower.replace(/\.md$/, "");
+  return base === "readme" || base === "index" || base.endsWith("_index") || base.endsWith("-index");
+}
+
 function scanEntries(
   dir: string,
   tool: ToolConfig,
@@ -168,6 +179,12 @@ function scanEntries(
     }
 
     if (entry.endsWith(".md")) {
+      // An index/readme-style file documents its containing folder rather than being an item
+      // itself — skip it for skill/agent/command. Rules are exempt: Claude Code (and others)
+      // load every .md under a rules directory, so a genuinely-named "README.md" rule file is
+      // meant to be read as a rule, not filtered out (see the DEFAULT_TOOLS ruleAdditionalPaths
+      // comment for the source on that).
+      if (type !== "rule" && isIndexLikeFileName(entry)) continue;
       // Strip a known compound suffix whole (foo.instructions.md -> foo), not just the
       // trailing .md, so a Copilot instructions/prompt file doesn't display with it dangling.
       const baseName = entry.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
