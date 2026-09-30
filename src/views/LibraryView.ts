@@ -190,6 +190,17 @@ function tagColorIndex(tag: string): number {
   return hash % TAG_COLORS;
 }
 
+const SOURCE_FILTER_LABELS: Record<"github" | "builtin" | "local", string> = {
+  github: "GitHub-tracked",
+  builtin: "Built-in",
+  local: "Local",
+};
+
+const RULE_KIND_LABELS: Record<"instructions" | "granular", string> = {
+  instructions: "Instructions files",
+  granular: "Individual rules",
+};
+
 export class LibraryView extends ItemView {
   private items: ItemMetadata[] = [];
   private search = "";
@@ -856,6 +867,33 @@ export class LibraryView extends ItemView {
       this.mcpMode ||
       this.pluginBundlesMode
     );
+  }
+
+  /** In-page filters layered on top of the sidebar scope: everything the "Clear filters" button
+   *  resets. Search isn't included; it has its own clear button and is shown separately. */
+  private activeFilterLabels(): string[] {
+    const labels: string[] = [];
+    if (this.enabledFilter !== "all") labels.push(this.enabledFilter === "enabled" ? "Enabled only" : "Disabled only");
+    if (this.tagFilter) labels.push(`Tag: ${this.tagFilter}`);
+    if (this.untaggedOnly) labels.push("Untagged");
+    if (this.sourceFilter) labels.push(SOURCE_FILTER_LABELS[this.sourceFilter]);
+    if (this.ruleKindFilter) labels.push(RULE_KIND_LABELS[this.ruleKindFilter]);
+    if (this.pageToolFilter) {
+      labels.push(this.getSettings().tools.find((t) => t.id === this.pageToolFilter)?.name ?? "One tool");
+    }
+    if (this.pageTypeFilter) labels.push(TYPE_LABELS[this.pageTypeFilter]);
+    return labels;
+  }
+
+  private clearFilters() {
+    this.enabledFilter = "all";
+    this.tagFilter = null;
+    this.untaggedOnly = false;
+    this.sourceFilter = null;
+    this.ruleKindFilter = null;
+    this.pageToolFilter = null;
+    this.pageTypeFilter = null;
+    this.tagbarScrollLeft = 0;
   }
 
   private filteredItems(): ItemMetadata[] {
@@ -3740,6 +3778,19 @@ export class LibraryView extends ItemView {
     if (this.toolFilter) this.renderTypeFilterButton(controls);
     this.renderSourceButton(controls);
     this.renderSortButton(controls);
+    const activeCount = this.activeFilterLabels().length;
+    if (activeCount > 0) {
+      const clearBtn = controls.createEl("button", {
+        cls: "skillmanager-sort-btn skillmanager-clear-filters-btn",
+        attr: { "aria-label": `Clear filters: ${this.activeFilterLabels().join(", ")}` },
+      });
+      clearBtn.createSpan({ text: `Clear filters (${activeCount})`, cls: "skillmanager-sort-btn-label" });
+      setIcon(clearBtn.createSpan({ cls: "skillmanager-clear-filters-x" }), "x");
+      clearBtn.addEventListener("click", () => {
+        this.clearFilters();
+        this.render();
+      });
+    }
   }
 
   /** A type page can narrow to one tool without changing the type sidebar scope. */
@@ -3818,10 +3869,7 @@ export class LibraryView extends ItemView {
    *  tool's single CLAUDE.md-style instructions file alongside another tool's directory of many
    *  granular rule files) narrow to just one kind. See ruleKindFilter/isSingleFileRuleTool. */
   private renderRuleKindButton(container: HTMLElement) {
-    const labels: Record<"instructions" | "granular", string> = {
-      instructions: "Instructions files",
-      granular: "Individual rules",
-    };
+    const labels = RULE_KIND_LABELS;
     const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by rule kind" } });
     const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
     setIcon(icon, "filter");
@@ -3855,11 +3903,7 @@ export class LibraryView extends ItemView {
   }
 
   private renderSourceButton(container: HTMLElement) {
-    const labels: Record<"github" | "builtin" | "local", string> = {
-      github: "GitHub-tracked",
-      builtin: "Built-in",
-      local: "Local",
-    };
+    const labels = SOURCE_FILTER_LABELS;
     const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by source" } });
     const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
     setIcon(icon, "filter");
@@ -3945,14 +3989,16 @@ export class LibraryView extends ItemView {
     container.empty();
 
     if (items.length === 0) {
-      if (this.favoritesOnly) {
-        this.renderFavoritesEmptyState(container, !!this.search.trim());
+      const query = this.search.trim();
+      if (query || this.activeFilterLabels().length > 0) {
+        this.renderNoMatchesEmptyState(container, query);
         return;
       }
-      container.createDiv({
-        cls: "skillmanager-empty",
-        text: "Nothing here yet. Rescan tools, or check the paths in plugin settings.",
-      });
+      if (this.favoritesOnly) {
+        this.renderFavoritesEmptyState(container);
+        return;
+      }
+      this.renderEmptyScopeState(container);
       return;
     }
 
@@ -3961,16 +4007,84 @@ export class LibraryView extends ItemView {
     }
   }
 
+  /** Zero results because of a search or in-page filters, not because the page is empty. Names
+   *  what's narrowing the list so a forgotten filter is obvious, offers to clear it, and, when a
+   *  search finds things elsewhere in the library, offers to jump there. */
+  private renderNoMatchesEmptyState(container: HTMLElement, query: string) {
+    const filters = this.activeFilterLabels();
+    const empty = container.createDiv({ cls: "skillmanager-empty-state" });
+    setIcon(empty.createDiv({ cls: "skillmanager-empty-state-icon" }), "search-x");
+    empty.createEl("h3", {
+      text: query ? `No matches for "${query}"` : "No items match these filters",
+      cls: "skillmanager-empty-state-title",
+    });
+    if (filters.length > 0) {
+      empty.createEl("p", {
+        cls: "skillmanager-empty-state-desc",
+        text: `${this.isScoped() ? `In ${this.scopeTitle()}, filtered` : "Filtered"} by: ${filters.join(", ")}.`,
+      });
+    } else if (this.isScoped()) {
+      empty.createEl("p", { cls: "skillmanager-empty-state-desc", text: `Searched in ${this.scopeTitle()} only.` });
+    }
+
+    const actions = empty.createDiv({ cls: "skillmanager-empty-state-actions" });
+    if (filters.length > 0) {
+      actions.createEl("button", { text: "Clear filters", cls: "mod-cta" }).addEventListener("click", () => {
+        this.clearFilters();
+        this.render();
+      });
+    }
+    if (query) {
+      // Same match rule as filteredItems' search, across the whole library with nothing else applied.
+      const lower = query.toLowerCase();
+      const everywhere = this.items.filter(
+        (item) => !this.isToolDisabled(item.tool) && `${item.name} ${item.description}`.toLowerCase().includes(lower)
+      ).length;
+      if (everywhere > 0 && this.isScoped()) {
+        const label = `Show ${everywhere} ${everywhere === 1 ? "match" : "matches"} in all items`;
+        actions.createEl("button", { text: label, cls: filters.length > 0 ? "" : "mod-cta" }).addEventListener("click", () => {
+          this.clearScopeFilters();
+          this.clearFilters();
+          this.render();
+        });
+      }
+      actions.createEl("button", { text: "Clear search" }).addEventListener("click", () => {
+        this.search = "";
+        this.render();
+      });
+    }
+  }
+
+  /** Nothing in this scope at all, with no search or filter involved. Points at the two ways
+   *  items get here: installing something new, or rescanning after adding files by hand. */
+  private renderEmptyScopeState(container: HTMLElement) {
+    const empty = container.createDiv({ cls: "skillmanager-empty-state" });
+    setIcon(empty.createDiv({ cls: "skillmanager-empty-state-icon" }), "inbox");
+    const scoped = this.isScoped();
+    empty.createEl("h3", {
+      text: scoped ? `Nothing in ${this.scopeTitle()} yet` : "Nothing found yet",
+      cls: "skillmanager-empty-state-title",
+    });
+    empty.createEl("p", {
+      cls: "skillmanager-empty-state-desc",
+      text: "Find something to install, or rescan if you've added files yourself. Still missing? Check where each tool looks for files in its settings.",
+    });
+    const actions = empty.createDiv({ cls: "skillmanager-empty-state-actions" });
+    actions.createEl("button", { text: "Find skills to install", cls: "mod-cta" }).addEventListener("click", () => {
+      this.clearScopeFilters();
+      this.discoverMode = true;
+      this.render();
+    });
+    actions.createEl("button", { text: "Rescan tools" }).addEventListener("click", () => {
+      void this.rescan();
+    });
+  }
+
   /** Favourites starts empty for every new user, so — unlike the generic "rescan tools" message,
    *  which would be actively wrong advice here (rescanning finds nothing new; starring does) —
    *  this gets its own explanation plus a one-click way back to the full library to go star
-   *  something. Searching within an already-empty Favourites is a different, narrower case (the
-   *  star icon's not the point, the search itself came up empty) so it gets plain text instead. */
-  private renderFavoritesEmptyState(container: HTMLElement, isSearchMiss: boolean) {
-    if (isSearchMiss) {
-      container.createDiv({ cls: "skillmanager-empty", text: "No favourites match your search." });
-      return;
-    }
+   *  something. A search or filter miss inside Favourites goes to renderNoMatchesEmptyState. */
+  private renderFavoritesEmptyState(container: HTMLElement) {
     const empty = container.createDiv({ cls: "skillmanager-empty-state" });
     const icon = empty.createDiv({ cls: "skillmanager-empty-state-icon" });
     setIcon(icon, "star");

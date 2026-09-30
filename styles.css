@@ -620,6 +620,41 @@ input.skillmanager-search {
   white-space: nowrap;
 }
 
+/* Label on the left, an attached accent square holding the x on the right, so it reads as a
+   dismiss action rather than another dropdown. */
+.skillmanager-clear-filters-btn {
+  align-items: stretch;
+  gap: 0;
+  padding: 0 0 0 10px;
+  overflow: hidden;
+}
+
+/* Same vertical padding as the other toolbar buttons so the height matches them. */
+.skillmanager-clear-filters-btn .skillmanager-sort-btn-label {
+  display: flex;
+  align-items: center;
+  padding: 3px 10px 3px 0;
+}
+
+.skillmanager-clear-filters-x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  padding: 0 7px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.skillmanager-clear-filters-btn:hover .skillmanager-clear-filters-x {
+  background: var(--interactive-accent-hover);
+}
+
+.skillmanager-clear-filters-x .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
 /* Shared rest/hover recipe for plain secondary buttons embedded in the plugin's own view chrome
    (as opposed to Obsidian's native modal dialogs) — same flat fill on hover as the sort button
    and segmented filter, so no button in the view reads as "stroke highlights on hover" while its
@@ -866,7 +901,10 @@ input.skillmanager-search {
   padding-bottom: 6px;
 }
 
+/* Spans every grid column so a one-line message reads across the pane instead of wrapping
+   inside a single 280px card cell. */
 .skillmanager-empty {
+  grid-column: 1 / -1;
   color: var(--text-muted);
   font-size: var(--font-ui-small);
 }
@@ -909,7 +947,7 @@ input.skillmanager-search {
 
 .skillmanager-empty-state-desc {
   margin: 0;
-  max-width: 320px;
+  max-width: 520px;
   color: var(--text-muted);
   font-size: var(--font-ui-small);
   line-height: 1.5;
@@ -919,6 +957,14 @@ input.skillmanager-search {
    buttons nested inside .skillmanager-discover-starters below — those manage their own spacing
    via that container's gap. */
 .skillmanager-empty-state > button {
+  margin-top: 16px;
+}
+
+.skillmanager-empty-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
   margin-top: 16px;
 }
 
