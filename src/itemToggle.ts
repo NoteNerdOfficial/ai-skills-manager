@@ -1,10 +1,41 @@
-import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 import { linkableUnit } from "./fsUnit";
 import { ItemMetadata, ToolConfig } from "./types";
 
 export const DISABLED_DIRNAME = ".skillmanager-disabled";
+/** Appended to a disabled flat file's name (commands/agents/rules). Moving it into
+ *  DISABLED_DIRNAME alone isn't enough: Claude Code loads every .md under commands/ (and
+ *  agents/, rules/) recursively, so ".skillmanager-disabled/ado.md" still loaded as
+ *  "/.skillmanager-disabled:ado". Without the .md extension no tool picks it up. Folder units
+ *  (skills) don't need it, since tools only look one level down for SKILL.md. */
+export const DISABLED_SUFFIX = ".skillmanager-disabled";
+
+/** Where a unit goes when disabled: into the sibling DISABLED_DIRNAME, plus DISABLED_SUFFIX for a
+ *  flat file. */
+export function disabledLocation(path: string, isDirectory: boolean): string {
+  return join(dirname(path), DISABLED_DIRNAME, basename(path) + (isDirectory ? "" : DISABLED_SUFFIX));
+}
+
+/** Where a disabled unit goes back to. Strips DISABLED_SUFFIX when present; a flat file disabled
+ *  before the suffix existed has none and moves back as-is. */
+function enabledLocation(path: string): string {
+  const name = basename(path);
+  return join(dirname(dirname(path)), name.endsWith(DISABLED_SUFFIX) ? name.slice(0, -DISABLED_SUFFIX.length) : name);
+}
+
+/** Renames a flat file that was disabled before DISABLED_SUFFIX existed ("<dir>/.skillmanager-
+ *  disabled/foo.md") so its tool stops loading it. Returns the new path, or null when nothing
+ *  needed renaming. */
+export function upgradeLegacyDisabledFile(sourcePath: string): string | null {
+  const unit = linkableUnit(sourcePath);
+  if (unit.isDirectory || basename(dirname(unit.path)) !== DISABLED_DIRNAME || unit.name.endsWith(DISABLED_SUFFIX)) return null;
+  const target = unit.path + DISABLED_SUFFIX;
+  if (existsSync(target)) return null;
+  moveEntry(unit.path, target, false);
+  return target;
+}
 
 function expandHome(rawPath: string): string {
   return rawPath.startsWith("~") ? join(homedir(), rawPath.slice(1)) : rawPath;
@@ -39,21 +70,12 @@ export function toggleItemEnabled(item: ItemMetadata): void {
   if (item.pluginId !== null) {
     throw new Error(`"${item.name}" is part of an installed plugin — disable the whole plugin from the sidebar instead.`);
   }
-  const unit = linkableUnit(item.sourcePath);
-  const parentDir = dirname(unit.path);
-
-  if (basename(parentDir) === DISABLED_DIRNAME) {
-    const targetDir = dirname(parentDir);
-    const target = join(targetDir, unit.name);
-    if (existsSync(target)) throw new Error(`"${unit.name}" already exists at its enabled location.`);
-    moveEntry(unit.path, target, unit.isDirectory);
-  } else {
-    const disabledDir = join(parentDir, DISABLED_DIRNAME);
-    mkdirSync(disabledDir, { recursive: true });
-    const target = join(disabledDir, unit.name);
-    if (existsSync(target)) throw new Error(`"${unit.name}" is already disabled.`);
-    moveEntry(unit.path, target, unit.isDirectory);
+  const { willDisable, fromPath, toPath } = previewToggle(item);
+  if (existsSync(toPath)) {
+    throw new Error(willDisable ? `"${item.name}" is already disabled.` : `"${basename(toPath)}" already exists at its enabled location.`);
   }
+  if (willDisable) mkdirSync(dirname(toPath), { recursive: true });
+  moveEntry(fromPath, toPath, linkableUnit(item.sourcePath).isDirectory);
 }
 
 export interface ToggleMovePreview {
@@ -66,17 +88,15 @@ export interface ToggleMovePreview {
   toPath: string;
 }
 
-/** Pure preview of what toggleItemEnabled above would actually do to this item's unit on disk —
- *  no filesystem writes. Kept here, right beside the real move logic, so a caller that wants to
- *  word a confirmation prompt around the exact source/destination paths (see LibraryView's
- *  confirmToggle) can never drift from what toggleItemEnabled itself would do. */
+/** What toggleItemEnabled would do to this item's unit on disk, with no filesystem writes.
+ *  toggleItemEnabled runs off this same result, so a confirmation worded from it (see
+ *  LibraryView's confirmToggle) can't drift from the real move. */
 export function previewToggle(item: ItemMetadata): ToggleMovePreview {
   const unit = linkableUnit(item.sourcePath);
-  const parentDir = dirname(unit.path);
-  if (basename(parentDir) === DISABLED_DIRNAME) {
-    return { willDisable: false, fromPath: unit.path, toPath: join(dirname(parentDir), unit.name) };
+  if (basename(dirname(unit.path)) === DISABLED_DIRNAME) {
+    return { willDisable: false, fromPath: unit.path, toPath: enabledLocation(unit.path) };
   }
-  return { willDisable: true, fromPath: unit.path, toPath: join(parentDir, DISABLED_DIRNAME, unit.name) };
+  return { willDisable: true, fromPath: unit.path, toPath: disabledLocation(unit.path, unit.isDirectory) };
 }
 
 /** YYYYMMDD-HHMMSS, local time — just enough resolution to sort correctly alongside a plain
@@ -100,11 +120,33 @@ function backupSettingsFile(settingsPath: string): void {
   for (;;) {
     try {
       copyFileSync(settingsPath, target, constants.COPYFILE_EXCL);
+      pruneOldBackups(settingsPath);
       return;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       suffix++;
       target = `${base}-${suffix}`;
+    }
+  }
+}
+
+/** How many settings backups to keep; older ones are removed after each new backup. */
+const SETTINGS_BACKUPS_KEPT = 3;
+
+/** Keeps only the newest SETTINGS_BACKUPS_KEPT backups so every plugin toggle doesn't leave
+ *  another file behind in the tool's folder. Names sort by time (YYYYMMDD-HHMMSS, then any
+ *  same-second "-N" suffix). Best effort: a backup that can't be removed is left alone. */
+function pruneOldBackups(settingsPath: string): void {
+  const prefix = `${basename(settingsPath)}.skillmanager-bak-`;
+  const dir = dirname(settingsPath);
+  const backups = readdirSync(dir)
+    .filter((name) => name.startsWith(prefix))
+    .sort();
+  for (const name of backups.slice(0, -SETTINGS_BACKUPS_KEPT)) {
+    try {
+      unlinkSync(join(dir, name));
+    } catch {
+      // Leave it; the next toggle tries again.
     }
   }
 }

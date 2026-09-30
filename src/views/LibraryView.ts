@@ -1,6 +1,6 @@
 import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon, setTooltip } from "obsidian";
-import { execFileSync } from "child_process";
-import { cpSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { execFile, execFileSync } from "child_process";
+import { cpSync, existsSync, lstatSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, relative, sep } from "path";
 import {
   Collection,
@@ -24,7 +24,7 @@ import {
 } from "../types";
 import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, expandHome, toProjectRelative } from "../scanners";
 import { addToProject, removeFromProject } from "../projectLink";
-import { deleteItem, DISABLED_DIRNAME, previewToggle, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
+import { deleteItem, disabledLocation, previewToggle, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
 import { ShadowNoteStore } from "../store";
 import { deleteCollectionAndSync, upsertCollectionAndSync } from "../collections";
@@ -2985,6 +2985,51 @@ export class LibraryView extends ItemView {
     return req ? req("electron").shell : null;
   }
 
+  /** Moves a real file or folder to the OS trash. On macOS this asks Finder to do it, because
+   *  only a Finder delete records where the item came from, which is what makes "Put Back" work.
+   *  The first call shows macOS's one-time "Obsidian wants to control Finder" prompt; if that's
+   *  declined (or Finder fails for any reason) it falls back to Electron's shell.trashItem, which
+   *  still trashes the item, just without Put Back. The path is passed to osascript as an
+   *  argument, never spliced into the script, so no path can inject AppleScript. */
+  private async trashPath(path: string): Promise<void> {
+    if (process.platform === "darwin") {
+      try {
+        const failed = await new Promise<boolean>((resolvePromise) => {
+          execFile(
+            "osascript",
+            ["-e", "on run argv", "-e", 'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)', "-e", "end run", path],
+            (error) => resolvePromise(error !== null)
+          );
+        });
+        if (!failed) return;
+      } catch {
+        // Fall through to the Electron trash below.
+      }
+      // Finder failed or permission was declined. It may still have moved the item.
+      if (!existsSync(path)) return;
+    }
+    const shell = this.electronShell();
+    if (!shell) throw new Error("Can't move files to the Recycle Bin/Trash on this device. Try Obsidian's desktop app.");
+    await shell.trashItem(path);
+  }
+
+  /** Swaps an item's on-disk unit for a freshly fetched copy (Update/Restore). The old real file
+   *  or folder goes to the OS trash first instead of being rm'd, so an unwanted update can be
+   *  undone by hand. A symlinked folder is still just unlinked (trashing it would only trash the
+   *  link anyway), and a symlinked flat file is overwritten in place, same as before. Throws
+   *  without touching anything if the trash isn't reachable. */
+  private async replaceUnit(source: string, target: string, isDirectory: boolean): Promise<void> {
+    if (existsSync(target)) {
+      const isLink = lstatSync(target).isSymbolicLink();
+      if (isLink && isDirectory) {
+        unlinkSync(target);
+      } else if (!isLink) {
+        await this.trashPath(target);
+      }
+    }
+    cpSync(source, target, isDirectory ? { recursive: true } : undefined);
+  }
+
   private fileManagerLabel(): string {
     if (process.platform === "darwin") return "Reveal in Finder";
     if (process.platform === "win32") return "Show in File Explorer";
@@ -4208,8 +4253,8 @@ export class LibraryView extends ItemView {
    *  the trash" one, which previously only applied to the project case even though the global
    *  case is equally non-destructive.
    *
-   *  A real (non-symlink) delete now moves the item to the OS Recycle Bin/Trash via Electron's
-   *  shell.trashItem (see deleteItem/electronShell) instead of permanently removing it, so the
+   *  A real (non-symlink) delete now moves the item to the OS Recycle Bin/Trash via
+   *  trashPath (Finder on macOS, so Put Back works) instead of permanently removing it, so the
    *  copy here says so rather than "can't be undone." */
   private confirmDelete(item: ItemMetadata) {
     const unitPath = linkableUnit(item.sourcePath).path;
@@ -4226,9 +4271,7 @@ export class LibraryView extends ItemView {
       isSymlink ? "Unlink" : "Delete",
       async () => {
         try {
-          const shell = this.electronShell();
-          if (!shell) throw new Error("Can't move files to the Recycle Bin/Trash on this device — try Obsidian's desktop app.");
-          await deleteItem(item, (path) => shell.trashItem(path));
+          await deleteItem(item, (path) => this.trashPath(path));
           await this.rescan();
         } catch (e) {
           new Notice(`Couldn't delete "${item.name}": ` + errorMessage(e));
@@ -4701,9 +4744,10 @@ export class LibraryView extends ItemView {
   }
 
   private disabledSourceForBrokenLink(link: BrokenSymlink): ItemMetadata | null {
-    const disabledPath = join(dirname(link.targetPath), DISABLED_DIRNAME, basename(link.targetPath));
+    // The target may be a folder or a flat file; accept either disabled location.
+    const candidates = new Set([disabledLocation(link.targetPath, true), disabledLocation(link.targetPath, false)]);
     return this.items.find(
-      (item) => !item.enabled && item.projectId === null && linkableUnit(item.sourcePath).path === disabledPath
+      (item) => !item.enabled && item.projectId === null && candidates.has(linkableUnit(item.sourcePath).path)
     ) ?? null;
   }
 
@@ -5536,12 +5580,7 @@ export class LibraryView extends ItemView {
     if (this.review?.status !== "ready") return;
     const { mode, unitPath, isDirectory, newRoot, newCommit, entryId, clone } = this.review;
     try {
-      if (isDirectory) {
-        rmSync(unitPath, { recursive: true, force: true });
-        cpSync(newRoot, unitPath, { recursive: true });
-      } else {
-        cpSync(newRoot, unitPath);
-      }
+      await this.replaceUnit(newRoot, unitPath, isDirectory);
       await this.store.update(entryId, { sourceCommit: newCommit });
       if (mode === "update") this.syncStatus.set(entryId, "current");
       clone.cleanup();
@@ -5582,12 +5621,8 @@ export class LibraryView extends ItemView {
         : !readFileSync(oldPrimary).equals(readFileSync(newPrimary));
       const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
       const changed = primaryChanged || companions.length > 0;
-      if (unit.isDirectory) {
-        rmSync(unit.path, { recursive: true, force: true });
-        cpSync(newRoot, unit.path, { recursive: true });
-      } else {
-        cpSync(newRoot, unit.path);
-      }
+      // Skip the swap when nothing changed, so a bulk run doesn't fill the trash with identical copies.
+      if (changed) await this.replaceUnit(newRoot, unit.path, unit.isDirectory);
       await this.store.update(item.entryId, { sourceCommit: clone.commit });
       return changed;
     } finally {

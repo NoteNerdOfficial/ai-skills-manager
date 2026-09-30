@@ -99,6 +99,8 @@ Support for additional tools and edge cases is welcome. If you use one of these 
 
 AI Skills Manager is desktop-only: it reads and writes files directly on disk (and shells out to `git` for the GitHub-powered Discover, install, and update features), which isn't available in Obsidian's mobile sandbox.
 
+Deleting an item, or updating one from GitHub, moves the old copy to your system Trash instead of erasing it. On macOS the plugin asks Finder to do this so **Put Back** works, which means macOS asks once for permission to let Obsidian control Finder. If you decline, items still go to the Trash, just without Put Back.
+
 ## Getting started
 
 1. Open the library from the ribbon icon (shapes) or the **Open library** command.

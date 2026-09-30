@@ -1,9 +1,10 @@
 import { App, FileSystemAdapter } from "obsidian";
 import { dirname } from "path";
 import { BrokenSymlink, ItemMetadata, McpServerEntry, PluginSource, ProjectWorkspace, SkillManagerPluginSettings } from "./types";
-import { scanAllPlugins, scanAllProjects, scanAllTools, scanBrokenSymlinks } from "./scanners";
+import { scanAllPlugins, scanAllProjects, scanAllTools, scanBrokenSymlinks, stableEntryPath } from "./scanners";
 import { scanMcpServers } from "./mcpScanners";
 import { ShadowNoteStore } from "./store";
+import { upgradeLegacyDisabledFile } from "./itemToggle";
 
 export const VAULT_PROJECT_ID = "vault";
 
@@ -61,6 +62,22 @@ export async function performRescan(
     ...pluginScan.items,
   ];
   const brokenSymlinks = scanBrokenSymlinks(settings.tools, projects);
+  // Flat files disabled before DISABLED_SUFFIX existed are still loaded by their tool; rename
+  // them in place. entryId ignores the suffix, so the item's note is unaffected.
+  for (const item of discovered) {
+    if (item.enabled) continue;
+    let upgraded: string | null = null;
+    try {
+      upgraded = upgradeLegacyDisabledFile(item.sourcePath);
+    } catch {
+      // Leave it as-is; it's still listed, and the next rescan tries again.
+    }
+    if (upgraded) {
+      if (item.realPath === item.sourcePath) item.realPath = upgraded;
+      item.sourcePath = upgraded;
+    }
+  }
+  await store.adoptRenamed(discovered, stableEntryPath);
   for (const item of discovered) {
     await store.ensureItem(item);
   }
@@ -72,9 +89,11 @@ export async function performRescan(
   const retainedBrokenIds = existing
     .filter((item) => brokenPaths.has(item.sourcePath) || brokenPaths.has(dirname(item.sourcePath)))
     .map((item) => item.entryId);
-  await store.pruneMissing(new Set([...discovered.map((d) => d.entryId), ...retainedBrokenIds]));
+  const validIds = new Set([...discovered.map((d) => d.entryId), ...retainedBrokenIds]);
+  await store.pruneMissing(validIds);
   return {
-    items: await store.list(),
+    // Filtered here too: the metadata cache may not have caught up with a just-marked missing note.
+    items: (await store.list()).filter((item) => validIds.has(item.entryId)),
     plugins: pluginScan.plugins,
     mcpServers: includeMcpServers ? scanMcpServers(settings.tools, projects) : [],
     brokenSymlinks,

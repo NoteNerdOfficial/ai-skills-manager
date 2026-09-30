@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpat
 import { homedir } from "os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "path";
 import { slug } from "./format";
-import { DISABLED_DIRNAME } from "./itemToggle";
+import { DISABLED_DIRNAME, DISABLED_SUFFIX } from "./itemToggle";
 import { BrokenSymlink, DiscoveredItem, ItemType, PluginSource, ProjectWorkspace, RulePathEntry, ToolConfig } from "./types";
 
 export function expandHome(rawPath: string): string {
@@ -88,11 +88,12 @@ function resolveRealPath(sourcePath: string): string {
 
 /** Keeps an item's identity stable across the enable/disable move while still distinguishing
  *  two same-named entries found in different directories. */
-function stableEntryPath(sourcePath: string): string {
-  return sourcePath
+export function stableEntryPath(sourcePath: string): string {
+  const path = sourcePath
     .split(sep)
     .filter((segment) => segment !== DISABLED_DIRNAME)
     .join(sep);
+  return path.endsWith(DISABLED_SUFFIX) ? path.slice(0, -DISABLED_SUFFIX.length) : path;
 }
 
 export function makeEntryId(
@@ -178,16 +179,19 @@ function scanEntries(
       continue;
     }
 
-    if (entry.endsWith(".md")) {
+    // A flat file disabled by itemToggle carries DISABLED_SUFFIX so its tool stops loading it;
+    // it's still an item here, read under its original name.
+    const fileName = !enabled && entry.endsWith(`.md${DISABLED_SUFFIX}`) ? entry.slice(0, -DISABLED_SUFFIX.length) : entry;
+    if (fileName.endsWith(".md")) {
       // An index/readme-style file documents its containing folder rather than being an item
       // itself — skip it for skill/agent/command. Rules are exempt: Claude Code (and others)
       // load every .md under a rules directory, so a genuinely-named "README.md" rule file is
       // meant to be read as a rule, not filtered out (see the DEFAULT_TOOLS ruleAdditionalPaths
       // comment for the source on that).
-      if (type !== "rule" && isIndexLikeFileName(entry)) continue;
+      if (type !== "rule" && isIndexLikeFileName(fileName)) continue;
       // Strip a known compound suffix whole (foo.instructions.md -> foo), not just the
       // trailing .md, so a Copilot instructions/prompt file doesn't display with it dangling.
-      const baseName = entry.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
+      const baseName = fileName.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
       const meta = readSourceMeta(entryPath);
       items.push({
         entryId: makeEntryId(tool.id, type, projectId, pluginId, baseName, stableEntryPath(entryPath)),
@@ -250,7 +254,10 @@ function scanSingleFile(
   pluginId: string | null
 ): DiscoveredItem[] {
   const fileName = basename(filePath);
-  const disabledPath = join(dirname(filePath), DISABLED_DIRNAME, fileName);
+  const disabledDir = join(dirname(filePath), DISABLED_DIRNAME);
+  // Prefer the suffixed copy itemToggle writes now; fall back to one disabled before the suffix.
+  const suffixed = join(disabledDir, fileName + DISABLED_SUFFIX);
+  const disabledPath = existsSync(suffixed) ? suffixed : join(disabledDir, fileName);
 
   const items: DiscoveredItem[] = [];
   for (const [path, enabled] of [

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DISABLED_DIRNAME, DISABLED_SUFFIX, toggleItemEnabled } from "./itemToggle";
 import { scanAllPlugins, scanAllTools, scanBrokenSymlinks, scanProject, scanTool } from "./scanners";
 import { ProjectWorkspace, ToolConfig } from "./types";
 
@@ -255,5 +256,33 @@ describe("index/readme-like flat files are excluded from skill/agent/command, ke
 
     expect(items).toHaveLength(1);
     expect(items[0].name).toBe("README");
+  });
+});
+
+describe("disabled flat files", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "skillmanager-disabled-suffix-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("lists a suffixed disabled command under its own name and keeps its enabled entryId", () => {
+    const commandsDir = join(root, "commands");
+    mkdirSync(commandsDir, { recursive: true });
+    writeFileSync(join(commandsDir, "deploy.md"), "---\nname: deploy\n---\n");
+    const tool: ToolConfig = { id: "test", name: "Test", icon: "box", paths: { command: commandsDir } };
+    const [enabled] = scanTool(tool);
+
+    toggleItemEnabled({ ...enabled, tags: [], favorite: false, collections: [] });
+    const [disabled] = scanTool(tool);
+
+    expect(disabled.sourcePath).toBe(join(commandsDir, DISABLED_DIRNAME, `deploy.md${DISABLED_SUFFIX}`));
+    expect(disabled.name).toBe("deploy");
+    expect(disabled.enabled).toBe(false);
+    expect(disabled.entryId).toBe(enabled.entryId);
   });
 });

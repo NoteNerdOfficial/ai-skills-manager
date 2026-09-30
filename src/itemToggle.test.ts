@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DISABLED_DIRNAME, TrashFn, deleteItem, previewToggle, toggleItemEnabled, togglePluginEnabled } from "./itemToggle";
+import { DISABLED_DIRNAME, DISABLED_SUFFIX, TrashFn, deleteItem, previewToggle, toggleItemEnabled, togglePluginEnabled, upgradeLegacyDisabledFile } from "./itemToggle";
 import { ItemMetadata, ToolConfig } from "./types";
 
 // vi.spyOn can't redefine a property on Node's own "fs" ESM namespace object ("Module namespace
@@ -71,15 +71,16 @@ describe("toggleItemEnabled / deleteItem", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("disables a flat file by moving it into a sibling .skillmanager-disabled folder", () => {
+  it("disables a flat file by moving it into a sibling .skillmanager-disabled folder, without its .md extension", () => {
     const filePath = join(root, "backend.md");
     writeFileSync(filePath, "content");
 
     toggleItemEnabled(makeItem(filePath));
 
     expect(existsSync(filePath)).toBe(false);
-    const disabledPath = join(root, DISABLED_DIRNAME, "backend.md");
-    expect(existsSync(disabledPath)).toBe(true);
+    // A tool that loads every .md recursively (Claude Code's commands/) must not see it.
+    expect(existsSync(join(root, DISABLED_DIRNAME, "backend.md"))).toBe(false);
+    expect(existsSync(join(root, DISABLED_DIRNAME, `backend.md${DISABLED_SUFFIX}`))).toBe(true);
   });
 
   it("re-enables a disabled flat file by moving it back", () => {
@@ -88,7 +89,7 @@ describe("toggleItemEnabled / deleteItem", () => {
     const item = makeItem(filePath);
 
     toggleItemEnabled(item); // disable
-    const disabledPath = join(root, DISABLED_DIRNAME, "backend.md");
+    const disabledPath = join(root, DISABLED_DIRNAME, `backend.md${DISABLED_SUFFIX}`);
     toggleItemEnabled(makeItem(disabledPath)); // re-enable
 
     expect(existsSync(filePath)).toBe(true);
@@ -113,11 +114,34 @@ describe("toggleItemEnabled / deleteItem", () => {
     const filePath = join(root, "backend.md");
     writeFileSync(filePath, "content");
     mkdirSync(join(root, DISABLED_DIRNAME));
-    writeFileSync(join(root, DISABLED_DIRNAME, "backend.md"), "already disabled, different content");
+    writeFileSync(join(root, DISABLED_DIRNAME, `backend.md${DISABLED_SUFFIX}`), "already disabled, different content");
 
     expect(() => toggleItemEnabled(makeItem(filePath))).toThrow(/already disabled/);
     // The pre-existing disabled copy must survive untouched.
     expect(existsSync(filePath)).toBe(true);
+  });
+
+  it("re-enables a flat file disabled before the suffix existed", () => {
+    mkdirSync(join(root, DISABLED_DIRNAME));
+    const legacyPath = join(root, DISABLED_DIRNAME, "backend.md");
+    writeFileSync(legacyPath, "content");
+
+    toggleItemEnabled(makeItem(legacyPath));
+
+    expect(existsSync(join(root, "backend.md"))).toBe(true);
+    expect(existsSync(legacyPath)).toBe(false);
+  });
+
+  it("upgradeLegacyDisabledFile adds the suffix to a flat file disabled the old way, and leaves folders alone", () => {
+    mkdirSync(join(root, DISABLED_DIRNAME, "pdf-editing"), { recursive: true });
+    writeFileSync(join(root, DISABLED_DIRNAME, "pdf-editing", "SKILL.md"), "manifest");
+    const legacyPath = join(root, DISABLED_DIRNAME, "backend.md");
+    writeFileSync(legacyPath, "content");
+
+    expect(upgradeLegacyDisabledFile(legacyPath)).toBe(legacyPath + DISABLED_SUFFIX);
+    expect(existsSync(legacyPath + DISABLED_SUFFIX)).toBe(true);
+    expect(upgradeLegacyDisabledFile(legacyPath + DISABLED_SUFFIX)).toBeNull();
+    expect(upgradeLegacyDisabledFile(join(root, DISABLED_DIRNAME, "pdf-editing", "SKILL.md"))).toBeNull();
   });
 
   it("throws rather than clobbering an existing file when re-enabling onto a conflict", () => {
@@ -146,7 +170,7 @@ describe("toggleItemEnabled / deleteItem", () => {
 
     toggleItemEnabled(makeItem(linkPath));
 
-    const disabledLinkPath = join(projectDir, DISABLED_DIRNAME, "backend.md");
+    const disabledLinkPath = join(projectDir, DISABLED_DIRNAME, `backend.md${DISABLED_SUFFIX}`);
     expect(lstatSync(disabledLinkPath).isSymbolicLink()).toBe(true);
     // The relative form would now resolve to the wrong place (one directory deeper) — the
     // absolute rewrite is what keeps this pointing at the real file.
@@ -185,7 +209,7 @@ describe("toggleItemEnabled / deleteItem", () => {
 
     toggleItemEnabled(makeItem(claudeLink));
 
-    expect(existsSync(join(root, "claude", DISABLED_DIRNAME, "review.md"))).toBe(true);
+    expect(existsSync(join(root, "claude", DISABLED_DIRNAME, `review.md${DISABLED_SUFFIX}`))).toBe(true);
     expect(lstatSync(codexLink).isSymbolicLink()).toBe(true);
     expect(readFileSync(codexLink, "utf-8")).toBe("content");
     expect(readFileSync(target, "utf-8")).toBe("content");
@@ -302,7 +326,7 @@ describe("previewToggle", () => {
 
     expect(preview.willDisable).toBe(true);
     expect(preview.fromPath).toBe(filePath);
-    expect(preview.toPath).toBe(join(root, DISABLED_DIRNAME, "backend.md"));
+    expect(preview.toPath).toBe(join(root, DISABLED_DIRNAME, `backend.md${DISABLED_SUFFIX}`));
     expect(existsSync(filePath)).toBe(true); // still where it started — preview never moves it
     expect(existsSync(preview.toPath)).toBe(false);
   });
@@ -311,7 +335,7 @@ describe("previewToggle", () => {
     const filePath = join(root, "backend.md");
     writeFileSync(filePath, "content");
     toggleItemEnabled(makeItem(filePath)); // disable it for real first
-    const disabledPath = join(root, DISABLED_DIRNAME, "backend.md");
+    const disabledPath = join(root, DISABLED_DIRNAME, `backend.md${DISABLED_SUFFIX}`);
 
     const preview = previewToggle(makeItem(disabledPath));
 
@@ -387,6 +411,23 @@ describe("togglePluginEnabled", () => {
     expect(backupNames.length).toBe(2);
     expect(readFileSync(join(root, backupNames[0]), "utf-8")).toBe(original);
     expect(readFileSync(join(root, backupNames[1]), "utf-8")).toBe(afterFirstToggle);
+  });
+
+  it("keeps only the 3 newest backups", () => {
+    const settingsPath = join(root, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ enabledPlugins: {} }));
+    for (const stamp of ["20260101-000001", "20260101-000002", "20260101-000003", "20260101-000003-1"]) {
+      writeFileSync(`${settingsPath}.skillmanager-bak-${stamp}`, "old");
+    }
+    writeFileSync(join(root, "unrelated.json"), "keep me");
+
+    togglePluginEnabled(makeTool(settingsPath), "foo@bar", false);
+
+    const backups = readdirSync(root).filter((f) => f.startsWith("settings.json.skillmanager-bak-")).sort();
+    expect(backups).toHaveLength(3);
+    expect(backups[0]).toBe("settings.json.skillmanager-bak-20260101-000003");
+    expect(backups[1]).toBe("settings.json.skillmanager-bak-20260101-000003-1");
+    expect(existsSync(join(root, "unrelated.json"))).toBe(true);
   });
 
   it("does not rewrite the settings file when the backup copy itself fails", () => {

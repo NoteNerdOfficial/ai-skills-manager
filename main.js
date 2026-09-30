@@ -457,6 +457,24 @@ function linkableUnit(sourcePath) {
 
 // src/itemToggle.ts
 var DISABLED_DIRNAME = ".skillmanager-disabled";
+var DISABLED_SUFFIX = ".skillmanager-disabled";
+function disabledLocation(path, isDirectory) {
+  return (0, import_path2.join)((0, import_path2.dirname)(path), DISABLED_DIRNAME, (0, import_path2.basename)(path) + (isDirectory ? "" : DISABLED_SUFFIX));
+}
+function enabledLocation(path) {
+  const name = (0, import_path2.basename)(path);
+  return (0, import_path2.join)((0, import_path2.dirname)((0, import_path2.dirname)(path)), name.endsWith(DISABLED_SUFFIX) ? name.slice(0, -DISABLED_SUFFIX.length) : name);
+}
+function upgradeLegacyDisabledFile(sourcePath) {
+  const unit = linkableUnit(sourcePath);
+  if (unit.isDirectory || (0, import_path2.basename)((0, import_path2.dirname)(unit.path)) !== DISABLED_DIRNAME || unit.name.endsWith(DISABLED_SUFFIX))
+    return null;
+  const target = unit.path + DISABLED_SUFFIX;
+  if ((0, import_fs.existsSync)(target))
+    return null;
+  moveEntry(unit.path, target, false);
+  return target;
+}
 function expandHome(rawPath) {
   return rawPath.startsWith("~") ? (0, import_path2.join)((0, import_os.homedir)(), rawPath.slice(1)) : rawPath;
 }
@@ -474,30 +492,20 @@ function toggleItemEnabled(item) {
   if (item.pluginId !== null) {
     throw new Error(`"${item.name}" is part of an installed plugin \u2014 disable the whole plugin from the sidebar instead.`);
   }
-  const unit = linkableUnit(item.sourcePath);
-  const parentDir = (0, import_path2.dirname)(unit.path);
-  if ((0, import_path2.basename)(parentDir) === DISABLED_DIRNAME) {
-    const targetDir = (0, import_path2.dirname)(parentDir);
-    const target = (0, import_path2.join)(targetDir, unit.name);
-    if ((0, import_fs.existsSync)(target))
-      throw new Error(`"${unit.name}" already exists at its enabled location.`);
-    moveEntry(unit.path, target, unit.isDirectory);
-  } else {
-    const disabledDir = (0, import_path2.join)(parentDir, DISABLED_DIRNAME);
-    (0, import_fs.mkdirSync)(disabledDir, { recursive: true });
-    const target = (0, import_path2.join)(disabledDir, unit.name);
-    if ((0, import_fs.existsSync)(target))
-      throw new Error(`"${unit.name}" is already disabled.`);
-    moveEntry(unit.path, target, unit.isDirectory);
+  const { willDisable, fromPath, toPath } = previewToggle(item);
+  if ((0, import_fs.existsSync)(toPath)) {
+    throw new Error(willDisable ? `"${item.name}" is already disabled.` : `"${(0, import_path2.basename)(toPath)}" already exists at its enabled location.`);
   }
+  if (willDisable)
+    (0, import_fs.mkdirSync)((0, import_path2.dirname)(toPath), { recursive: true });
+  moveEntry(fromPath, toPath, linkableUnit(item.sourcePath).isDirectory);
 }
 function previewToggle(item) {
   const unit = linkableUnit(item.sourcePath);
-  const parentDir = (0, import_path2.dirname)(unit.path);
-  if ((0, import_path2.basename)(parentDir) === DISABLED_DIRNAME) {
-    return { willDisable: false, fromPath: unit.path, toPath: (0, import_path2.join)((0, import_path2.dirname)(parentDir), unit.name) };
+  if ((0, import_path2.basename)((0, import_path2.dirname)(unit.path)) === DISABLED_DIRNAME) {
+    return { willDisable: false, fromPath: unit.path, toPath: enabledLocation(unit.path) };
   }
-  return { willDisable: true, fromPath: unit.path, toPath: (0, import_path2.join)(parentDir, DISABLED_DIRNAME, unit.name) };
+  return { willDisable: true, fromPath: unit.path, toPath: disabledLocation(unit.path, unit.isDirectory) };
 }
 function backupTimestamp(now) {
   const pad = (n) => String(n).padStart(2, "0");
@@ -510,12 +518,25 @@ function backupSettingsFile(settingsPath) {
   for (; ; ) {
     try {
       (0, import_fs.copyFileSync)(settingsPath, target, import_fs.constants.COPYFILE_EXCL);
+      pruneOldBackups(settingsPath);
       return;
     } catch (e) {
       if (e.code !== "EEXIST")
         throw e;
       suffix++;
       target = `${base}-${suffix}`;
+    }
+  }
+}
+var SETTINGS_BACKUPS_KEPT = 3;
+function pruneOldBackups(settingsPath) {
+  const prefix = `${(0, import_path2.basename)(settingsPath)}.skillmanager-bak-`;
+  const dir = (0, import_path2.dirname)(settingsPath);
+  const backups = (0, import_fs.readdirSync)(dir).filter((name) => name.startsWith(prefix)).sort();
+  for (const name of backups.slice(0, -SETTINGS_BACKUPS_KEPT)) {
+    try {
+      (0, import_fs.unlinkSync)((0, import_path2.join)(dir, name));
+    } catch (e) {
     }
   }
 }
@@ -602,7 +623,8 @@ function resolveRealPath(sourcePath) {
   }
 }
 function stableEntryPath(sourcePath) {
-  return sourcePath.split(import_path3.sep).filter((segment2) => segment2 !== DISABLED_DIRNAME).join(import_path3.sep);
+  const path = sourcePath.split(import_path3.sep).filter((segment2) => segment2 !== DISABLED_DIRNAME).join(import_path3.sep);
+  return path.endsWith(DISABLED_SUFFIX) ? path.slice(0, -DISABLED_SUFFIX.length) : path;
 }
 function makeEntryId(toolId, type, projectId, pluginId, name, identityPath) {
   return slug(`${toolId}-${type}-${projectId != null ? projectId : "global"}-${pluginId != null ? pluginId : "none"}-${name}-${identityPath != null ? identityPath : name}`);
@@ -655,10 +677,11 @@ function scanEntries(dir, tool, type, projectId, pluginId, enabled, depth = 0) {
       }
       continue;
     }
-    if (entry.endsWith(".md")) {
-      if (type !== "rule" && isIndexLikeFileName(entry))
+    const fileName = !enabled && entry.endsWith(`.md${DISABLED_SUFFIX}`) ? entry.slice(0, -DISABLED_SUFFIX.length) : entry;
+    if (fileName.endsWith(".md")) {
+      if (type !== "rule" && isIndexLikeFileName(fileName))
         continue;
-      const baseName = entry.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
+      const baseName = fileName.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
       const meta = readSourceMeta(entryPath);
       items.push({
         entryId: makeEntryId(tool.id, type, projectId, pluginId, baseName, stableEntryPath(entryPath)),
@@ -687,7 +710,9 @@ function scanDirectory(dir, tool, type, projectId, pluginId) {
 }
 function scanSingleFile(filePath, tool, type, projectId, pluginId) {
   const fileName = (0, import_path3.basename)(filePath);
-  const disabledPath = (0, import_path3.join)((0, import_path3.dirname)(filePath), DISABLED_DIRNAME, fileName);
+  const disabledDir = (0, import_path3.join)((0, import_path3.dirname)(filePath), DISABLED_DIRNAME);
+  const suffixed = (0, import_path3.join)(disabledDir, fileName + DISABLED_SUFFIX);
+  const disabledPath = (0, import_fs2.existsSync)(suffixed) ? suffixed : (0, import_path3.join)(disabledDir, fileName);
   const items = [];
   for (const [path, enabled] of [
     [filePath, true],
@@ -1465,14 +1490,31 @@ async function performRescan(app, settings, store, includeMcpServers = true) {
   ];
   const brokenSymlinks = scanBrokenSymlinks(settings.tools, projects);
   for (const item of discovered) {
+    if (item.enabled)
+      continue;
+    let upgraded = null;
+    try {
+      upgraded = upgradeLegacyDisabledFile(item.sourcePath);
+    } catch (e) {
+    }
+    if (upgraded) {
+      if (item.realPath === item.sourcePath)
+        item.realPath = upgraded;
+      item.sourcePath = upgraded;
+    }
+  }
+  await store.adoptRenamed(discovered, stableEntryPath);
+  for (const item of discovered) {
     await store.ensureItem(item);
   }
   const existing = await store.list();
   const brokenPaths = new Set(brokenSymlinks.map((link) => link.path));
   const retainedBrokenIds = existing.filter((item) => brokenPaths.has(item.sourcePath) || brokenPaths.has((0, import_path6.dirname)(item.sourcePath))).map((item) => item.entryId);
-  await store.pruneMissing(/* @__PURE__ */ new Set([...discovered.map((d) => d.entryId), ...retainedBrokenIds]));
+  const validIds = /* @__PURE__ */ new Set([...discovered.map((d) => d.entryId), ...retainedBrokenIds]);
+  await store.pruneMissing(validIds);
   return {
-    items: await store.list(),
+    // Filtered here too: the metadata cache may not have caught up with a just-marked missing note.
+    items: (await store.list()).filter((item) => validIds.has(item.entryId)),
     plugins: pluginScan.plugins,
     mcpServers: includeMcpServers ? scanMcpServers(settings.tools, projects) : [],
     brokenSymlinks
@@ -6130,6 +6172,50 @@ var LibraryView = class extends import_obsidian15.ItemView {
     const req = window.require;
     return req ? req("electron").shell : null;
   }
+  /** Moves a real file or folder to the OS trash. On macOS this asks Finder to do it, because
+   *  only a Finder delete records where the item came from, which is what makes "Put Back" work.
+   *  The first call shows macOS's one-time "Obsidian wants to control Finder" prompt; if that's
+   *  declined (or Finder fails for any reason) it falls back to Electron's shell.trashItem, which
+   *  still trashes the item, just without Put Back. The path is passed to osascript as an
+   *  argument, never spliced into the script, so no path can inject AppleScript. */
+  async trashPath(path) {
+    if (process.platform === "darwin") {
+      try {
+        const failed = await new Promise((resolvePromise) => {
+          (0, import_child_process2.execFile)(
+            "osascript",
+            ["-e", "on run argv", "-e", 'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)', "-e", "end run", path],
+            (error) => resolvePromise(error !== null)
+          );
+        });
+        if (!failed)
+          return;
+      } catch (e) {
+      }
+      if (!(0, import_fs14.existsSync)(path))
+        return;
+    }
+    const shell = this.electronShell();
+    if (!shell)
+      throw new Error("Can't move files to the Recycle Bin/Trash on this device. Try Obsidian's desktop app.");
+    await shell.trashItem(path);
+  }
+  /** Swaps an item's on-disk unit for a freshly fetched copy (Update/Restore). The old real file
+   *  or folder goes to the OS trash first instead of being rm'd, so an unwanted update can be
+   *  undone by hand. A symlinked folder is still just unlinked (trashing it would only trash the
+   *  link anyway), and a symlinked flat file is overwritten in place, same as before. Throws
+   *  without touching anything if the trash isn't reachable. */
+  async replaceUnit(source, target, isDirectory) {
+    if ((0, import_fs14.existsSync)(target)) {
+      const isLink = (0, import_fs14.lstatSync)(target).isSymbolicLink();
+      if (isLink && isDirectory) {
+        (0, import_fs14.unlinkSync)(target);
+      } else if (!isLink) {
+        await this.trashPath(target);
+      }
+    }
+    (0, import_fs14.cpSync)(source, target, isDirectory ? { recursive: true } : void 0);
+  }
   fileManagerLabel() {
     if (process.platform === "darwin")
       return "Reveal in Finder";
@@ -7236,8 +7322,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
    *  the trash" one, which previously only applied to the project case even though the global
    *  case is equally non-destructive.
    *
-   *  A real (non-symlink) delete now moves the item to the OS Recycle Bin/Trash via Electron's
-   *  shell.trashItem (see deleteItem/electronShell) instead of permanently removing it, so the
+   *  A real (non-symlink) delete now moves the item to the OS Recycle Bin/Trash via
+   *  trashPath (Finder on macOS, so Put Back works) instead of permanently removing it, so the
    *  copy here says so rather than "can't be undone." */
   confirmDelete(item) {
     const unitPath = linkableUnit(item.sourcePath).path;
@@ -7250,10 +7336,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       isSymlink ? "Unlink" : "Delete",
       async () => {
         try {
-          const shell = this.electronShell();
-          if (!shell)
-            throw new Error("Can't move files to the Recycle Bin/Trash on this device \u2014 try Obsidian's desktop app.");
-          await deleteItem(item, (path) => shell.trashItem(path));
+          await deleteItem(item, (path) => this.trashPath(path));
           await this.rescan();
         } catch (e) {
           new import_obsidian15.Notice(`Couldn't delete "${item.name}": ` + errorMessage(e));
@@ -7686,9 +7769,9 @@ var LibraryView = class extends import_obsidian15.ItemView {
   }
   disabledSourceForBrokenLink(link) {
     var _a;
-    const disabledPath = (0, import_path14.join)((0, import_path14.dirname)(link.targetPath), DISABLED_DIRNAME, (0, import_path14.basename)(link.targetPath));
+    const candidates = /* @__PURE__ */ new Set([disabledLocation(link.targetPath, true), disabledLocation(link.targetPath, false)]);
     return (_a = this.items.find(
-      (item) => !item.enabled && item.projectId === null && linkableUnit(item.sourcePath).path === disabledPath
+      (item) => !item.enabled && item.projectId === null && candidates.has(linkableUnit(item.sourcePath).path)
     )) != null ? _a : null;
   }
   /** entryId -> the moment it was disabled from this list, dropped once the item's been enabled
@@ -8416,12 +8499,7 @@ ${item.description}`.length;
       return;
     const { mode, unitPath, isDirectory, newRoot, newCommit, entryId, clone } = this.review;
     try {
-      if (isDirectory) {
-        (0, import_fs14.rmSync)(unitPath, { recursive: true, force: true });
-        (0, import_fs14.cpSync)(newRoot, unitPath, { recursive: true });
-      } else {
-        (0, import_fs14.cpSync)(newRoot, unitPath);
-      }
+      await this.replaceUnit(newRoot, unitPath, isDirectory);
       await this.store.update(entryId, { sourceCommit: newCommit });
       if (mode === "update")
         this.syncStatus.set(entryId, "current");
@@ -8458,12 +8536,8 @@ ${item.description}`.length;
       const primaryChanged = !(0, import_fs14.existsSync)(oldPrimary) || !(0, import_fs14.existsSync)(newPrimary) ? (0, import_fs14.existsSync)(oldPrimary) !== (0, import_fs14.existsSync)(newPrimary) : !(0, import_fs14.readFileSync)(oldPrimary).equals((0, import_fs14.readFileSync)(newPrimary));
       const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
       const changed = primaryChanged || companions.length > 0;
-      if (unit.isDirectory) {
-        (0, import_fs14.rmSync)(unit.path, { recursive: true, force: true });
-        (0, import_fs14.cpSync)(newRoot, unit.path, { recursive: true });
-      } else {
-        (0, import_fs14.cpSync)(newRoot, unit.path);
-      }
+      if (changed)
+        await this.replaceUnit(newRoot, unit.path, unit.isDirectory);
       await this.store.update(item.entryId, { sourceCommit: clone.commit });
       return changed;
     } finally {
@@ -9113,6 +9187,7 @@ var SkillManagerSettingTab = class extends import_obsidian16.PluginSettingTab {
 
 // src/store.ts
 var import_obsidian17 = require("obsidian");
+var MISSING_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
 var ShadowNoteStore = class {
   constructor(app, folder) {
     this.app = app;
@@ -9139,7 +9214,7 @@ var ShadowNoteStore = class {
     for (const file of folder.children) {
       if (file instanceof import_obsidian17.TFile && file.extension === "md") {
         const fm = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
-        if (fm == null ? void 0 : fm.entryId)
+        if ((fm == null ? void 0 : fm.entryId) && !fm.missingSince)
           items.push(this.fromFrontmatter(fm));
       }
     }
@@ -9162,6 +9237,7 @@ var ShadowNoteStore = class {
       fm.name = discovered.name;
       fm.description = discovered.description;
       fm.enabled = discovered.enabled;
+      delete fm.missingSince;
       if (fm.tags === void 0)
         fm.tags = [];
       if (fm.favorite === void 0)
@@ -9180,20 +9256,62 @@ var ShadowNoteStore = class {
       Object.assign(fm, changes);
     });
   }
-  /** Deletes shadow notes for items no longer found by the latest scan (e.g. a project-local
-   *  symlink that was just removed), so removed items don't linger forever. */
+  /** Carries a note over to an item's new entryId when the ID scheme changes but the item itself
+   *  didn't (e.g. 0.1.7 started folding the path into entryId). Without this, the old note looks
+   *  orphaned, pruneMissing trashes it, and the item's tags, favorite, collections and GitHub
+   *  source info are lost. Matched on tool/type/project/plugin plus the source path with any
+   *  disabled-folder segment stripped, so an item that's since been toggled still matches. */
+  async adoptRenamed(discovered, stablePath) {
+    var _a;
+    const folder = this.app.vault.getAbstractFileByPath((0, import_obsidian17.normalizePath)(this.folder));
+    if (!(folder instanceof import_obsidian17.TFolder))
+      return;
+    const key = (tool, type, projectId, pluginId, sourcePath) => [tool, type, projectId != null ? projectId : "", pluginId != null ? pluginId : "", stablePath(sourcePath)].join("\0");
+    const discoveredIds = new Set(discovered.map((d) => d.entryId));
+    const byKey = new Map(discovered.map((d) => [key(d.tool, d.type, d.projectId, d.pluginId, d.sourcePath), d]));
+    for (const file of [...folder.children]) {
+      if (!(file instanceof import_obsidian17.TFile) || file.extension !== "md")
+        continue;
+      const fm = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
+      if (typeof (fm == null ? void 0 : fm.entryId) !== "string" || discoveredIds.has(fm.entryId) || typeof fm.sourcePath !== "string")
+        continue;
+      const match = byKey.get(key(fm.tool, fm.type, fm.projectId, fm.pluginId, fm.sourcePath));
+      if (!match)
+        continue;
+      const newPath = this.notePath(match.entryId);
+      if (this.app.vault.getAbstractFileByPath(newPath))
+        continue;
+      await this.app.fileManager.renameFile(file, newPath);
+      await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+        frontmatter.entryId = match.entryId;
+      });
+    }
+  }
+  /** Handles notes for items the latest scan didn't find (deleted, or a project-local symlink
+   *  that was just removed). The first time, the note is only marked with `missingSince` and
+   *  hidden from the library, so an item that comes back (e.g. Put Back from the Trash) keeps its
+   *  tags, favorite, collections and GitHub source info. It's trashed once it has been missing
+   *  for MISSING_RETENTION_MS, so removed items still don't linger forever. */
   async pruneMissing(validEntryIds) {
     var _a;
     const folder = this.app.vault.getAbstractFileByPath((0, import_obsidian17.normalizePath)(this.folder));
     if (!(folder instanceof import_obsidian17.TFolder))
       return;
-    for (const file of folder.children) {
-      if (file instanceof import_obsidian17.TFile && file.extension === "md") {
-        const fm = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
-        const entryId = typeof (fm == null ? void 0 : fm.entryId) === "string" ? fm.entryId : null;
-        if (entryId && !validEntryIds.has(entryId)) {
-          await this.app.fileManager.trashFile(file);
-        }
+    const now = Date.now();
+    for (const file of [...folder.children]) {
+      if (!(file instanceof import_obsidian17.TFile) || file.extension !== "md")
+        continue;
+      const fm = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter;
+      const entryId = typeof (fm == null ? void 0 : fm.entryId) === "string" ? fm.entryId : null;
+      if (!entryId || validEntryIds.has(entryId))
+        continue;
+      const missingSince = typeof (fm == null ? void 0 : fm.missingSince) === "string" ? Date.parse(fm.missingSince) : NaN;
+      if (Number.isNaN(missingSince)) {
+        await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+          frontmatter.missingSince = new Date(now).toISOString();
+        });
+      } else if (now - missingSince > MISSING_RETENTION_MS) {
+        await this.app.fileManager.trashFile(file);
       }
     }
   }
