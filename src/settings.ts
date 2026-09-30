@@ -133,6 +133,15 @@ export class SkillManagerSettingTab extends PluginSettingTab {
               defaultValue: false,
             },
           },
+          {
+            name: "Confirm before enabling or disabling",
+            desc: "Show a confirmation naming the exact folder move before a card toggle or a dashboard disable/restore action moves anything on disk.",
+            control: {
+              type: "toggle",
+              key: "confirmBeforeToggle",
+              defaultValue: true,
+            },
+          },
         ],
       },
       {
@@ -187,6 +196,8 @@ export class SkillManagerSettingTab extends PluginSettingTab {
         return String(settings[key]);
       case "showEmptySidebarRows":
         return settings.showEmptySidebarRows;
+      case "confirmBeforeToggle":
+        return settings.confirmBeforeToggle;
       default:
         return undefined;
     }
@@ -220,6 +231,9 @@ export class SkillManagerSettingTab extends PluginSettingTab {
           this.plugin.settings.showEmptySidebarRows = value;
           this.plugin.refreshOpenViews();
         }
+        break;
+      case "confirmBeforeToggle":
+        if (typeof value === "boolean") this.plugin.settings.confirmBeforeToggle = value;
         break;
       case "mcpConfigEditorApp":
         if (typeof value === "string") this.plugin.settings.mcpConfigEditorApp = value.trim();
@@ -311,6 +325,18 @@ export class SkillManagerSettingTab extends PluginSettingTab {
           this.plugin.settings.showEmptySidebarRows = value;
           await this.plugin.saveSettings();
           this.plugin.refreshOpenViews();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Confirm before enabling or disabling")
+      .setDesc(
+        "Show a confirmation naming the exact folder move before a card toggle or a dashboard disable/restore action moves anything on disk."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.confirmBeforeToggle).onChange(async (value) => {
+          this.plugin.settings.confirmBeforeToggle = value;
+          await this.plugin.saveSettings();
         })
       );
 
