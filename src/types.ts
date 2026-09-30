@@ -59,6 +59,10 @@ export interface ToolConfig {
   /** Root(s) containing installed plugin bundles when the tool has no registry JSON — e.g.
    *  Codex's ~/.codex/plugins/cache/<marketplace>/<plugin>/<version-or-hash>. */
   pluginsPaths?: string[];
+  /** TOML file recording which cached plugins (see pluginsPaths) the tool actually loads, as
+   *  `[plugins."<name>@<marketplace>"]` tables with `enabled = true|false` — Codex's
+   *  ~/.codex/config.toml. Read-only. Without it, every cached plugin counts as enabled. */
+  pluginsConfigToml?: string;
   /** Per-plugin-bundle path overrides. Most tools reuse basename(paths[type]), but a tool can
    *  call its plugin command folder something different from its global command folder (Codex
    *  uses ~/.codex/prompts globally and commands/ inside plugin bundles). */
@@ -156,7 +160,8 @@ export interface PluginSource {
   toolId: string;
   /** Whether the tool currently loads this plugin at all, read from pluginsSettingsPath. True
    *  when that file (or its entry for this plugin) doesn't exist, matching how Claude Code treats
-   *  an installed-but-unlisted plugin as enabled by default. */
+   *  an installed-but-unlisted plugin as enabled by default. For a cached plugin (Codex), read
+   *  from pluginsConfigToml instead, where an unlisted plugin is NOT loaded. */
   enabled: boolean;
   /** The plugin's source repo, read from its own .claude-plugin/plugin.json "repository" field —
    *  absent for most plugins in practice (only observed set on one of several installed here), so
@@ -490,6 +495,9 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
       agent: "~/.codex/agents",
     },
     pluginsPaths: ["~/.codex/plugins/cache"],
+    // Codex only loads cached plugins listed (and not set to enabled = false) here; the cache
+    // also keeps copies it isn't loading, e.g. a stale openai-curated-remote marketplace folder.
+    pluginsConfigToml: "~/.codex/config.toml",
     pluginPaths: {
       command: "commands",
     },

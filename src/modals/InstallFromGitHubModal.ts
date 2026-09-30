@@ -2,7 +2,7 @@ import { App, Modal, Notice, Setting } from "obsidian";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
 import { basename, join } from "path";
 import { ItemType, ProjectWorkspace, SkillManagerPluginSettings, TYPE_LABELS } from "../types";
-import { candidateTypesForTool, makeEntryId, parseSourceMeta, resolveToolDir } from "../scanners";
+import { candidateTypesForTool, makeEntryId, parseSourceMeta, resolveToolDir, stableEntryPath } from "../scanners";
 import { shallowCloneRepo } from "../git";
 import { ShadowNoteStore } from "../store";
 import { errorMessage } from "../errors";
@@ -288,7 +288,9 @@ export class InstallFromGitHubModal extends Modal {
       // — the common case, e.g. "backend.agent.md" declaring "Backend Developer" — computed a
       // different entryId than the one rescan() actually creates, so the sourceRepo/ref/subpath/
       // commit fields below silently updated a shadow note key that wasn't backing the real item.
-      const entryId = makeEntryId(tool.id, this.type, project?.id ?? null, null, baseName);
+      // The same goes for the identity path scanEntries folds in (stableEntryPath of the SKILL.md
+      // or flat file): leaving it out made every install since 0.1.7 lose its GitHub tracking.
+      const entryId = makeEntryId(tool.id, this.type, project?.id ?? null, null, baseName, stableEntryPath(primaryFile));
 
       this.setStatus("Scanning…");
       await this.rescan();

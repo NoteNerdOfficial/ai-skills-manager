@@ -3,7 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DISABLED_DIRNAME, DISABLED_SUFFIX, toggleItemEnabled } from "./itemToggle";
-import { scanAllPlugins, scanAllTools, scanBrokenSymlinks, scanProject, scanTool } from "./scanners";
+import { makeEntryId, scanAllPlugins, scanAllTools, scanBrokenSymlinks, scanProject, scanTool, stableEntryPath } from "./scanners";
 import { ProjectWorkspace, ToolConfig } from "./types";
 
 function makeTool(pluginsRegistry: string, pluginsSettingsPath: string): ToolConfig {
@@ -284,5 +284,99 @@ describe("disabled flat files", () => {
     expect(disabled.name).toBe("deploy");
     expect(disabled.enabled).toBe(false);
     expect(disabled.entryId).toBe(enabled.entryId);
+  });
+});
+
+describe("Codex cached plugins and config.toml", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "skillmanager-codex-plugins-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function cachePlugin(marketplace: string, name: string) {
+    mkdirSync(join(root, "cache", marketplace, name, "abc123", ".codex-plugin"), { recursive: true });
+  }
+
+  function codexTool(pluginsConfigToml?: string): ToolConfig {
+    return {
+      id: "codex",
+      name: "Codex",
+      icon: "code-2",
+      paths: { skill: join(root, "skills") },
+      pluginsPaths: [join(root, "cache")],
+      pluginsConfigToml,
+    };
+  }
+
+  it("enables only plugins config.toml lists, and honors enabled = false", () => {
+    cachePlugin("openai-curated", "figma");
+    cachePlugin("openai-curated", "linear");
+    cachePlugin("openai-curated-remote", "figma");
+    const configPath = join(root, "config.toml");
+    writeFileSync(
+      configPath,
+      [
+        'model = "gpt-5"',
+        '[plugins."figma@openai-curated"]',
+        "enabled = true",
+        "",
+        '[plugins."linear@openai-curated"]',
+        "enabled = false # turned off",
+        "[mcp_servers.other]",
+        "enabled = true",
+      ].join("\n")
+    );
+
+    const { plugins } = scanAllPlugins([codexTool(configPath)]);
+    const enabledById = Object.fromEntries(plugins.map((p) => [p.id, p.enabled]));
+
+    expect(enabledById).toEqual({
+      "codex:openai-curated:figma": true,
+      "codex:openai-curated:linear": false,
+      "codex:openai-curated-remote:figma": false,
+    });
+  });
+
+  it("treats every cached plugin as enabled when config.toml is missing", () => {
+    cachePlugin("openai-curated", "figma");
+
+    const { plugins } = scanAllPlugins([codexTool(join(root, "missing.toml"))]);
+
+    expect(plugins.map((p) => p.enabled)).toEqual([true]);
+  });
+});
+
+describe("install-side entryId", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "skillmanager-install-id-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("matches the scanner's entryId for a folder skill and a flat command, so install metadata lands on the real note", () => {
+    // InstallFromGitHubModal computes this ID itself to record sourceRepo right after install.
+    const skillsDir = join(root, "skills");
+    const commandsDir = join(root, "commands");
+    mkdirSync(join(skillsDir, "pdf-editing"), { recursive: true });
+    mkdirSync(commandsDir, { recursive: true });
+    const manifest = join(skillsDir, "pdf-editing", "SKILL.md");
+    const command = join(commandsDir, "deploy.md");
+    writeFileSync(manifest, "---\nname: PDF Editing\n---\n");
+    writeFileSync(command, "---\nname: Deploy\n---\n");
+    const tool: ToolConfig = { id: "test", name: "Test", icon: "box", paths: { skill: skillsDir, command: commandsDir } };
+
+    const ids = new Set(scanTool(tool).map((item) => item.entryId));
+
+    expect(ids.has(makeEntryId("test", "skill", null, null, "pdf-editing", stableEntryPath(manifest)))).toBe(true);
+    expect(ids.has(makeEntryId("test", "command", null, null, "deploy", stableEntryPath(command)))).toBe(true);
   });
 });

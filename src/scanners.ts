@@ -530,10 +530,41 @@ function readInstalledPlugins(registryPath: string, toolId: string, pluginsSetti
   }
 }
 
+/** Reads `[plugins."<name>@<marketplace>"]` tables from a Codex-style config.toml into
+ *  "<name>@<marketplace>" -> enabled. A table with no `enabled` key counts as enabled. Returns
+ *  null when the file is missing or unreadable, so the caller can fall back to "all enabled"
+ *  rather than hide every plugin. Line-based, like mcpScanners' readMcpServersFromToml: only this
+ *  one narrow shape is needed. */
+export function readTomlPluginStates(path: string): Map<string, boolean> | null {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf-8");
+  } catch {
+    return null;
+  }
+  const states = new Map<string, boolean>();
+  let current: string | null = null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+#.*$/, "").trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("[")) {
+      const match = /^\[plugins\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_@.-]+))\]$/.exec(line);
+      current = match ? (match[1] ?? match[2] ?? match[3]) : null;
+      if (current) states.set(current, true);
+      continue;
+    }
+    const enabled = /^enabled\s*=\s*(true|false)$/.exec(line);
+    if (current && enabled) states.set(current, enabled[1] === "true");
+  }
+  return states;
+}
+
 /** Codex keeps installed bundles in a versioned cache rather than a registry JSON. Only
  * directories with a .codex-plugin marker count; this avoids treating marketplace source trees
- * or arbitrary folders in the cache as installed plugins. */
-function readCachedPlugins(cachePaths: string[], toolId: string): PluginSource[] {
+ * or arbitrary folders in the cache as installed plugins. When `states` (from
+ * pluginsConfigToml) is given, a plugin is enabled only if it has an entry there that isn't
+ * `enabled = false`, since Codex doesn't load cached plugins it has no entry for. */
+function readCachedPlugins(cachePaths: string[], toolId: string, states: Map<string, boolean> | null): PluginSource[] {
   const plugins: PluginSource[] = [];
   const seen = new Set<string>();
   const seenPluginIds = new Set<string>();
@@ -579,7 +610,7 @@ function readCachedPlugins(cachePaths: string[], toolId: string): PluginSource[]
             group: marketplace,
             path: installPath,
             toolId,
-            enabled: true,
+            enabled: states ? states.get(`${pluginName}@${marketplace}`) === true : true,
             repoUrl: readPluginRepoUrl(installPath),
           });
         }
@@ -600,7 +631,11 @@ export function scanAllPlugins(tools: ToolConfig[]): { items: DiscoveredItem[]; 
   for (const tool of tools) {
     const discovered = tool.pluginsRegistry
       ? readInstalledPlugins(expandHome(tool.pluginsRegistry), tool.id, tool.pluginsSettingsPath)
-      : readCachedPlugins((tool.pluginsPaths ?? []).map(expandHome), tool.id);
+      : readCachedPlugins(
+          (tool.pluginsPaths ?? []).map(expandHome),
+          tool.id,
+          tool.pluginsConfigToml ? readTomlPluginStates(expandHome(tool.pluginsConfigToml)) : null
+        );
     plugins.push(...discovered);
     for (const plugin of discovered) {
       for (const [type, rawPath] of Object.entries(tool.paths) as [ItemType, string][]) {
