@@ -165,6 +165,9 @@ var DEFAULT_TOOLS = [
       agent: "~/.codex/agents"
     },
     pluginsPaths: ["~/.codex/plugins/cache"],
+    // Codex only loads cached plugins listed (and not set to enabled = false) here; the cache
+    // also keeps copies it isn't loading, e.g. a stale openai-curated-remote marketplace folder.
+    pluginsConfigToml: "~/.codex/config.toml",
     pluginPaths: {
       command: "commands"
     },
@@ -940,7 +943,34 @@ function readInstalledPlugins(registryPath, toolId, pluginsSettingsPath) {
     return [];
   }
 }
-function readCachedPlugins(cachePaths, toolId) {
+function readTomlPluginStates(path) {
+  var _a, _b;
+  let text;
+  try {
+    text = (0, import_fs2.readFileSync)(path, "utf-8");
+  } catch (e) {
+    return null;
+  }
+  const states = /* @__PURE__ */ new Map();
+  let current = null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+#.*$/, "").trim();
+    if (!line || line.startsWith("#"))
+      continue;
+    if (line.startsWith("[")) {
+      const match = /^\[plugins\.(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_@.-]+))\]$/.exec(line);
+      current = match ? (_b = (_a = match[1]) != null ? _a : match[2]) != null ? _b : match[3] : null;
+      if (current)
+        states.set(current, true);
+      continue;
+    }
+    const enabled = /^enabled\s*=\s*(true|false)$/.exec(line);
+    if (current && enabled)
+      states.set(current, enabled[1] === "true");
+  }
+  return states;
+}
+function readCachedPlugins(cachePaths, toolId, states) {
   const plugins = [];
   const seen = /* @__PURE__ */ new Set();
   const seenPluginIds = /* @__PURE__ */ new Set();
@@ -988,7 +1018,7 @@ function readCachedPlugins(cachePaths, toolId) {
             group: marketplace,
             path: installPath,
             toolId,
-            enabled: true,
+            enabled: states ? states.get(`${pluginName}@${marketplace}`) === true : true,
             repoUrl: readPluginRepoUrl(installPath)
           });
         }
@@ -1002,7 +1032,11 @@ function scanAllPlugins(tools) {
   const items = [];
   const plugins = [];
   for (const tool of tools) {
-    const discovered = tool.pluginsRegistry ? readInstalledPlugins(expandHome2(tool.pluginsRegistry), tool.id, tool.pluginsSettingsPath) : readCachedPlugins(((_a = tool.pluginsPaths) != null ? _a : []).map(expandHome2), tool.id);
+    const discovered = tool.pluginsRegistry ? readInstalledPlugins(expandHome2(tool.pluginsRegistry), tool.id, tool.pluginsSettingsPath) : readCachedPlugins(
+      ((_a = tool.pluginsPaths) != null ? _a : []).map(expandHome2),
+      tool.id,
+      tool.pluginsConfigToml ? readTomlPluginStates(expandHome2(tool.pluginsConfigToml)) : null
+    );
     plugins.push(...discovered);
     for (const plugin of discovered) {
       for (const [type, rawPath] of Object.entries(tool.paths)) {
@@ -1891,7 +1925,7 @@ var InstallFromGitHubModal = class extends import_obsidian8.Modal {
       const meta = (0, import_fs6.existsSync)(primaryFile) ? parseSourceMeta((0, import_fs6.readFileSync)(primaryFile, "utf-8").slice(0, 4e3)) : { name: "", description: "" };
       const baseName = isDirectory ? unitName : unitName.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
       const name = meta.name || baseName;
-      const entryId = makeEntryId(tool.id, this.type, (_d = project == null ? void 0 : project.id) != null ? _d : null, null, baseName);
+      const entryId = makeEntryId(tool.id, this.type, (_d = project == null ? void 0 : project.id) != null ? _d : null, null, baseName, stableEntryPath(primaryFile));
       this.setStatus("Scanning\u2026");
       await this.rescan();
       await this.store.update(entryId, {
@@ -3618,6 +3652,15 @@ function tagColorIndex(tag) {
   }
   return hash % TAG_COLORS;
 }
+var SOURCE_FILTER_LABELS = {
+  github: "GitHub-tracked",
+  builtin: "Built-in",
+  local: "Local"
+};
+var RULE_KIND_LABELS = {
+  instructions: "Instructions files",
+  granular: "Individual rules"
+};
 var LibraryView = class extends import_obsidian15.ItemView {
   constructor(leaf, getSettings, store, saveSettings) {
     super(leaf);
@@ -4222,6 +4265,38 @@ var LibraryView = class extends import_obsidian15.ItemView {
   }
   isScoped() {
     return !!(this.typeFilter || this.toolFilter || this.collectionFilter || this.projectFilter || this.pluginFilter || this.favoritesOnly || this.discoverMode || this.toolsMode || this.dashboardMode || this.mcpMode || this.pluginBundlesMode);
+  }
+  /** In-page filters layered on top of the sidebar scope: everything the "Clear filters" button
+   *  resets. Search isn't included; it has its own clear button and is shown separately. */
+  activeFilterLabels() {
+    var _a, _b;
+    const labels = [];
+    if (this.enabledFilter !== "all")
+      labels.push(this.enabledFilter === "enabled" ? "Enabled only" : "Disabled only");
+    if (this.tagFilter)
+      labels.push(`Tag: ${this.tagFilter}`);
+    if (this.untaggedOnly)
+      labels.push("Untagged");
+    if (this.sourceFilter)
+      labels.push(SOURCE_FILTER_LABELS[this.sourceFilter]);
+    if (this.ruleKindFilter)
+      labels.push(RULE_KIND_LABELS[this.ruleKindFilter]);
+    if (this.pageToolFilter) {
+      labels.push((_b = (_a = this.getSettings().tools.find((t) => t.id === this.pageToolFilter)) == null ? void 0 : _a.name) != null ? _b : "One tool");
+    }
+    if (this.pageTypeFilter)
+      labels.push(TYPE_LABELS[this.pageTypeFilter]);
+    return labels;
+  }
+  clearFilters() {
+    this.enabledFilter = "all";
+    this.tagFilter = null;
+    this.untaggedOnly = false;
+    this.sourceFilter = null;
+    this.ruleKindFilter = null;
+    this.pageToolFilter = null;
+    this.pageTypeFilter = null;
+    this.tagbarScrollLeft = 0;
   }
   filteredItems() {
     const query = this.search.trim().toLowerCase();
@@ -6906,6 +6981,19 @@ var LibraryView = class extends import_obsidian15.ItemView {
       this.renderTypeFilterButton(controls);
     this.renderSourceButton(controls);
     this.renderSortButton(controls);
+    const activeCount = this.activeFilterLabels().length;
+    if (activeCount > 0) {
+      const clearBtn = controls.createEl("button", {
+        cls: "skillmanager-sort-btn skillmanager-clear-filters-btn",
+        attr: { "aria-label": `Clear filters: ${this.activeFilterLabels().join(", ")}` }
+      });
+      clearBtn.createSpan({ text: `Clear filters (${activeCount})`, cls: "skillmanager-sort-btn-label" });
+      (0, import_obsidian15.setIcon)(clearBtn.createSpan({ cls: "skillmanager-clear-filters-x" }), "x");
+      clearBtn.addEventListener("click", () => {
+        this.clearFilters();
+        this.render();
+      });
+    }
   }
   /** A type page can narrow to one tool without changing the type sidebar scope. */
   renderToolFilterButton(container) {
@@ -6970,10 +7058,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
    *  tool's single CLAUDE.md-style instructions file alongside another tool's directory of many
    *  granular rule files) narrow to just one kind. See ruleKindFilter/isSingleFileRuleTool. */
   renderRuleKindButton(container) {
-    const labels = {
-      instructions: "Instructions files",
-      granular: "Individual rules"
-    };
+    const labels = RULE_KIND_LABELS;
     const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by rule kind" } });
     const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
     (0, import_obsidian15.setIcon)(icon, "filter");
@@ -7000,11 +7085,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     });
   }
   renderSourceButton(container) {
-    const labels = {
-      github: "GitHub-tracked",
-      builtin: "Built-in",
-      local: "Local"
-    };
+    const labels = SOURCE_FILTER_LABELS;
     const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by source" } });
     const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
     (0, import_obsidian15.setIcon)(icon, "filter");
@@ -7076,30 +7157,96 @@ var LibraryView = class extends import_obsidian15.ItemView {
   renderItems(container, items) {
     container.empty();
     if (items.length === 0) {
-      if (this.favoritesOnly) {
-        this.renderFavoritesEmptyState(container, !!this.search.trim());
+      const query = this.search.trim();
+      if (query || this.activeFilterLabels().length > 0) {
+        this.renderNoMatchesEmptyState(container, query);
         return;
       }
-      container.createDiv({
-        cls: "skillmanager-empty",
-        text: "Nothing here yet. Rescan tools, or check the paths in plugin settings."
-      });
+      if (this.favoritesOnly) {
+        this.renderFavoritesEmptyState(container);
+        return;
+      }
+      this.renderEmptyScopeState(container);
       return;
     }
     for (const item of this.groupedRows(items)) {
       this.renderCard(container, item);
     }
   }
+  /** Zero results because of a search or in-page filters, not because the page is empty. Names
+   *  what's narrowing the list so a forgotten filter is obvious, offers to clear it, and, when a
+   *  search finds things elsewhere in the library, offers to jump there. */
+  renderNoMatchesEmptyState(container, query) {
+    const filters = this.activeFilterLabels();
+    const empty = container.createDiv({ cls: "skillmanager-empty-state" });
+    (0, import_obsidian15.setIcon)(empty.createDiv({ cls: "skillmanager-empty-state-icon" }), "search-x");
+    empty.createEl("h3", {
+      text: query ? `No matches for "${query}"` : "No items match these filters",
+      cls: "skillmanager-empty-state-title"
+    });
+    if (filters.length > 0) {
+      empty.createEl("p", {
+        cls: "skillmanager-empty-state-desc",
+        text: `${this.isScoped() ? `In ${this.scopeTitle()}, filtered` : "Filtered"} by: ${filters.join(", ")}.`
+      });
+    } else if (this.isScoped()) {
+      empty.createEl("p", { cls: "skillmanager-empty-state-desc", text: `Searched in ${this.scopeTitle()} only.` });
+    }
+    const actions = empty.createDiv({ cls: "skillmanager-empty-state-actions" });
+    if (filters.length > 0) {
+      actions.createEl("button", { text: "Clear filters", cls: "mod-cta" }).addEventListener("click", () => {
+        this.clearFilters();
+        this.render();
+      });
+    }
+    if (query) {
+      const lower = query.toLowerCase();
+      const everywhere = this.items.filter(
+        (item) => !this.isToolDisabled(item.tool) && `${item.name} ${item.description}`.toLowerCase().includes(lower)
+      ).length;
+      if (everywhere > 0 && this.isScoped()) {
+        const label = `Show ${everywhere} ${everywhere === 1 ? "match" : "matches"} in all items`;
+        actions.createEl("button", { text: label, cls: filters.length > 0 ? "" : "mod-cta" }).addEventListener("click", () => {
+          this.clearScopeFilters();
+          this.clearFilters();
+          this.render();
+        });
+      }
+      actions.createEl("button", { text: "Clear search" }).addEventListener("click", () => {
+        this.search = "";
+        this.render();
+      });
+    }
+  }
+  /** Nothing in this scope at all, with no search or filter involved. Points at the two ways
+   *  items get here: installing something new, or rescanning after adding files by hand. */
+  renderEmptyScopeState(container) {
+    const empty = container.createDiv({ cls: "skillmanager-empty-state" });
+    (0, import_obsidian15.setIcon)(empty.createDiv({ cls: "skillmanager-empty-state-icon" }), "inbox");
+    const scoped = this.isScoped();
+    empty.createEl("h3", {
+      text: scoped ? `Nothing in ${this.scopeTitle()} yet` : "Nothing found yet",
+      cls: "skillmanager-empty-state-title"
+    });
+    empty.createEl("p", {
+      cls: "skillmanager-empty-state-desc",
+      text: "Find something to install, or rescan if you've added files yourself. Still missing? Check where each tool looks for files in its settings."
+    });
+    const actions = empty.createDiv({ cls: "skillmanager-empty-state-actions" });
+    actions.createEl("button", { text: "Find skills to install", cls: "mod-cta" }).addEventListener("click", () => {
+      this.clearScopeFilters();
+      this.discoverMode = true;
+      this.render();
+    });
+    actions.createEl("button", { text: "Rescan tools" }).addEventListener("click", () => {
+      void this.rescan();
+    });
+  }
   /** Favourites starts empty for every new user, so — unlike the generic "rescan tools" message,
    *  which would be actively wrong advice here (rescanning finds nothing new; starring does) —
    *  this gets its own explanation plus a one-click way back to the full library to go star
-   *  something. Searching within an already-empty Favourites is a different, narrower case (the
-   *  star icon's not the point, the search itself came up empty) so it gets plain text instead. */
-  renderFavoritesEmptyState(container, isSearchMiss) {
-    if (isSearchMiss) {
-      container.createDiv({ cls: "skillmanager-empty", text: "No favourites match your search." });
-      return;
-    }
+   *  something. A search or filter miss inside Favourites goes to renderNoMatchesEmptyState. */
+  renderFavoritesEmptyState(container) {
     const empty = container.createDiv({ cls: "skillmanager-empty-state" });
     const icon = empty.createDiv({ cls: "skillmanager-empty-state-icon" });
     (0, import_obsidian15.setIcon)(icon, "star");
