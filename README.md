@@ -23,11 +23,19 @@ Scans the real, tool-specific folders for skills, agents, commands, and rules ac
 **Enable/disable that actually works**
 Toggling an item physically moves it into (or out of) a sibling disabled folder next to it. It's symlink-aware, so a project-linked item stays correctly linked either way. The tool genuinely stops seeing it, rather than a checkbox that only lives in the plugin's own memory.
 
+**Grid or list view**
+Switch the library between cards and a compact list from the toggle next to Sort. The list shows each item's tool, type, scope, sessions, and last used at a glance, color-coded so busy and idle items stand out. Click a column header to sort by name, most used, or recently used. The choice is remembered.
+
+![Library in list view, with tool, type, scope, sessions, and last used columns](images/library-list.png)
+
 **Tags, favorites, and collections**
 Organize items with your own tags, star favorites, and group related skills/agents/commands/rules into collections that span tools and projects.
 
 **Vault-native metadata**
 Per-item metadata (tags, favorites, collection membership) is stored as plain frontmatter in small markdown notes inside your vault, not hidden in a JSON blob. That means it syncs via whatever you already use to sync your vault, and it's queryable from Dataview or Bases like any other note.
+
+**Usage history and health for every item**
+Opening a Claude Code or Codex skill or agent shows a 26-week heatmap of the sessions that used it. The plugin keeps its own daily history, so it outlasts the tools' own transcript cleanup. The detail panel also shows the item's version, whether it runs automatically or only when called, who manages it (you, a GitHub source, a plugin, or the tool itself) and what that means for edits and updates, and an integrity check. Integrity flags problems that make a tool skip an item or never pick it up: broken or missing frontmatter, a name that doesn't match its folder, a missing or overlong description, a broken symlink, or a link to a bundled file that isn't there.
 
 ![Detail panel previewing a skill's full rendered content alongside its metadata](images/item-preview.png)
 
@@ -49,9 +57,12 @@ Reads Claude Code's installed-plugins registry and Codex's installed plugin cach
 
 Installed bundles are browsable from **Library → Plugin bundles**, with search, tool/group/tag filters, sorting, and a breadcrumb back from a bundle's item list.
 
+**Dashboard**
 A dedicated tab that separates representative source-file size from estimated context exposure. For skills and agents, it shows metadata available before invocation separately from instruction tokens loaded on invocation; commands and rules are marked tool-dependent until their per-tool loading policies are modeled. For Claude Code and Codex, it reads their session history (`~/.claude/projects` and `~/.codex/sessions`) to build a "Top Skills & Agents" usage ranking. Claude Code usage data also flags prune candidates that have never fired or gone stale, instead of guessing from file age. Everywhere else, including Codex prune recommendations, a file-age-based heuristic flags large source files that haven't been touched in a while. A separate "Possible overlaps" list catches enabled items sharing an exact name (an unambiguous collision) or near-duplicate descriptions, likely competing for the same trigger conditions, with a side-by-side compare before you disable one.
 
-Any prune or overlap suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself.
+An "Integrity issues" list collects every enabled item with a problem, with a one-click jump to the file that needs fixing.
+
+Any prune, overlap, or integrity suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself.
 
 ![Dashboard tab showing cost by tool, ranked items, prune candidates, and possible overlaps](images/dashboard.png)
 

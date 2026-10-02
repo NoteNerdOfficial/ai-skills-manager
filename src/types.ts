@@ -17,6 +17,7 @@ export const MORE_ICON_ID = "skillmanager-more";
 export const MORE_HORIZONTAL_ICON_ID = "skillmanager-more-horizontal";
 
 export type EnabledFilter = "all" | "enabled" | "disabled";
+export type LibraryLayout = "grid" | "list";
 export type SortOrder = "name-asc" | "name-desc" | "modified-desc" | "modified-asc" | "usage-desc" | "last-used-desc";
 
 export const TYPE_LABELS: Record<ItemType, string> = {
@@ -372,6 +373,8 @@ export interface SkillManagerPluginSettings {
   /** Per-day session counts for each skill/agent, merged in from every usage scan — see
    *  usage-history.ts. Kept here because the tools delete their own transcripts over time. */
   usageHistory: UsageHistory;
+  /** Library layout, switched from the toggle next to the sort button and remembered. */
+  libraryLayout: LibraryLayout;
 }
 
 /** Canonical set of reorderable sidebar sections and their default order. "Library" isn't
@@ -753,4 +756,5 @@ export const DEFAULT_SETTINGS: SkillManagerPluginSettings = {
   mcpConfigEditorApp: "",
   confirmBeforeToggle: true,
   usageHistory: {},
+  libraryLayout: "grid",
 };

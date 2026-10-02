@@ -27,3 +27,14 @@ export function slug(input: string): string {
       .slice(0, 80) || "item"
   );
 }
+
+/** "Today", "Yesterday", "3d ago", "5w ago", then a plain date past two months. 0 means never. */
+export function formatRelativeDay(ms: number, now = Date.now()): string {
+  if (ms === 0) return "Never";
+  const days = Math.floor((now - ms) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 14) return `${days}d ago`;
+  if (days < 60) return `${Math.floor(days / 7)}w ago`;
+  return formatDate(ms);
+}

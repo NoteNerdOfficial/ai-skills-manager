@@ -3046,3 +3046,211 @@ input.skillmanager-tag-add-input {
   flex: 0 1 45%;
   color: var(--text-faint);
 }
+
+/* ---------- grid/list layout toggle (tag bar, next to sort) ---------- */
+
+.skillmanager-layout-toggle {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--background-primary);
+}
+
+.skillmanager-layout-btn {
+  display: flex;
+  align-items: center;
+  padding: 3px 6px;
+  border: none;
+  box-shadow: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.skillmanager-layout-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.skillmanager-layout-btn.is-active {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.skillmanager-layout-btn .svg-icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---------- list layout: one bordered row per item, styled like the Dashboard's lists ---------- */
+
+.skillmanager-items.is-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skillmanager-list-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+}
+
+.skillmanager-list-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.skillmanager-list-row.is-selected {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.skillmanager-list-row.is-off {
+  opacity: 0.68;
+}
+
+/* The header lines up with row content but isn't a box itself. */
+.skillmanager-list-head {
+  position: sticky;
+  top: -16px;
+  z-index: 1;
+  padding: 6px 13px;
+  border: none;
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  background: var(--background-primary);
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: default;
+}
+
+.skillmanager-list-head:hover {
+  background: var(--background-primary);
+}
+
+.skillmanager-list-head .is-sortable {
+  cursor: pointer;
+}
+
+.skillmanager-list-head .is-sortable:hover {
+  color: var(--text-normal);
+}
+
+.skillmanager-list-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.skillmanager-list-cell.col-name { flex: 2 1 0; }
+.skillmanager-list-cell.col-tool { flex: 1.4 1 0; color: var(--text-muted); }
+.skillmanager-list-cell.col-type { flex: 0 0 64px; }
+.skillmanager-list-cell.col-scope { flex: 1 1 0; color: var(--text-muted); }
+.skillmanager-list-cell.col-sessions { flex: 0 0 72px; justify-content: flex-end; }
+.skillmanager-list-cell.col-last { flex: 0 0 92px; justify-content: flex-end; }
+.skillmanager-list-cell.col-actions { flex: 0 0 72px; justify-content: flex-end; }
+
+/* Docked beside the detail rail: Name + Sessions only, so the narrow column stays scannable. */
+.skillmanager-items.is-list.is-docked .is-wide {
+  display: none;
+}
+
+.skillmanager-list-name {
+  color: var(--text-normal);
+  font-weight: var(--font-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillmanager-list-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillmanager-list-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.skillmanager-list-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.skillmanager-list-star {
+  color: var(--color-yellow);
+}
+
+.skillmanager-list-none {
+  color: var(--text-faint);
+}
+
+/* Sessions: accent shades scaled to the busiest item shown (like the heatmap). Last used: green
+   within a week, yellow within the 30-day prune window, orange past it, red for never. */
+.skillmanager-list-pill {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.skillmanager-list-pill.is-heat-0 {
+  color: var(--text-faint);
+  background: var(--background-modifier-hover);
+}
+
+.skillmanager-list-pill.is-heat-1 {
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--interactive-accent) 15%, transparent);
+}
+
+.skillmanager-list-pill.is-heat-2 {
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--interactive-accent) 30%, transparent);
+}
+
+.skillmanager-list-pill.is-heat-3 {
+  color: var(--text-normal);
+  background: color-mix(in srgb, var(--interactive-accent) 50%, transparent);
+}
+
+.skillmanager-list-pill.is-heat-4 {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+}
+
+.skillmanager-list-pill.is-fresh {
+  color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 14%, transparent);
+}
+
+.skillmanager-list-pill.is-recent {
+  color: var(--color-yellow);
+  background: color-mix(in srgb, var(--color-yellow) 14%, transparent);
+}
+
+.skillmanager-list-pill.is-stale {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 14%, transparent);
+}
+
+.skillmanager-list-pill.is-never {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 12%, transparent);
+}

@@ -404,7 +404,8 @@ var DEFAULT_SETTINGS = {
   workspaceHintDismissed: false,
   mcpConfigEditorApp: "",
   confirmBeforeToggle: true,
-  usageHistory: {}
+  usageHistory: {},
+  libraryLayout: "grid"
 };
 
 // src/settings.ts
@@ -442,6 +443,20 @@ function stripFrontmatter(raw) {
 }
 function slug(input) {
   return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "item";
+}
+function formatRelativeDay(ms, now = Date.now()) {
+  if (ms === 0)
+    return "Never";
+  const days = Math.floor((now - ms) / (24 * 60 * 60 * 1e3));
+  if (days <= 0)
+    return "Today";
+  if (days === 1)
+    return "Yesterday";
+  if (days < 14)
+    return `${days}d ago`;
+  if (days < 60)
+    return `${Math.floor(days / 7)}w ago`;
+  return formatDate(ms);
 }
 
 // src/itemToggle.ts
@@ -3771,7 +3786,7 @@ var SORT_OPTIONS = [
   { key: "name-desc", label: "Name (Z to A)" },
   { key: "modified-desc", label: "Modified time (new to old)" },
   { key: "modified-asc", label: "Modified time (old to new)" },
-  { key: "usage-desc", label: `Most used (last ${TOP_USED_WINDOW_DAYS} days)` },
+  { key: "usage-desc", label: `Most used (last ${HEATMAP_WEEKS} weeks)` },
   { key: "last-used-desc", label: "Recently used" }
 ];
 function discoverGroupKey(repoUrl, ref) {
@@ -4567,10 +4582,10 @@ var LibraryView = class extends import_obsidian15.ItemView {
       case "last-used-desc": {
         const recency = this.sortOrder === "last-used-desc";
         const score = (item) => {
-          const stats = this.usageStatsFor(item);
-          if (!stats)
+          var _a, _b;
+          if (!this.usageHistoryKey(item))
             return -1;
-          return recency ? Math.max(stats.lastUsedMs, this.lastHistoryDayMs(item)) : stats.count;
+          return recency ? (_a = this.lastUsedMs(item)) != null ? _a : -1 : (_b = this.sessionCount(item)) != null ? _b : -1;
         };
         const scores = new Map(sorted.map((item) => [item.entryId, score(item)]));
         sorted.sort((a, b) => {
@@ -4593,6 +4608,24 @@ var LibraryView = class extends import_obsidian15.ItemView {
     if (item.tool === "codex")
       return (_d = (_c = this.getCodexUsage()) == null ? void 0 : _c.get(item.entryId)) != null ? _d : null;
     return null;
+  }
+  /** Sessions over the heatmap window, from the saved history, or null for an item with no usage
+   *  signal. Starts the transcript scan the first time it's needed, so the history is current. */
+  sessionCount(item) {
+    var _a, _b;
+    const key = this.usageHistoryKey(item);
+    if (!key)
+      return null;
+    this.usageStatsFor(item);
+    return buildHeatmap((_b = (_a = this.getSettings().usageHistory) == null ? void 0 : _a[key]) != null ? _b : {}).total;
+  }
+  /** Most recent use from either the live transcripts or the saved history; 0 means never, null
+   *  means the item has no usage signal at all. */
+  lastUsedMs(item) {
+    var _a, _b;
+    if (!this.usageHistoryKey(item))
+      return null;
+    return Math.max((_b = (_a = this.usageStatsFor(item)) == null ? void 0 : _a.lastUsedMs) != null ? _b : 0, this.lastHistoryDayMs(item));
   }
   /** Latest day in the saved heatmap history, so "Recently used" still knows about use whose
    *  transcript the tool has since deleted. */
@@ -5470,14 +5503,21 @@ var LibraryView = class extends import_obsidian15.ItemView {
     const body = content.createDiv({ cls: "skillmanager-body" });
     const animation = this.pendingDetailAnimation;
     this.pendingDetailAnimation = null;
-    const grid = body.createDiv({ cls: `skillmanager-items${this.selectedItem ? " is-docked" : ""}` });
+    const isList = this.getSettings().libraryLayout === "list";
+    const grid = body.createDiv({
+      cls: `skillmanager-items${isList ? " is-list" : ""}${this.selectedItem ? " is-docked" : ""}`
+    });
     const itemsEl = grid;
-    this.renderItems(grid, items);
+    const renderList = (el, list) => isList ? this.renderItemList(el, list) : this.renderItems(el, list);
+    renderList(grid, items);
     if (this.selectedItem) {
       if (this.wasDocked) {
         grid.scrollTop = this.dockedScrollTop;
       } else {
-        (_a = grid.querySelector(".skillmanager-card.is-selected")) == null ? void 0 : _a.scrollIntoView({ block: "start" });
+        (_a = grid.querySelector(".skillmanager-card.is-selected, .skillmanager-list-row.is-selected")) == null ? void 0 : _a.scrollIntoView({ block: "start" });
+        const listHead = grid.querySelector(".skillmanager-list-head");
+        if (listHead)
+          grid.scrollTop -= listHead.offsetHeight + parseFloat(getComputedStyle(grid).rowGap || "0");
       }
       grid.addEventListener("scroll", () => {
         this.dockedScrollTop = grid.scrollTop;
@@ -5500,7 +5540,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       updateClearBtn();
       (_a2 = header.querySelector(".skillmanager-count-pill")) == null ? void 0 : _a2.setText(String(this.filteredItems().length));
       if (itemsEl)
-        this.renderItems(itemsEl, this.filteredItems());
+        renderList(itemsEl, this.filteredItems());
     });
     clearBtn.addEventListener("click", () => {
       var _a2;
@@ -5509,7 +5549,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       updateClearBtn();
       (_a2 = header.querySelector(".skillmanager-count-pill")) == null ? void 0 : _a2.setText(String(this.filteredItems().length));
       if (itemsEl)
-        this.renderItems(itemsEl, this.filteredItems());
+        renderList(itemsEl, this.filteredItems());
       searchInput.focus();
     });
   }
@@ -7219,6 +7259,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       this.renderTypeFilterButton(controls);
     this.renderSourceButton(controls);
     this.renderSortButton(controls);
+    this.renderLayoutToggle(controls);
     const activeCount = this.activeFilterLabels().length;
     if (activeCount > 0) {
       const clearBtn = controls.createEl("button", {
@@ -7232,6 +7273,28 @@ var LibraryView = class extends import_obsidian15.ItemView {
         this.render();
       });
     }
+  }
+  /** Grid/list switch. The choice is saved, so the library reopens in the same layout. */
+  renderLayoutToggle(container) {
+    const group = container.createDiv({ cls: "skillmanager-layout-toggle" });
+    const current = this.getSettings().libraryLayout;
+    const option = (layout, icon, label) => {
+      const btn = group.createEl("button", {
+        cls: `skillmanager-layout-btn${current === layout ? " is-active" : ""}`,
+        attr: { "aria-label": label, "aria-pressed": String(current === layout) }
+      });
+      (0, import_obsidian15.setIcon)(btn, icon);
+      btn.addEventListener("click", () => {
+        if (this.getSettings().libraryLayout === layout)
+          return;
+        this.getSettings().libraryLayout = layout;
+        this.wasDocked = false;
+        void this.saveSettings();
+        this.render();
+      });
+    };
+    option("grid", "layout-grid", "Grid view");
+    option("list", "list", "List view");
   }
   /** A type page can narrow to one tool without changing the type sidebar scope. */
   renderToolFilterButton(container) {
@@ -7498,6 +7561,115 @@ var LibraryView = class extends import_obsidian15.ItemView {
       this.clearScopeFilters();
       this.render();
     });
+  }
+  /** List layout: one bordered row per item with Name, Tool, Type, Scope, Sessions and Last used.
+   *  Name, Sessions and Last used headers sort. Once an item is open the list docks to the same
+   *  narrow rail as the grid and drops to Name + Sessions (the "is-wide" cells hide in CSS). */
+  renderItemList(container, items) {
+    if (items.length === 0) {
+      this.renderItems(container, items);
+      return;
+    }
+    container.empty();
+    const rows = this.groupedRows(items);
+    const head = container.createDiv({ cls: "skillmanager-list-row skillmanager-list-head" });
+    const column = (label, cls, order) => {
+      const cell = head.createDiv({ cls: `skillmanager-list-cell ${cls}` });
+      cell.createSpan({ text: label });
+      if (!order)
+        return;
+      cell.addClass("is-sortable");
+      if (this.sortOrder === order)
+        (0, import_obsidian15.setIcon)(cell.createSpan({ cls: "skillmanager-list-icon" }), "arrow-down");
+      cell.addEventListener("click", () => {
+        this.sortOrder = order;
+        this.render();
+      });
+    };
+    column("Name", "col-name", "name-asc");
+    column("Tool", "col-tool is-wide");
+    column("Type", "col-type is-wide");
+    column("Scope", "col-scope is-wide");
+    column("Sessions", "col-sessions", "usage-desc");
+    column("Last used", "col-last is-wide", "last-used-desc");
+    head.createDiv({ cls: "skillmanager-list-cell col-actions is-wide" });
+    const maxSessions = Math.max(0, ...rows.map((i) => {
+      var _a;
+      return (_a = this.sessionCount(i)) != null ? _a : 0;
+    }));
+    for (const item of rows)
+      this.renderListRow(container, item, maxSessions);
+  }
+  renderListRow(container, item, maxSessions) {
+    var _a;
+    const row = container.createDiv({ cls: "skillmanager-list-row" });
+    if (!item.enabled)
+      row.addClass("is-off");
+    if (((_a = this.selectedItem) == null ? void 0 : _a.entryId) === item.entryId)
+      row.addClass("is-selected");
+    const name = row.createDiv({ cls: "skillmanager-list-cell col-name" });
+    name.createSpan({ text: item.name, cls: "skillmanager-list-name", attr: { title: item.name } });
+    if (item.favorite)
+      (0, import_obsidian15.setIcon)(name.createSpan({ cls: "skillmanager-list-icon skillmanager-list-star" }), "star");
+    const toolCell = row.createDiv({ cls: "skillmanager-list-cell col-tool is-wide" });
+    const tool = this.toolLabel(item);
+    this.renderIcon(toolCell.createSpan({ cls: "skillmanager-list-icon" }), tool.icon, tool.svgIcon);
+    toolCell.createSpan({ text: tool.text, cls: "skillmanager-list-ellipsis", attr: { title: tool.text } });
+    row.createDiv({ cls: "skillmanager-list-cell col-type is-wide" }).createSpan({
+      text: TYPE_LABEL_SINGULAR[item.type],
+      cls: "skillmanager-card-type skillmanager-card-type-sm"
+    });
+    const scopeCell = row.createDiv({ cls: "skillmanager-list-cell col-scope is-wide" });
+    const origin = this.originLabel(item);
+    this.renderIcon(scopeCell.createSpan({ cls: "skillmanager-list-icon" }), origin.icon);
+    scopeCell.createSpan({ text: origin.text, cls: "skillmanager-list-ellipsis" });
+    if (this.isSymlinkedItem(item)) {
+      const link = scopeCell.createSpan({ cls: "skillmanager-list-icon", attr: { "aria-label": `Symlinked from ${item.realPath}` } });
+      (0, import_obsidian15.setIcon)(link, "link");
+    }
+    const sessions = this.sessionCount(item);
+    const sessionsCell = row.createDiv({ cls: "skillmanager-list-cell col-sessions" });
+    if (sessions === null) {
+      sessionsCell.createSpan({ text: "\u2013", cls: "skillmanager-list-none", attr: { "aria-label": "No usage data for this tool or type" } });
+    } else {
+      sessionsCell.createSpan({
+        text: String(sessions),
+        cls: `skillmanager-list-pill is-heat-${heatLevel(sessions, maxSessions)}`,
+        attr: { "aria-label": `${sessions} session${sessions === 1 ? "" : "s"} in the last ${HEATMAP_WEEKS} weeks` }
+      });
+    }
+    const lastUsed = this.lastUsedMs(item);
+    const lastCell = row.createDiv({ cls: "skillmanager-list-cell col-last is-wide" });
+    if (lastUsed === null) {
+      lastCell.createSpan({ text: "\u2013", cls: "skillmanager-list-none", attr: { "aria-label": "No usage data for this tool or type" } });
+    } else {
+      const days = lastUsed === 0 ? Infinity : (Date.now() - lastUsed) / (24 * 60 * 60 * 1e3);
+      const tone = lastUsed === 0 ? "never" : days <= 7 ? "fresh" : days <= USAGE_STALE_DAYS ? "recent" : "stale";
+      lastCell.createSpan({
+        text: formatRelativeDay(lastUsed),
+        cls: `skillmanager-list-pill is-${tone}`,
+        attr: { "aria-label": lastUsed === 0 ? "Never used" : `Last used ${formatDate(lastUsed)}` }
+      });
+    }
+    const actions = row.createDiv({ cls: "skillmanager-list-cell col-actions is-wide" });
+    const toggle = actions.createEl("button", {
+      cls: `skillmanager-toggle${item.enabled ? " is-on" : ""}`,
+      attr: { "aria-label": item.enabled ? "Disable" : "Enable" }
+    });
+    toggle.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      if (item.pluginId !== null)
+        this.explainPluginToggle(item);
+      else
+        this.confirmToggle(item, () => this.toggleEnabled(item));
+    });
+    const menuBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More actions" } });
+    (0, import_obsidian15.setIcon)(menuBtn, MORE_HORIZONTAL_ICON_ID);
+    menuBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      this.openCardMenu(evt, item);
+    });
+    row.addEventListener("click", () => this.selectItem(item));
   }
   renderCard(container, item) {
     var _a;

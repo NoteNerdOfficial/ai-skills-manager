@@ -18,6 +18,7 @@ import {
   RulePathEntry,
   SkillManagerPluginSettings,
   SortOrder,
+  LibraryLayout,
   ToolConfig,
   TYPE_LABEL_SINGULAR,
   TYPE_LABELS,
@@ -76,7 +77,7 @@ import {
 import { errorMessage } from "../errors";
 import { checkIntegrity } from "../integrity";
 import { DayCounts, HEATMAP_WEEKS, buildHeatmap, heatLevel, historyKey, mergeUsageHistory } from "../usage-history";
-import { formatBytes, formatDate, formatTokens, stripFrontmatter } from "../format";
+import { formatBytes, formatDate, formatRelativeDay, formatTokens, stripFrontmatter } from "../format";
 import { buildFileTree, countFiles, isFolderItem, TreeNode } from "../fileTree";
 import { getAllProjects as computeAllProjects, performRescan, projectIcon, RescanResult, VAULT_PROJECT_ID } from "../rescan";
 import { originLabel as resolveOriginLabel, sourceLabel as resolveSourceLabel, toolLabel as resolveToolLabel } from "../sourceLabel";
@@ -116,7 +117,7 @@ export const SORT_OPTIONS: { key: SortOrder; label: string }[] = [
   { key: "name-desc", label: "Name (Z to A)" },
   { key: "modified-desc", label: "Modified time (new to old)" },
   { key: "modified-asc", label: "Modified time (old to new)" },
-  { key: "usage-desc", label: `Most used (last ${TOP_USED_WINDOW_DAYS} days)` },
+  { key: "usage-desc", label: `Most used (last ${HEATMAP_WEEKS} weeks)` },
   { key: "last-used-desc", label: "Recently used" },
 ];
 
@@ -982,10 +983,11 @@ export class LibraryView extends ItemView {
         // Items with no usage signal at all (other tools, commands, rules) sink below everything
         // that has one, then fall back to name order among themselves.
         const recency = this.sortOrder === "last-used-desc";
+        // "Most used" ranks by the same session count the list view's Sessions column shows, so
+        // sorting by that column never disagrees with the numbers in it.
         const score = (item: ItemMetadata) => {
-          const stats = this.usageStatsFor(item);
-          if (!stats) return -1;
-          return recency ? Math.max(stats.lastUsedMs, this.lastHistoryDayMs(item)) : stats.count;
+          if (!this.usageHistoryKey(item)) return -1;
+          return recency ? (this.lastUsedMs(item) ?? -1) : (this.sessionCount(item) ?? -1);
         };
         const scores = new Map(sorted.map((item) => [item.entryId, score(item)]));
         sorted.sort((a, b) => (scores.get(b.entryId) ?? -1) - (scores.get(a.entryId) ?? -1) || a.name.localeCompare(b.name));
@@ -1002,6 +1004,22 @@ export class LibraryView extends ItemView {
     if (item.tool === "claude-code") return this.getClaudeUsage()?.get(item.entryId) ?? null;
     if (item.tool === "codex") return this.getCodexUsage()?.get(item.entryId) ?? null;
     return null;
+  }
+
+  /** Sessions over the heatmap window, from the saved history, or null for an item with no usage
+   *  signal. Starts the transcript scan the first time it's needed, so the history is current. */
+  private sessionCount(item: ItemMetadata): number | null {
+    const key = this.usageHistoryKey(item);
+    if (!key) return null;
+    this.usageStatsFor(item);
+    return buildHeatmap(this.getSettings().usageHistory?.[key] ?? {}).total;
+  }
+
+  /** Most recent use from either the live transcripts or the saved history; 0 means never, null
+   *  means the item has no usage signal at all. */
+  private lastUsedMs(item: ItemMetadata): number | null {
+    if (!this.usageHistoryKey(item)) return null;
+    return Math.max(this.usageStatsFor(item)?.lastUsedMs ?? 0, this.lastHistoryDayMs(item));
   }
 
   /** Latest day in the saved heatmap history, so "Recently used" still knows about use whose
@@ -1973,9 +1991,14 @@ export class LibraryView extends ItemView {
     const animation = this.pendingDetailAnimation;
     this.pendingDetailAnimation = null;
 
-    const grid = body.createDiv({ cls: `skillmanager-items${this.selectedItem ? " is-docked" : ""}` });
+    const isList = this.getSettings().libraryLayout === "list";
+    const grid = body.createDiv({
+      cls: `skillmanager-items${isList ? " is-list" : ""}${this.selectedItem ? " is-docked" : ""}`,
+    });
     const itemsEl = grid;
-    this.renderItems(grid, items);
+    const renderList = (el: HTMLElement, list: ItemMetadata[]) =>
+      isList ? this.renderItemList(el, list) : this.renderItems(el, list);
+    renderList(grid, items);
     if (this.selectedItem) {
       if (this.wasDocked) {
         // Already docked, just switching cards: the column layout hasn't changed, so restore
@@ -1988,7 +2011,12 @@ export class LibraryView extends ItemView {
         // (not "nearest") so it always lands at the top of the grid rather than wherever the
         // minimal scroll happens to leave it — e.g. pinned to the bottom edge when it was below
         // the fold.
-        grid.querySelector(".skillmanager-card.is-selected")?.scrollIntoView({ block: "start" });
+        grid.querySelector(".skillmanager-card.is-selected, .skillmanager-list-row.is-selected")?.scrollIntoView({ block: "start" });
+        // In the list layout the sticky column header sits over the top of the scroll area, so
+        // "start" would tuck the row underneath it. Back off by the header's height plus the
+        // row gap so the row settles just below the header instead.
+        const listHead = grid.querySelector<HTMLElement>(".skillmanager-list-head");
+        if (listHead) grid.scrollTop -= listHead.offsetHeight + parseFloat(getComputedStyle(grid).rowGap || "0");
       }
       grid.addEventListener("scroll", () => {
         this.dockedScrollTop = grid.scrollTop;
@@ -2015,7 +2043,7 @@ export class LibraryView extends ItemView {
       this.search = searchInput.value;
       updateClearBtn();
       header.querySelector(".skillmanager-count-pill")?.setText(String(this.filteredItems().length));
-      if (itemsEl) this.renderItems(itemsEl, this.filteredItems());
+      if (itemsEl) renderList(itemsEl, this.filteredItems());
     });
 
     clearBtn.addEventListener("click", () => {
@@ -2023,7 +2051,7 @@ export class LibraryView extends ItemView {
       this.search = "";
       updateClearBtn();
       header.querySelector(".skillmanager-count-pill")?.setText(String(this.filteredItems().length));
-      if (itemsEl) this.renderItems(itemsEl, this.filteredItems());
+      if (itemsEl) renderList(itemsEl, this.filteredItems());
       searchInput.focus();
     });
   }
@@ -3839,6 +3867,7 @@ export class LibraryView extends ItemView {
     if (this.toolFilter) this.renderTypeFilterButton(controls);
     this.renderSourceButton(controls);
     this.renderSortButton(controls);
+    this.renderLayoutToggle(controls);
     const activeCount = this.activeFilterLabels().length;
     if (activeCount > 0) {
       const clearBtn = controls.createEl("button", {
@@ -3852,6 +3881,28 @@ export class LibraryView extends ItemView {
         this.render();
       });
     }
+  }
+
+  /** Grid/list switch. The choice is saved, so the library reopens in the same layout. */
+  private renderLayoutToggle(container: HTMLElement) {
+    const group = container.createDiv({ cls: "skillmanager-layout-toggle" });
+    const current = this.getSettings().libraryLayout;
+    const option = (layout: LibraryLayout, icon: string, label: string) => {
+      const btn = group.createEl("button", {
+        cls: `skillmanager-layout-btn${current === layout ? " is-active" : ""}`,
+        attr: { "aria-label": label, "aria-pressed": String(current === layout) },
+      });
+      setIcon(btn, icon);
+      btn.addEventListener("click", () => {
+        if (this.getSettings().libraryLayout === layout) return;
+        this.getSettings().libraryLayout = layout;
+        this.wasDocked = false;
+        void this.saveSettings();
+        this.render();
+      });
+    };
+    option("grid", "layout-grid", "Grid view");
+    option("list", "list", "List view");
   }
 
   /** A type page can narrow to one tool without changing the type sidebar scope. */
@@ -4159,6 +4210,117 @@ export class LibraryView extends ItemView {
       this.clearScopeFilters();
       this.render();
     });
+  }
+
+  /** List layout: one bordered row per item with Name, Tool, Type, Scope, Sessions and Last used.
+   *  Name, Sessions and Last used headers sort. Once an item is open the list docks to the same
+   *  narrow rail as the grid and drops to Name + Sessions (the "is-wide" cells hide in CSS). */
+  private renderItemList(container: HTMLElement, items: ItemMetadata[]) {
+    if (items.length === 0) {
+      this.renderItems(container, items);
+      return;
+    }
+    container.empty();
+    const rows = this.groupedRows(items);
+
+    const head = container.createDiv({ cls: "skillmanager-list-row skillmanager-list-head" });
+    const column = (label: string, cls: string, order?: SortOrder) => {
+      const cell = head.createDiv({ cls: `skillmanager-list-cell ${cls}` });
+      cell.createSpan({ text: label });
+      if (!order) return;
+      cell.addClass("is-sortable");
+      if (this.sortOrder === order) setIcon(cell.createSpan({ cls: "skillmanager-list-icon" }), "arrow-down");
+      cell.addEventListener("click", () => {
+        this.sortOrder = order;
+        this.render();
+      });
+    };
+    column("Name", "col-name", "name-asc");
+    column("Tool", "col-tool is-wide");
+    column("Type", "col-type is-wide");
+    column("Scope", "col-scope is-wide");
+    column("Sessions", "col-sessions", "usage-desc");
+    column("Last used", "col-last is-wide", "last-used-desc");
+    head.createDiv({ cls: "skillmanager-list-cell col-actions is-wide" });
+
+    const maxSessions = Math.max(0, ...rows.map((i) => this.sessionCount(i) ?? 0));
+    for (const item of rows) this.renderListRow(container, item, maxSessions);
+  }
+
+  private renderListRow(container: HTMLElement, item: ItemMetadata, maxSessions: number) {
+    const row = container.createDiv({ cls: "skillmanager-list-row" });
+    if (!item.enabled) row.addClass("is-off");
+    if (this.selectedItem?.entryId === item.entryId) row.addClass("is-selected");
+
+    const name = row.createDiv({ cls: "skillmanager-list-cell col-name" });
+    name.createSpan({ text: item.name, cls: "skillmanager-list-name", attr: { title: item.name } });
+    if (item.favorite) setIcon(name.createSpan({ cls: "skillmanager-list-icon skillmanager-list-star" }), "star");
+
+    const toolCell = row.createDiv({ cls: "skillmanager-list-cell col-tool is-wide" });
+    const tool = this.toolLabel(item);
+    this.renderIcon(toolCell.createSpan({ cls: "skillmanager-list-icon" }), tool.icon, tool.svgIcon);
+    toolCell.createSpan({ text: tool.text, cls: "skillmanager-list-ellipsis", attr: { title: tool.text } });
+
+    row.createDiv({ cls: "skillmanager-list-cell col-type is-wide" }).createSpan({
+      text: TYPE_LABEL_SINGULAR[item.type],
+      cls: "skillmanager-card-type skillmanager-card-type-sm",
+    });
+
+    const scopeCell = row.createDiv({ cls: "skillmanager-list-cell col-scope is-wide" });
+    const origin = this.originLabel(item);
+    this.renderIcon(scopeCell.createSpan({ cls: "skillmanager-list-icon" }), origin.icon);
+    scopeCell.createSpan({ text: origin.text, cls: "skillmanager-list-ellipsis" });
+    if (this.isSymlinkedItem(item)) {
+      const link = scopeCell.createSpan({ cls: "skillmanager-list-icon", attr: { "aria-label": `Symlinked from ${item.realPath}` } });
+      setIcon(link, "link");
+    }
+
+    // Sessions: accent shades scaled to the busiest item shown, same as the heatmap.
+    const sessions = this.sessionCount(item);
+    const sessionsCell = row.createDiv({ cls: "skillmanager-list-cell col-sessions" });
+    if (sessions === null) {
+      sessionsCell.createSpan({ text: "–", cls: "skillmanager-list-none", attr: { "aria-label": "No usage data for this tool or type" } });
+    } else {
+      sessionsCell.createSpan({
+        text: String(sessions),
+        cls: `skillmanager-list-pill is-heat-${heatLevel(sessions, maxSessions)}`,
+        attr: { "aria-label": `${sessions} session${sessions === 1 ? "" : "s"} in the last ${HEATMAP_WEEKS} weeks` },
+      });
+    }
+
+    // Last used: green within a week, yellow within the prune window, orange past it, red if never.
+    const lastUsed = this.lastUsedMs(item);
+    const lastCell = row.createDiv({ cls: "skillmanager-list-cell col-last is-wide" });
+    if (lastUsed === null) {
+      lastCell.createSpan({ text: "–", cls: "skillmanager-list-none", attr: { "aria-label": "No usage data for this tool or type" } });
+    } else {
+      const days = lastUsed === 0 ? Infinity : (Date.now() - lastUsed) / (24 * 60 * 60 * 1000);
+      const tone = lastUsed === 0 ? "never" : days <= 7 ? "fresh" : days <= USAGE_STALE_DAYS ? "recent" : "stale";
+      lastCell.createSpan({
+        text: formatRelativeDay(lastUsed),
+        cls: `skillmanager-list-pill is-${tone}`,
+        attr: { "aria-label": lastUsed === 0 ? "Never used" : `Last used ${formatDate(lastUsed)}` },
+      });
+    }
+
+    const actions = row.createDiv({ cls: "skillmanager-list-cell col-actions is-wide" });
+    const toggle = actions.createEl("button", {
+      cls: `skillmanager-toggle${item.enabled ? " is-on" : ""}`,
+      attr: { "aria-label": item.enabled ? "Disable" : "Enable" },
+    });
+    toggle.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      if (item.pluginId !== null) this.explainPluginToggle(item);
+      else this.confirmToggle(item, () => this.toggleEnabled(item));
+    });
+    const menuBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More actions" } });
+    setIcon(menuBtn, MORE_HORIZONTAL_ICON_ID);
+    menuBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      this.openCardMenu(evt, item);
+    });
+
+    row.addEventListener("click", () => this.selectItem(item));
   }
 
   private renderCard(container: HTMLElement, item: ItemMetadata) {
