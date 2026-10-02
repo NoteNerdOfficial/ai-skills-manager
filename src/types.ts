@@ -1,3 +1,4 @@
+import type { UsageHistory } from "./usage-history";
 export type ItemType = "skill" | "agent" | "command" | "rule";
 
 /** Referenced anywhere an icon *id* is required — the ribbon icon, the library view's tab icon,
@@ -16,7 +17,7 @@ export const MORE_ICON_ID = "skillmanager-more";
 export const MORE_HORIZONTAL_ICON_ID = "skillmanager-more-horizontal";
 
 export type EnabledFilter = "all" | "enabled" | "disabled";
-export type SortOrder = "name-asc" | "name-desc" | "modified-desc" | "modified-asc";
+export type SortOrder = "name-asc" | "name-desc" | "modified-desc" | "modified-asc" | "usage-desc" | "last-used-desc";
 
 export const TYPE_LABELS: Record<ItemType, string> = {
   skill: "Skills",
@@ -168,6 +169,9 @@ export interface PluginSource {
    *  always optional. Lets a card belonging to this plugin offer "install a standalone copy" as
    *  an escape hatch from the whole-plugin-only toggle (see LibraryView's explainPluginToggle). */
   repoUrl?: string;
+  /** From the plugin's own manifest, else the registry entry or cache folder name (which can be
+   *  a commit hash rather than a semver). */
+  version?: string;
 }
 
 export interface DiscoveredItem {
@@ -365,6 +369,9 @@ export interface SkillManagerPluginSettings {
    *  Turning this off skips straight to the move, for anyone who finds the prompt gets in the
    *  way of a workflow that toggles items often. */
   confirmBeforeToggle: boolean;
+  /** Per-day session counts for each skill/agent, merged in from every usage scan — see
+   *  usage-history.ts. Kept here because the tools delete their own transcripts over time. */
+  usageHistory: UsageHistory;
 }
 
 /** Canonical set of reorderable sidebar sections and their default order. "Library" isn't
@@ -745,4 +752,5 @@ export const DEFAULT_SETTINGS: SkillManagerPluginSettings = {
   workspaceHintDismissed: false,
   mcpConfigEditorApp: "",
   confirmBeforeToggle: true,
+  usageHistory: {},
 };

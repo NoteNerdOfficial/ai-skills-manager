@@ -1,4 +1,4 @@
-import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, setIcon, setTooltip } from "obsidian";
+import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, parseYaml, setIcon, setTooltip } from "obsidian";
 import { execFile, execFileSync } from "child_process";
 import { cpSync, existsSync, lstatSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, relative, sep } from "path";
@@ -53,6 +53,8 @@ import {
   CLAUDE_PROJECTS_DIR,
   computeClaudeUsage,
   findUsagePruneCandidates,
+  invocationName,
+  usageKey,
   listTranscriptFiles,
   rankTopUsedItems,
   scanTranscriptFile,
@@ -72,6 +74,8 @@ import {
   refetchDiscoverEntry,
 } from "../discover";
 import { errorMessage } from "../errors";
+import { checkIntegrity } from "../integrity";
+import { DayCounts, HEATMAP_WEEKS, buildHeatmap, heatLevel, historyKey, mergeUsageHistory } from "../usage-history";
 import { formatBytes, formatDate, formatTokens, stripFrontmatter } from "../format";
 import { buildFileTree, countFiles, isFolderItem, TreeNode } from "../fileTree";
 import { getAllProjects as computeAllProjects, performRescan, projectIcon, RescanResult, VAULT_PROJECT_ID } from "../rescan";
@@ -112,6 +116,8 @@ export const SORT_OPTIONS: { key: SortOrder; label: string }[] = [
   { key: "name-desc", label: "Name (Z to A)" },
   { key: "modified-desc", label: "Modified time (new to old)" },
   { key: "modified-asc", label: "Modified time (old to new)" },
+  { key: "usage-desc", label: `Most used (last ${TOP_USED_WINDOW_DAYS} days)` },
+  { key: "last-used-desc", label: "Recently used" },
 ];
 
 type DiscoverSortOrder = "recent-desc" | "name-asc" | "name-desc" | "stars-desc" | "source";
@@ -278,6 +284,9 @@ export class LibraryView extends ItemView {
    *  the same places — the sidebar renders far more often than the Dashboard itself, so this must
    *  stay a cache, not a recompute-on-every-render. */
   private dashboardAttentionCount: number | null = null;
+  /** entryId -> integrity issues for every enabled item that has any (see integrity.ts). Lazy,
+   *  cleared on rescan and after a save from the detail rail, same lifecycle as dashboardMetrics. */
+  private integrityIssues: Map<string, string[]> | null = null;
   private brokenSymlinks: BrokenSymlink[] = [];
   private knownBrokenSymlinkKeys = new Set<string>();
   /** Which "Source size by tool" card is selected — filters the ranked list below to just that tool;
@@ -289,6 +298,7 @@ export class LibraryView extends ItemView {
   /** Whether the ranked list is showing everything or just the top DASHBOARD_RANKED_COLLAPSED_COUNT. */
   private dashboardRankedExpanded = false;
   private dashboardBrokenSymlinksExpanded = false;
+  private dashboardIntegrityExpanded = false;
   private dashboardPruneExpanded = false;
   private dashboardOverlapExpanded = false;
   /** Live-tracked scroll offset of the dashboard's scrollable body, restored on the next render
@@ -480,6 +490,7 @@ export class LibraryView extends ItemView {
     // otherwise linger in the sidebar badge until the next Dashboard-specific action cleared it.
     this.dashboardMetrics = null;
     this.dashboardAttentionCount = null;
+    this.integrityIssues = null;
     this.claudeUsage = null;
     this.codexUsage = null;
     this.render();
@@ -543,12 +554,14 @@ export class LibraryView extends ItemView {
       // see its sinceMs doc comment.
       const sinceMs = Date.now() - TOP_USED_WINDOW_DAYS * 24 * 60 * 60 * 1000;
       const raw = new Map<string, ClaudeUsageStats>();
+      const days = new Map<string, DayCounts>();
       for (const f of files) {
-        scanTranscriptFile(f, raw, sinceMs);
+        scanTranscriptFile(f, raw, sinceMs, days);
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       }
 
       this.claudeUsage = computeClaudeUsage(this.items, raw);
+      await this.saveUsageHistory("claude-code", days);
     } catch (e) {
       // Without this, a thrown error here was an unhandled rejection nobody could see — the tile
       // just looked permanently empty with no way to tell "broken" from "genuinely no usage yet."
@@ -569,11 +582,13 @@ export class LibraryView extends ItemView {
       const sinceMs = Date.now() - TOP_USED_WINDOW_DAYS * 24 * 60 * 60 * 1000;
       const raw = new Map<string, ClaudeUsageStats>();
       const codexItems = this.items.filter((i) => i.tool === "codex" && (i.type === "skill" || i.type === "agent"));
+      const days = new Map<string, DayCounts>();
       for (const file of files) {
-        scanCodexSessionFile(file, codexItems, raw, sinceMs);
+        scanCodexSessionFile(file, codexItems, raw, sinceMs, days);
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       }
       this.codexUsage = computeCodexUsage(this.items, raw);
+      await this.saveUsageHistory("codex", days);
     } catch (e) {
       console.error("AI Skills Manager: failed to read Codex usage history", e);
       new Notice(`Couldn't read Codex usage history: ${errorMessage(e)}`);
@@ -581,6 +596,19 @@ export class LibraryView extends ItemView {
     } finally {
       this.codexUsageLoading = false;
       this.render();
+    }
+  }
+
+  /** Folds a fresh scan's per-day sessions into the saved heatmap history. A failed save only
+   *  costs history older than the tool's own transcript retention, so it's logged, not surfaced. */
+  private async saveUsageHistory(tool: string, days: Map<string, DayCounts>) {
+    const settings = this.getSettings();
+    settings.usageHistory ??= {};
+    if (!mergeUsageHistory(settings.usageHistory, tool, days)) return;
+    try {
+      await this.saveSettings();
+    } catch (e) {
+      console.error("AI Skills Manager: failed to save usage history", e);
     }
   }
 
@@ -949,8 +977,41 @@ export class LibraryView extends ItemView {
       case "modified-asc":
         sorted.sort((a, b) => this.itemModifiedMs(a) - this.itemModifiedMs(b));
         break;
+      case "usage-desc":
+      case "last-used-desc": {
+        // Items with no usage signal at all (other tools, commands, rules) sink below everything
+        // that has one, then fall back to name order among themselves.
+        const recency = this.sortOrder === "last-used-desc";
+        const score = (item: ItemMetadata) => {
+          const stats = this.usageStatsFor(item);
+          if (!stats) return -1;
+          return recency ? Math.max(stats.lastUsedMs, this.lastHistoryDayMs(item)) : stats.count;
+        };
+        const scores = new Map(sorted.map((item) => [item.entryId, score(item)]));
+        sorted.sort((a, b) => (scores.get(b.entryId) ?? -1) - (scores.get(a.entryId) ?? -1) || a.name.localeCompare(b.name));
+        break;
+      }
     }
     return sorted;
+  }
+
+  /** Usage for a Claude Code or Codex skill/agent, or null when the item has no usage signal
+   *  (or it's still loading). Kicks off the transcript scan the first time it's needed. */
+  private usageStatsFor(item: ItemMetadata): ClaudeUsageStats | null {
+    if (item.type !== "skill" && item.type !== "agent") return null;
+    if (item.tool === "claude-code") return this.getClaudeUsage()?.get(item.entryId) ?? null;
+    if (item.tool === "codex") return this.getCodexUsage()?.get(item.entryId) ?? null;
+    return null;
+  }
+
+  /** Latest day in the saved heatmap history, so "Recently used" still knows about use whose
+   *  transcript the tool has since deleted. */
+  private lastHistoryDayMs(item: ItemMetadata): number {
+    const key = this.usageHistoryKey(item);
+    const days = key ? Object.keys(this.getSettings().usageHistory?.[key] ?? {}) : [];
+    if (days.length === 0) return 0;
+    const [y, m, d] = days.sort()[days.length - 1].split("-").map(Number);
+    return new Date(y, m - 1, d).getTime();
   }
 
   private itemModifiedMs(item: ItemMetadata): number {
@@ -4453,9 +4514,45 @@ export class LibraryView extends ItemView {
       const metrics = this.getDashboardMetrics();
       const { usagePrune, mtimePrune } = this.getDashboardPruneSplit(metrics, false);
       const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
-      this.dashboardAttentionCount = usagePrune.length + mtimePrune.length + overlapPairs.length + this.brokenSymlinks.length;
+      this.dashboardAttentionCount =
+        usagePrune.length + mtimePrune.length + overlapPairs.length + this.brokenSymlinks.length + this.getIntegrityRows().length;
     }
     return this.dashboardAttentionCount;
+  }
+
+  private getIntegrityIssues(): Map<string, string[]> {
+    if (!this.integrityIssues) {
+      const issuesById = new Map<string, string[]>();
+      for (const item of this.items) {
+        if (!item.enabled) continue;
+        let raw: string;
+        try {
+          raw = readFileSync(item.sourcePath, "utf-8");
+        } catch {
+          continue;
+        }
+        const issues = checkIntegrity(item, raw, parseYaml);
+        if (issues.length > 0) issuesById.set(item.entryId, issues);
+      }
+      this.integrityIssues = issuesById;
+    }
+    return this.integrityIssues;
+  }
+
+  /** Includes the issue text, so disregarding an item's current problems doesn't also hide a
+   *  different problem that shows up in it later. */
+  private integrityDisregardKey(item: ItemMetadata, issues: string[]): string {
+    return `integrity:${item.entryId}:${issues.join("|")}`;
+  }
+
+  private getIntegrityRows(): { item: ItemMetadata; issues: string[] }[] {
+    const issuesById = this.getIntegrityIssues();
+    const disregarded = this.getSettings().dashboardDisregarded;
+    return this.items
+      .filter((item) => issuesById.has(item.entryId))
+      .map((item) => ({ item, issues: issuesById.get(item.entryId) as string[] }))
+      .filter(({ item, issues }) => !disregarded[this.integrityDisregardKey(item, issues)])
+      .sort((a, b) => a.item.name.localeCompare(b.item.name));
   }
 
   /** The Prune candidates section's actual split — Claude Code skills/agents by real invocation
@@ -4569,6 +4666,8 @@ export class LibraryView extends ItemView {
     this.renderDashboardStat(headerStats, "Prune", String(pruneCount), pruneCount ? "skillmanager-dash-stat-danger" : "");
     this.renderDashboardStat(headerStats, "Overlaps", String(overlapPairs.length), overlapPairs.length ? "skillmanager-dash-stat-accent" : "");
     this.renderDashboardStat(headerStats, "Broken links", String(this.brokenSymlinks.length), this.brokenSymlinks.length ? "skillmanager-dash-stat-danger" : "");
+    const integrityRows = this.getIntegrityRows();
+    this.renderDashboardStat(headerStats, "Issues", String(integrityRows.length), integrityRows.length ? "skillmanager-dash-stat-danger" : "");
     header.createDiv({ cls: "skillmanager-dash-divider" });
 
     const body = content.createDiv({ cls: "skillmanager-body skillmanager-dash-body" });
@@ -4596,6 +4695,7 @@ export class LibraryView extends ItemView {
       this.renderDashboardTopUsed(body, topUsed, !usage, isClaude ? "Claude Code" : "Codex");
     }
     this.renderDashboardBrokenSymlinks(body, this.brokenSymlinks);
+    this.renderDashboardIntegrity(body, integrityRows);
     const columns = body.createDiv({ cls: "skillmanager-dash-columns" });
     this.renderDashboardPruneCandidates(columns, usagePrune, mtimePrune);
     this.renderDashboardOverlaps(columns, overlapPairs, metrics.map((m) => m.item));
@@ -4857,6 +4957,50 @@ export class LibraryView extends ItemView {
     }
   }
 
+  /** Items whose manifest would make the tool skip them or never pick them up (see
+   *  integrity.ts). "Open" lands on the manifest itself, where the same issues are listed and
+   *  Edit is one click away; a plugin or built-in item says who to fix it upstream instead. */
+  private renderDashboardIntegrity(body: HTMLElement, rows: { item: ItemMetadata; issues: string[] }[]) {
+    const section = body.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-ranked skillmanager-dash-flat-section" });
+    this.renderDashboardSectionHead(section, "Integrity issues");
+    section.createDiv({
+      text: "These items have problems that can make a tool skip them or never pick them up. Open one to see and fix its file.",
+      cls: "skillmanager-subtitle",
+    });
+    const list = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
+    if (rows.length === 0) {
+      list.createDiv({ text: "No integrity issues found.", cls: "skillmanager-empty" });
+      return;
+    }
+    const shown = this.dashboardIntegrityExpanded ? rows : rows.slice(0, DASHBOARD_RANKED_COLLAPSED_COUNT);
+    for (const { item, issues } of shown) {
+      const row = list.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-integrity-row" });
+      row.addEventListener("click", () => this.openItemFromDashboard(item, true));
+      const identity = row.createDiv({ cls: "skillmanager-dash-integrity-identity" });
+      identity.createDiv({ text: item.name, cls: "skillmanager-dash-row-name" });
+      const managed = this.managedBy(item);
+      identity.createDiv({
+        text: `${this.toolLabel(item).text} · ${TYPE_LABEL_SINGULAR[item.type]}${managed.label === "You" ? "" : ` · ${managed.label}`}`,
+        cls: "skillmanager-dash-row-meta",
+      });
+      const issueList = row.createDiv({ cls: "skillmanager-detail-issues" });
+      for (const issue of issues) issueList.createDiv({ text: issue });
+      this.renderDashboardDisregardableActions(row, this.integrityDisregardKey(item, issues), "Open", () =>
+        this.openItemFromDashboard(item, true)
+      );
+    }
+    if (rows.length > DASHBOARD_RANKED_COLLAPSED_COUNT) {
+      const toggleBtn = section.createEl("button", {
+        text: this.dashboardIntegrityExpanded ? "Show fewer" : `Show all (${rows.length})`,
+        cls: "skillmanager-dash-toggle",
+      });
+      toggleBtn.addEventListener("click", () => {
+        this.dashboardIntegrityExpanded = !this.dashboardIntegrityExpanded;
+        this.render();
+      });
+    }
+  }
+
   private disabledSourceForBrokenLink(link: BrokenSymlink): ItemMetadata | null {
     // The target may be a folder or a flat file; accept either disabled location.
     const candidates = new Set([disabledLocation(link.targetPath, true), disabledLocation(link.targetPath, false)]);
@@ -4906,7 +5050,7 @@ export class LibraryView extends ItemView {
   /** Opens an item's file preview from anywhere in the Dashboard (a Ranked card, a Prune
    *  candidate row, the overlap modal's name), marking that the eventual "Back" should land on
    *  the Dashboard again rather than the plain Library. */
-  private openItemFromDashboard(item: ItemMetadata) {
+  private openItemFromDashboard(item: ItemMetadata, openManifest = false) {
     this.detailReturnsToDashboard = true;
     this.dashboardMode = false;
     // clearScopeFilters ran when Dashboard was entered, but it only resets the "scope" group
@@ -4927,7 +5071,7 @@ export class LibraryView extends ItemView {
     // scrolling the newly selected card into view, leaving it selected but off-screen. Forcing
     // false here always takes the "just became docked" branch, which does scroll it into view.
     this.wasDocked = false;
-    this.selectItem(item);
+    this.selectItem(item, openManifest);
   }
 
   /** Shared "Disregard" + one primary action button pair, used by every dismissible Dashboard
@@ -5232,7 +5376,8 @@ export class LibraryView extends ItemView {
     return countFiles(tree) > 1 ? tree : null;
   }
 
-  private selectItem(item: ItemMetadata) {
+  /** `openManifest` skips a multi-file item's file tree and opens its manifest directly. */
+  private selectItem(item: ItemMetadata, openManifest = false) {
     const hasTree = !!this.treeForItem(item);
     this.cleanupReview();
     this.selectedItem = item;
@@ -5240,7 +5385,7 @@ export class LibraryView extends ItemView {
     this.addingTagFor = null;
     this.moreFieldsExpanded = false;
     this.collapsedTreeFolders = new Set();
-    this.selectedFilePath = hasTree ? null : item.sourcePath;
+    this.selectedFilePath = hasTree && !openManifest ? null : item.sourcePath;
     this.pendingDetailAnimation = "forward";
     this.render();
   }
@@ -5294,6 +5439,7 @@ export class LibraryView extends ItemView {
     this.renderIdentityBand(panel, item, filePath);
 
     const review = this.review?.entryId === item.entryId ? this.review : null;
+    if (!review && (!filePath || filePath === item.sourcePath)) this.renderUsageHeatmap(panel, item);
     if (review?.status === "ready") {
       this.renderDiffReview(panel, review);
     } else if (tree && !this.selectedFilePath) {
@@ -5396,13 +5542,23 @@ export class LibraryView extends ItemView {
         pathBlock.createDiv({ text: `→ symlinked from ${item.realPath}`, cls: "skillmanager-detail-path-target" });
       }
 
+      const issues = isManifest ? checkIntegrity(item, this.detailContent, parseYaml) : [];
+      if (issues.length > 0) {
+        const list = left.createDiv({ cls: "skillmanager-detail-issues" });
+        for (const issue of issues) {
+          const row = list.createDiv({ cls: "skillmanager-detail-issue" });
+          setIcon(row.createSpan({ cls: "skillmanager-detail-issue-icon" }), "alert-triangle");
+          row.createSpan({ text: issue });
+        }
+      }
+
       if (!this.detailEditing) {
         const moreFields = fields.filter((f) => f.key !== "description");
         if (moreFields.length > 0) this.renderMoreFields(left, moreFields);
       }
 
       const right = band.createDiv({ cls: "skillmanager-detail-band-right" });
-      this.renderFileStats(right, item, filePath);
+      this.renderFileStats(right, item, filePath, issues);
       if (item.sourceRepo) this.renderSourceStatus(right, item);
     } else if (item.sourceRepo) {
       this.renderSourceStatusInline(panel, item);
@@ -5421,7 +5577,7 @@ export class LibraryView extends ItemView {
     });
   }
 
-  private renderFileStats(container: HTMLElement, item: ItemMetadata, filePath: string) {
+  private renderFileStats(container: HTMLElement, item: ItemMetadata, filePath: string, issues: string[]) {
     let fileSize = 0;
     let modified = Date.now();
     try {
@@ -5432,7 +5588,7 @@ export class LibraryView extends ItemView {
       // file may have moved since the last scan; stats just show defaults
     }
     const stats = container.createDiv({ cls: "skillmanager-detail-stats" });
-    const row = (label: string, value: string, tooltip?: string) => {
+    const row = (label: string, value: string, tooltip?: string, valueCls = "") => {
       const r = stats.createDiv({ cls: "skillmanager-detail-stat-row" });
       const labelEl = r.createSpan({ cls: "skillmanager-detail-stat-label" });
       labelEl.createSpan({ text: label });
@@ -5443,7 +5599,7 @@ export class LibraryView extends ItemView {
         setIcon(infoIcon, "info");
         setTooltip(labelEl, tooltip, { placement: "top" });
       }
-      r.createSpan({ text: value, cls: "skillmanager-detail-stat-value" });
+      r.createSpan({ text: value, cls: `skillmanager-detail-stat-value${valueCls ? ` ${valueCls}` : ""}` });
     };
     row("Size", formatBytes(fileSize));
     row("Length", `${this.detailContent.length.toLocaleString()} chars`);
@@ -5458,6 +5614,122 @@ export class LibraryView extends ItemView {
     }
     row("Modified", formatDate(modified));
     row("Type", TYPE_LABEL_SINGULAR[item.type]);
+    if (filePath !== item.sourcePath) return;
+
+    const fields = parseFrontmatter(this.detailContent);
+    const field = (key: string) => fields.find((f) => f.key === key)?.value.trim() ?? "";
+    const version = field("version") || (item.pluginId ? this.discoveredPlugins.find((p) => p.id === item.pluginId)?.version : "");
+    if (version) row("Version", version);
+    if (item.type === "skill") {
+      const manualOnly = field("disable-model-invocation") === "true";
+      row(
+        "Invocation",
+        manualOnly ? "Manual only" : "Auto",
+        manualOnly ? "Runs only when you call it by name." : "The model can pick this up on its own when the description matches."
+      );
+    }
+    const managed = this.managedBy(item);
+    row("Managed by", managed.label, managed.tooltip);
+    row(
+      "Integrity",
+      issues.length === 0 ? "OK" : `${issues.length} issue${issues.length === 1 ? "" : "s"}`,
+      "Checks frontmatter, name, description, symlink and links to bundled files. Rechecked every time this opens.",
+      issues.length === 0 ? "" : "skillmanager-detail-stat-warn"
+    );
+  }
+
+  /** Who owns this item's files and how it gets updated: a plugin or the tool itself (both
+   *  replace local edits on their own schedule), a tracked GitHub install (updated only through
+   *  this plugin's own review flow), or the user alone. */
+  private managedBy(item: ItemMetadata): { label: string; tooltip: string } {
+    const settings = this.getSettings();
+    const toolName = settings.tools.find((t) => t.id === item.tool)?.name ?? item.tool;
+    if (item.pluginId) {
+      const pluginName = this.discoveredPlugins.find((p) => p.id === item.pluginId)?.name ?? item.pluginId;
+      return {
+        label: "Plugin",
+        tooltip: `Installed by the ${pluginName} plugin. ${toolName} updates it with the plugin, and edits made here are replaced when that happens.`,
+      };
+    }
+    if (isBuiltInPath(item.sourcePath, settings.tools.find((t) => t.id === item.tool))) {
+      return { label: "Built-in", tooltip: `Ships with ${toolName}, which updates it. Edits made here may be replaced when it does.` };
+    }
+    if (item.sourceRepo) {
+      const parsed = parseOwnerRepo(item.sourceRepo);
+      const repo = parsed ? `${parsed.owner}/${parsed.repo}` : item.sourceRepo;
+      const minutes = settings.autoUpdateCheckMinutes;
+      const checking = minutes > 0
+        ? `New commits are checked for every ${minutes} minutes, but never applied on their own.`
+        : "New commits aren't pulled automatically.";
+      return {
+        label: "GitHub",
+        tooltip: `Installed from ${repo}. ${checking} Use Check for updates to pull them; you review the changes before anything is replaced.`,
+      };
+    }
+    return { label: "You", tooltip: "Added by you, with no tracked source. Nothing updates it, so edits here are safe." };
+  }
+
+  /** Only Claude Code and Codex write session logs this plugin can read, and only skills and
+   *  agents show up in them as discrete invocations (see claude-usage.ts). */
+  private usageHistoryKey(item: ItemMetadata): string | null {
+    if (item.type !== "skill" && item.type !== "agent") return null;
+    if (item.tool === "claude-code") return historyKey(item.tool, usageKey(item.type, invocationName(item)));
+    if (item.tool === "codex") return historyKey(item.tool, usageKey(item.type, item.name));
+    return null;
+  }
+
+  /** Sessions per day over the last HEATMAP_WEEKS weeks, read from the saved history (see
+   *  usage-history.ts) once this tool's transcripts have been scanned and merged into it. */
+  private renderUsageHeatmap(panel: HTMLElement, item: ItemMetadata) {
+    const key = this.usageHistoryKey(item);
+    if (!key) return;
+    const section = panel.createDiv({ cls: "skillmanager-heatmap" });
+    const usage = item.tool === "codex" ? this.getCodexUsage() : this.getClaudeUsage();
+    const summary = section.createDiv({ cls: "skillmanager-heatmap-summary" });
+    if (!usage) {
+      summary.setText("Reading usage history…");
+      return;
+    }
+
+    const { columns, total } = buildHeatmap(this.getSettings().usageHistory?.[key] ?? {});
+    summary.createSpan({ text: `${total} session${total === 1 ? "" : "s"} in the last ${HEATMAP_WEEKS} weeks` });
+    if (item.tool === "codex") {
+      const info = summary.createSpan({ cls: "skillmanager-detail-stat-info" });
+      setIcon(info, "info");
+      setTooltip(info, "Codex doesn't log skill calls by name, so these are matched from file paths in its sessions and may be approximate.", { placement: "top" });
+    }
+
+    const max = Math.max(0, ...columns.flat().map((c) => c.count));
+    const grid = section.createDiv({ cls: "skillmanager-heatmap-grid" });
+    grid.createDiv({ cls: "skillmanager-heatmap-corner" });
+    let lastMonth = -1;
+    for (const column of columns) {
+      const month = new Date(column[0].ms).getMonth();
+      const label = grid.createDiv({ cls: "skillmanager-heatmap-month" });
+      if (month !== lastMonth) {
+        label.setText(new Date(column[0].ms).toLocaleDateString(undefined, { month: "short" }));
+        lastMonth = month;
+      }
+    }
+    const weekdays = ["Mon", "", "Wed", "", "Fri", "", ""];
+    for (let d = 0; d < 7; d++) {
+      grid.createDiv({ cls: "skillmanager-heatmap-weekday", text: weekdays[d] });
+      for (const column of columns) {
+        const cell = column[d];
+        const el = grid.createDiv({
+          cls: `skillmanager-heatmap-cell${cell.future ? " is-future" : ` is-level-${heatLevel(cell.count, max)}`}`,
+        });
+        if (!cell.future) {
+          const date = new Date(cell.ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+          el.setAttr("aria-label", `${cell.count} session${cell.count === 1 ? "" : "s"} on ${date}`);
+        }
+      }
+    }
+
+    const legend = section.createDiv({ cls: "skillmanager-heatmap-legend" });
+    legend.createSpan({ text: "Less" });
+    for (let level = 0; level <= 4; level++) legend.createDiv({ cls: `skillmanager-heatmap-cell is-level-${level}` });
+    legend.createSpan({ text: "More" });
   }
 
   /** Only shown for an item installed through the "Install from GitHub" flow (see
@@ -5938,6 +6210,8 @@ export class LibraryView extends ItemView {
               this.selectedItem = updated;
             }
             this.detailEditing = false;
+            this.integrityIssues = null;
+            this.dashboardAttentionCount = null;
             new Notice("Saved.");
             this.render();
           } catch (e) {

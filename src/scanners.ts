@@ -480,15 +480,16 @@ function readPluginEnabledMap(settingsPath: string | undefined): Record<string, 
  *  real installs here), so a miss is the common case, not an error — an install-from-URL escape
  *  hatch (see LibraryView's explainPluginToggle) is a bonus when it's there, never assumed. Only
  *  a github.com URL is any use to us, since InstallFromGitHubModal only understands that host. */
-function readPluginManifest(installPath: string): { name?: string; repository?: string } {
+function readPluginManifest(installPath: string): { name?: string; repository?: string; version?: string } {
   for (const folder of [".claude-plugin", ".codex-plugin"]) {
     const manifestPath = join(installPath, folder, "plugin.json");
     if (!existsSync(manifestPath)) continue;
     try {
-      const raw = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: unknown; repository?: unknown };
+      const raw = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: unknown; repository?: unknown; version?: unknown };
       return {
         name: typeof raw.name === "string" ? raw.name : undefined,
         repository: typeof raw.repository === "string" ? raw.repository : undefined,
+        version: typeof raw.version === "string" ? raw.version : undefined,
       };
     } catch {
       return {};
@@ -506,7 +507,7 @@ function readInstalledPlugins(registryPath: string, toolId: string, pluginsSetti
   if (!existsSync(registryPath)) return [];
   try {
     const raw = JSON.parse(readFileSync(registryPath, "utf-8")) as {
-      plugins?: Record<string, { installPath?: string }[]>;
+      plugins?: Record<string, { installPath?: string; version?: string }[]>;
     };
     const enabledMap = readPluginEnabledMap(pluginsSettingsPath ? expandHome(pluginsSettingsPath) : undefined);
     const plugins: PluginSource[] = [];
@@ -521,6 +522,7 @@ function readInstalledPlugins(registryPath: string, toolId: string, pluginsSetti
           toolId,
           enabled: enabledMap[key] ?? true,
           repoUrl: readPluginRepoUrl(installPath),
+          version: readPluginManifest(installPath).version ?? installs[0].version,
         });
       }
     }
@@ -612,6 +614,7 @@ function readCachedPlugins(cachePaths: string[], toolId: string, states: Map<str
             toolId,
             enabled: states ? states.get(`${pluginName}@${marketplace}`) === true : true,
             repoUrl: readPluginRepoUrl(installPath),
+            version: manifest.version ?? version,
           });
         }
       }

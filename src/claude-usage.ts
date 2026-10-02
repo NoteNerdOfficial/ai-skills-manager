@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync, type Stats } from "fs";
 import { join } from "path";
 import { ItemMetadata } from "./types";
+import { DayCounts, recordSessionDay } from "./usage-history";
 
 export interface ClaudeUsageStats {
   /** 0 = never invoked. */
@@ -80,8 +81,16 @@ export function listTranscriptFiles(projectsDir: string): string[] {
  *  `sinceMs` (default 0, i.e. no cutoff) gates `count` only — an invocation older than the cutoff
  *  is skipped for counting purposes but still updates `lastUsedMs`, so a windowed count (for
  *  ranking "recently used") never makes an old-but-real invocation look like it never happened
- *  (staleness checks need the true last-used date, not a windowed one). */
-export function scanTranscriptFile(filePath: string, into: Map<string, ClaudeUsageStats>, sinceMs = 0): void {
+ *  (staleness checks need the true last-used date, not a windowed one).
+ *
+ *  `daysInto`, when given, also collects per-day session counts for the activity heatmap (see
+ *  usage-history.ts). One transcript file is one session. */
+export function scanTranscriptFile(
+  filePath: string,
+  into: Map<string, ClaudeUsageStats>,
+  sinceMs = 0,
+  daysInto?: Map<string, DayCounts>
+): void {
   let stats: Stats;
   try {
     stats = statSync(filePath);
@@ -97,6 +106,7 @@ export function scanTranscriptFile(filePath: string, into: Map<string, ClaudeUsa
     return;
   }
 
+  const seenDays = new Set<string>();
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     let entry: Record<string, unknown>;
@@ -132,6 +142,7 @@ export function scanTranscriptFile(filePath: string, into: Map<string, ClaudeUsa
       if (ts >= sinceMs) existing.count += 1;
       if (ts > existing.lastUsedMs) existing.lastUsedMs = ts;
       into.set(key, existing);
+      if (daysInto) recordSessionDay(daysInto, seenDays, key, ts);
     }
   }
 }
@@ -150,7 +161,7 @@ export function scanTranscriptFile(filePath: string, into: Map<string, ClaudeUsa
  *  whose pluginId is "mattpocock-skills@claude-plugins-official". pluginId itself is
  *  "<plugin-name>@<marketplace>" (see scanAllPlugins/readInstalledPlugins), so only the part
  *  before "@" is the namespace Claude Code actually uses. */
-function invocationName(item: ItemMetadata): string {
+export function invocationName(item: ItemMetadata): string {
   return item.pluginId ? `${item.pluginId.split("@")[0]}:${item.name}` : item.name;
 }
 

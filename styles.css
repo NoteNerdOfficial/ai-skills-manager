@@ -1771,6 +1771,125 @@ input.skillmanager-tag-add-input {
   color: var(--text-muted);
 }
 
+.skillmanager-detail-stat-value.skillmanager-detail-stat-warn {
+  color: var(--text-warning);
+}
+
+/* Integrity issues, listed under the path in the band's left column. */
+.skillmanager-detail-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-warning);
+}
+
+.skillmanager-detail-issue {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.skillmanager-detail-issue-icon {
+  display: inline-flex;
+  padding-top: 2px;
+}
+
+.skillmanager-detail-issue-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* ---- usage heatmap: weeks as columns, Mon to Sun as rows ---- */
+
+.skillmanager-heatmap {
+  margin: 4px 0 16px;
+  max-width: 640px;
+}
+
+.skillmanager-heatmap-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.skillmanager-heatmap-grid {
+  display: grid;
+  grid-template-columns: 28px repeat(26, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.skillmanager-heatmap-corner,
+.skillmanager-heatmap-month,
+.skillmanager-heatmap-weekday {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.skillmanager-heatmap-month {
+  overflow: visible;
+  padding-bottom: 2px;
+}
+
+.skillmanager-heatmap-weekday {
+  display: flex;
+  align-items: center;
+}
+
+.skillmanager-heatmap-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+}
+
+.skillmanager-heatmap-cell.is-future {
+  background: transparent;
+}
+
+.skillmanager-heatmap-cell.is-level-1 {
+  background: color-mix(in srgb, var(--interactive-accent) 30%, var(--background-modifier-border));
+}
+
+.skillmanager-heatmap-cell.is-level-2 {
+  background: color-mix(in srgb, var(--interactive-accent) 55%, var(--background-modifier-border));
+}
+
+.skillmanager-heatmap-cell.is-level-3 {
+  background: color-mix(in srgb, var(--interactive-accent) 78%, var(--background-modifier-border));
+}
+
+.skillmanager-heatmap-cell.is-level-4 {
+  background: var(--interactive-accent);
+}
+
+.skillmanager-heatmap-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  margin-top: 6px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.skillmanager-heatmap-legend .skillmanager-heatmap-cell {
+  width: 10px;
+}
+
+.skillmanager-heatmap-legend span:first-child {
+  margin-right: 3px;
+}
+
+.skillmanager-heatmap-legend span:last-child {
+  margin-left: 3px;
+}
+
 /* Right-column variant: sits below the stats rows in the two-column band, once a file is open. */
 .skillmanager-detail-source {
   padding-top: 10px;
@@ -2880,6 +2999,21 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-broken-identity {
   flex: 0 1 220px;
   min-width: 170px;
+}
+
+.skillmanager-dash-integrity-row {
+  align-items: center;
+}
+
+.skillmanager-dash-integrity-identity {
+  flex: 0 1 220px;
+  min-width: 170px;
+}
+
+.skillmanager-dash-integrity-row .skillmanager-detail-issues {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
 }
 
 .skillmanager-dash-broken-paths {

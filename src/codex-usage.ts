@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 import { ItemMetadata } from "./types";
 import { ClaudeUsageStats, usageKey } from "./claude-usage";
+import { DayCounts, recordSessionDay } from "./usage-history";
 
 /** Codex CLI's on-disk session history. The layout is sessions/YYYY/MM/DD/*.jsonl. */
 export const CODEX_SESSIONS_DIR = "~/.codex/sessions";
@@ -46,7 +47,8 @@ export function scanCodexSessionFile(
   filePath: string,
   items: ItemMetadata[],
   into: Map<string, ClaudeUsageStats>,
-  sinceMs = 0
+  sinceMs = 0,
+  daysInto?: Map<string, DayCounts>
 ): void {
   let raw: string;
   try {
@@ -55,6 +57,7 @@ export function scanCodexSessionFile(
     return;
   }
 
+  const seenDays = new Set<string>();
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     let entry: Record<string, unknown>;
@@ -79,6 +82,7 @@ export function scanCodexSessionFile(
       if (ts >= sinceMs) existing.count += 1;
       if (ts > existing.lastUsedMs) existing.lastUsedMs = ts;
       into.set(key, existing);
+      if (daysInto) recordSessionDay(daysInto, seenDays, key, ts);
     }
   }
 }
