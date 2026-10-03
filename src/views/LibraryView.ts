@@ -1,4 +1,4 @@
-import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, displayTooltip, parseYaml, setIcon, setTooltip } from "obsidian";
+import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, parseYaml, setIcon, setTooltip } from "obsidian";
 import { execFile, execFileSync } from "child_process";
 import { cpSync, existsSync, lstatSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, relative, sep } from "path";
@@ -5290,12 +5290,13 @@ export class LibraryView extends ItemView {
     return body;
   }
 
-  /** Hover tooltip plus the same text on click, so an info icon always answers when poked. */
-  private attachInfoTooltip(el: HTMLElement, tooltip: string) {
+  /** Hover tooltip, plus the same text in an info modal on click, so an info icon always
+   *  answers when poked (displayTooltip would do this inline, but needs Obsidian 1.8.7). */
+  private attachInfoTooltip(el: HTMLElement, title: string, tooltip: string) {
     setTooltip(el, tooltip, { placement: "top" });
     el.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      displayTooltip(el, tooltip, { placement: "top" });
+      new InfoModal(this.app, title, tooltip).open();
     });
   }
 
@@ -5306,7 +5307,7 @@ export class LibraryView extends ItemView {
     if (tooltip) {
       const infoIcon = labelEl.createSpan({ cls: "skillmanager-dash-stat-info" });
       setIcon(infoIcon, "info");
-      this.attachInfoTooltip(labelEl, tooltip);
+      this.attachInfoTooltip(labelEl, label, tooltip);
     }
     stat.createDiv({ text: value, cls: `skillmanager-dash-stat-value ${accentCls}`.trim() });
   }
@@ -6247,7 +6248,7 @@ export class LibraryView extends ItemView {
       // The label itself is the hover target so the icon reads as a cue, not decoration.
       if (tooltip) {
         setIcon(labelEl.createSpan({ cls: "skillmanager-detail-info" }), "info");
-        this.attachInfoTooltip(labelEl, tooltip);
+        this.attachInfoTooltip(labelEl, label, tooltip);
       }
     };
 

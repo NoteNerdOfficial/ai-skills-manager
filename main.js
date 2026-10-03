@@ -8622,12 +8622,13 @@ var LibraryView = class extends import_obsidian14.ItemView {
     );
     return body;
   }
-  /** Hover tooltip plus the same text on click, so an info icon always answers when poked. */
-  attachInfoTooltip(el, tooltip) {
+  /** Hover tooltip, plus the same text in an info modal on click, so an info icon always
+   *  answers when poked (displayTooltip would do this inline, but needs Obsidian 1.8.7). */
+  attachInfoTooltip(el, title, tooltip) {
     (0, import_obsidian14.setTooltip)(el, tooltip, { placement: "top" });
     el.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      (0, import_obsidian14.displayTooltip)(el, tooltip, { placement: "top" });
+      new InfoModal(this.app, title, tooltip).open();
     });
   }
   renderDashboardStat(parent, label, value, accentCls = "", tooltip) {
@@ -8637,7 +8638,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     if (tooltip) {
       const infoIcon = labelEl.createSpan({ cls: "skillmanager-dash-stat-info" });
       (0, import_obsidian14.setIcon)(infoIcon, "info");
-      this.attachInfoTooltip(labelEl, tooltip);
+      this.attachInfoTooltip(labelEl, label, tooltip);
     }
     stat.createDiv({ text: value, cls: `skillmanager-dash-stat-value ${accentCls}`.trim() });
   }
@@ -9496,7 +9497,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       labelEl.createSpan({ text: label });
       if (tooltip) {
         (0, import_obsidian14.setIcon)(labelEl.createSpan({ cls: "skillmanager-detail-info" }), "info");
-        this.attachInfoTooltip(labelEl, tooltip);
+        this.attachInfoTooltip(labelEl, label, tooltip);
       }
     };
     if (isManifest && (item.type === "skill" || item.type === "agent")) {
