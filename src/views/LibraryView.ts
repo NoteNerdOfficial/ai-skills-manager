@@ -5760,11 +5760,9 @@ export class LibraryView extends ItemView {
       const pair = panel.createDiv({ cls: "skillmanager-insight-pair" });
       for (const side of row.pair) {
         const col = pair.createDiv({ cls: "skillmanager-insight-side" });
-        const name = col.createEl("a", { text: side.name, cls: "skillmanager-insight-side-name" });
-        name.addEventListener("click", (evt) => {
-          evt.preventDefault();
-          this.openItemFromDashboard(side);
-        });
+        // Open is the button below; the name also opens it for anyone who clicks it by habit.
+        const name = col.createDiv({ text: side.name, cls: "skillmanager-insight-side-name" });
+        name.addEventListener("click", () => this.openItemFromDashboard(side));
         col.createDiv({ text: `${this.toolLabel(side).text} · ${TYPE_LABEL_SINGULAR[side.type]}`, cls: "skillmanager-insight-label" });
         if (this.isSymlinkedItem(side)) {
           const linked = col.createDiv({ cls: "skillmanager-insight-value is-path skillmanager-insight-side-path" });
@@ -5775,6 +5773,8 @@ export class LibraryView extends ItemView {
         const sideActions = col.createDiv({ cls: "skillmanager-insight-actions" });
         const disable = sideActions.createEl("button", { text: "Disable", cls: "mod-warning" });
         disable.addEventListener("click", () => this.confirmToggle(side, () => this.disableFromDashboard(side)));
+        const open = sideActions.createEl("button", { text: "Open", cls: "skillmanager-insight-text-btn" });
+        open.addEventListener("click", () => this.openItemFromDashboard(side));
         const del = sideActions.createEl("button", { text: "Delete", cls: "skillmanager-insight-text-btn" });
         del.addEventListener("click", () => this.confirmDelete(side));
       }

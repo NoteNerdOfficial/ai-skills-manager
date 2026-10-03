@@ -3145,16 +3145,14 @@ input.skillmanager-tag-add-input {
 }
 
 .skillmanager-insight-side-name {
-  display: block;
+  width: fit-content;
   color: var(--text-normal);
   font-size: var(--font-ui-small);
   font-weight: 500;
-  text-decoration: none;
   cursor: pointer;
 }
 
 .skillmanager-insight-side-name:hover {
-  color: var(--text-accent);
   text-decoration: underline;
 }
 
