@@ -1,6 +1,6 @@
 # AI Skills Manager
 
-Browse, tag, and organize AI skills, agents, commands, and rules from inside Obsidian, across every coding tool you use: Claude Code, Cursor, Codex, Gemini CLI, and more.
+Browse, tag, and organize AI skills, agents, commands, rules, and agent memories from inside Obsidian, across every coding tool you use: Claude Code, Cursor, Codex, Gemini CLI, and more.
 
 If you've written a good skill for one tool and then can't find it again, or you keep hand-copying the same prompt into every project and every agent, this plugin turns your scattered `~/.claude/skills`, `~/.cursor/rules`, `.github/prompts`, and similar folders into one searchable, taggable library, without moving your files out of the places those tools actually read from.
 
@@ -34,10 +34,18 @@ Organize items with your own tags, star favorites, and group related skills/agen
 **Vault-native metadata**
 Per-item metadata (tags, favorites, collection membership) is stored as plain frontmatter in small markdown notes inside your vault, not hidden in a JSON blob. That means it syncs via whatever you already use to sync your vault, and it's queryable from Dataview or Bases like any other note.
 
-**Usage history and health for every item**
-Opening a Claude Code or Codex skill or agent shows a 26-week heatmap of the sessions that used it. The plugin keeps its own daily history, so it outlasts the tools' own transcript cleanup. The detail panel also shows the item's version, whether it runs automatically or only when called, who manages it (you, a GitHub source, a plugin, or the tool itself) and what that means for edits and updates, and an integrity check. Integrity flags problems that make a tool skip an item or never pick it up: broken or missing frontmatter, a name that doesn't match its folder, a missing or overlong description, a broken symlink, or a link to a bundled file that isn't there.
+**A detail panel that answers the important questions first**
+Opening an item shows its name and type, the tool (and plugin) it belongs to, and its description. Below that, a row of key numbers: estimated tokens while it's available, tokens loaded when it's invoked, sessions over the last 26 weeks, and when it was last used. Weekly usage bars appear once there's any use to chart. The plugin keeps its own daily usage history for Claude Code and Codex, so it outlasts the tools' own transcript cleanup.
+
+Everything else sits in one properties panel: tags, whether it runs automatically or only when called, who manages it (you, a GitHub source, a plugin, or the tool itself) and what that means for edits and updates, version, any other frontmatter fields, file size, path, and where it's symlinked from. For items installed from GitHub, the panel ends with the source repo and its **Check for updates** and **Restore installed** buttons.
+
+**Integrity checks**
+Problems that make a tool skip an item or never pick it up are flagged on the item and collected on the Dashboard: broken or missing frontmatter, a name that doesn't match its folder, a missing or overlong description, a broken symlink, a link to a bundled file that isn't there, or a memory its index never points to.
 
 ![Detail panel previewing a skill's full rendered content alongside its metadata](images/item-preview.png)
+
+**Agent memories**
+Memory files an agent writes for itself are listed under **Memories & Rules**, next to your rules. Claude Code's auto-memory (`~/.claude/projects/<project>/memory/`) is picked up by default and matched to your project workspaces. Disabling a memory also removes its line from the folder's `MEMORY.md` index, and re-enabling puts the exact line back, so the agent really stops (or starts) loading it. Other tools' memory folders, global or inside each project, can be set per tool.
 
 **Link a global skill into a project**
 Add a global skill to a project workspace and it's symlinked into that project's local tool folder, never copied, so it can't drift out of sync with the source. Remove it and only the link goes away; the original is untouched.
@@ -93,7 +101,7 @@ A file-tree preview with per-file size and estimated token count for multi-file 
 | Continue | | | ✓ | ✓ |
 | Shared (`~/.agents/skills`) | ✓ | | | |
 
-Rules is a mix of directories of many rule files (e.g. Cursor's `.cursor/rules/`) and single instructions files that are scanned and toggled as one item (e.g. Claude Code's `CLAUDE.md`, Codex's `AGENTS.md`, Pi's `AGENTS.md`). Codex's `AGENTS.md` files are persistent instructions, not Claude-style auto-memory files; no Codex memory directory is assumed by default.
+Rules is a mix of directories of many rule files (e.g. Cursor's `.cursor/rules/`) and single instructions files that are scanned and toggled as one item (e.g. Claude Code's `CLAUDE.md`, Codex's `AGENTS.md`, Antigravity's `GEMINI.md` and `AGENTS.md`, Pi's `AGENTS.md`). Codex's `AGENTS.md` files are persistent instructions, not Claude-style auto-memory files; no Codex memory directory is assumed by default.
 
 Checkmarks reflect the paths scanned by default. Every one of them, plus a few documented-but-unconfirmed guesses for newer tools, can be added, changed, or turned off per tool in Settings.
 
@@ -130,7 +138,7 @@ Deleting an item, or updating one from GitHub, moves the old copy to your system
 - **Library view**: auto-rescan interval, default sort order, default enabled/disabled filter, and whether to show tools/projects with nothing found in them.
 - **Auto check for updates**: an optional background interval (off by default) that checks every tracked source against its remote and flags what's stale.
 - **MCP config editor app**: macOS only; which app "Open config file" on an MCP server should use, overriding the OS's default file association.
-- **Tools**: every tool's global and project-scoped paths, editable per type, with a live "found/not found" check against your actual filesystem. Managed from the "All tools" page in the library sidebar.
+- **Tools**: every tool's global and project-scoped paths, editable per type (plus an optional memory folder), with a live "found/not found" check against your actual filesystem. Managed from the "All tools" page in the library sidebar.
 - **Project workspaces**: managed from the Workspaces section of the library sidebar rather than the settings tab; add, edit, or remove project folders (beyond the current vault) to scan for project-local skills.
 
 
