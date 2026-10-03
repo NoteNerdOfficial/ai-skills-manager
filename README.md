@@ -75,8 +75,6 @@ A collapsible sidebar section with four pages, each answering one question:
 
 Any prune, overlap, or integrity suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself.
 
-![Insights Context page showing cost by tool and ranked items](images/dashboard.png)
-
 **MCP servers, read-only**
 A dedicated page lists every MCP server configured across your tools, global and per-project, read straight from each tool's own config file (`~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, `.vscode/mcp.json`, and more). It's visibility only, nothing here can enable, disable, or edit a server, but you can jump straight to its config file to do that by hand.
 
