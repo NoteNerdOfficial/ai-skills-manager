@@ -4017,6 +4017,16 @@ var DASHBOARD_TYPE_COLORS = {
   rule: "var(--color-orange, #e8a33d)"
 };
 var DASHBOARD_RANKED_COLLAPSED_COUNT = 5;
+var INSIGHTS_PAGES = [
+  { page: "context", label: "Context", icon: "gauge" },
+  { page: "usage", label: "Usage", icon: "activity" },
+  { page: "health", label: "Health", icon: "heart-pulse" },
+  { page: "cleanup", label: "Cleanup", icon: "scissors" }
+];
+var USAGE_TOOLS = [
+  { id: "claude-code", name: "Claude Code" },
+  { id: "codex", name: "Codex" }
+];
 var DASHBOARD_RESTORE_WINDOW_MS = 24 * 60 * 60 * 1e3;
 function dashboardRelativeAge(ms) {
   const hours = Math.max(1, Math.round(ms / (60 * 60 * 1e3)));
@@ -4135,18 +4145,23 @@ var LibraryView = class extends import_obsidian15.ItemView {
      *  regardless of this filter — otherwise picking "Custom" would make "Detected"/"Enabled"
      *  read as counts of custom tools only, silently changing what those numbers mean. */
     this.toolStatusFilter = "all";
-    /** True while the sidebar's "Dashboard" row is active — same swap-the-content-pane idea as
-     *  discoverMode/toolsMode. Not a scope filter: it doesn't narrow this.items, it reports on it. */
+    /** True while any of the sidebar's Insights pages is active — same swap-the-content-pane idea as
+     *  discoverMode/toolsMode. Not a scope filter: it doesn't narrow this.items, it reports on it.
+     *  insightsPage says which one; it outlives dashboardMode so "Back" from an item opened on a
+     *  page lands on that same page. */
     this.dashboardMode = false;
+    this.insightsPage = "context";
+    /** Which tool the Usage page is showing; only tools with readable invocation history. */
+    this.insightsUsageTool = "claude-code";
     /** Computed lazily the first time the Dashboard is opened (or after an item is toggled from
      *  within it), not on every render — each entry means a file read, and nothing in the dashboard
      *  changes just from typing in the search box or switching some other sidebar filter. */
     this.dashboardMetrics = null;
-    /** Prune-candidate + overlap count, shown as the sidebar's Dashboard badge so "attention needed"
-     *  is visible without opening the Dashboard. Cached alongside dashboardMetrics and invalidated
-     *  the same places — the sidebar renders far more often than the Dashboard itself, so this must
-     *  stay a cache, not a recompute-on-every-render. */
-    this.dashboardAttentionCount = null;
+    /** Counts behind the sidebar's Health and Cleanup badges, so "attention needed" is visible
+     *  without opening Insights. Cached alongside dashboardMetrics and invalidated the same places —
+     *  the sidebar renders far more often than Insights itself, so this must stay a cache, not a
+     *  recompute-on-every-render. */
+    this.insightsCounts = null;
     /** entryId -> integrity issues for every enabled item that has any (see integrity.ts). Lazy,
      *  cleared on rescan and after a save from the detail rail, same lifecycle as dashboardMetrics. */
     this.integrityIssues = null;
@@ -4158,12 +4173,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
     /** Which type pill is selected above the Ranked list — ANDs with dashboardActiveTool; null
      *  means "All types." */
     this.dashboardTypeFilter = null;
-    /** Whether the ranked list is showing everything or just the top DASHBOARD_RANKED_COLLAPSED_COUNT. */
-    this.dashboardRankedExpanded = false;
     this.dashboardBrokenSymlinksExpanded = false;
     this.dashboardIntegrityExpanded = false;
-    this.dashboardPruneExpanded = false;
-    this.dashboardOverlapExpanded = false;
     /** Live-tracked scroll offset of the dashboard's scrollable body, restored on the next render
      *  the same way libraryScrollTop/dockedScrollTop work for the main grid. */
     this.dashboardScrollTop = 0;
@@ -4188,9 +4199,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.pluginBundleGroupFilter = null;
     this.pluginBundleTagFilter = null;
     this.pluginBundleSortOrder = "name-asc";
-    /** Independent from dashboardRankedExpanded — Top Skills & Agents and Ranked by cost are
-     *  different lists and shouldn't share collapse state. */
-    this.dashboardTopSkillsExpanded = false;
     /** Set right before leaving dashboardMode to open an item clicked from the Ranked list, so
      *  backToLibrary() knows to land back on the Dashboard (in the same scroll/filter state)
      *  instead of the plain Library. Consumed (reset to false) the moment backToLibrary() runs. */
@@ -4326,7 +4334,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     }
     this.detailLoadedFor = null;
     this.dashboardMetrics = null;
-    this.dashboardAttentionCount = null;
+    this.insightsCounts = null;
     this.integrityIssues = null;
     this.claudeUsage = null;
     this.codexUsage = null;
@@ -4367,7 +4375,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
   /** Assumes claudeUsageLoading is already true (set by getClaudeUsage before scheduling this) —
    *  started from a window.setTimeout, never called directly, so its first "await"-free lines
    *  never run inside an in-progress render() call. Calling this.render() synchronously from
-   *  inside renderDashboardContent (which getClaudeUsage is called from) would re-enter render()
+   *  inside renderInsightsContent (which getClaudeUsage is called from) would re-enter render()
    *  while the outer call is still writing to the DOM, tearing out what it had already built —
    *  deferring the start of this method past the current render pass is what avoids that. */
   async loadClaudeUsage() {
@@ -4429,8 +4437,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
     }
   }
   /** Returns the cached usage map, or null while it's still being computed — kicks off
-   *  loadClaudeUsage as a side effect the first time this is called (from renderDashboardContent,
-   *  only when the Claude Code tile is active), same "getter triggers the lazy computation" shape
+   *  loadClaudeUsage as a side effect the first time this is called (from an Insights page,
+   *  e.g. Usage or Cleanup), same "getter triggers the lazy computation" shape
    *  as getDashboardMetrics, just asynchronous. Sets the loading flag and schedules the load via
    *  window.setTimeout rather than calling it directly — this getter runs mid-render, and
    *  loadClaudeUsage's own this.render() call needs to land strictly after the current render()
@@ -5054,33 +5062,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       this.discoverMode = true;
       this.render();
     });
-    const attentionCount = this.getDashboardAttentionCount();
-    this.renderNavRow(
-      sidebar,
-      "gauge",
-      "Dashboard",
-      null,
-      this.dashboardMode,
-      () => {
-        this.clearScopeFilters();
-        this.dashboardMode = true;
-        this.claudeUsage = null;
-        this.claudeUsageLoading = false;
-        this.codexUsage = null;
-        this.codexUsageLoading = false;
-        this.dashboardActiveTool = null;
-        this.dashboardTypeFilter = null;
-        this.dashboardRankedExpanded = false;
-        this.dashboardTopSkillsExpanded = false;
-        this.dashboardScrollTop = 0;
-        void this.rescan();
-      },
-      void 0,
-      false,
-      "danger",
-      void 0,
-      attentionCount > 0
-    );
+    this.renderInsightsSection(sidebar);
     const sectionRenderers = {
       types: (s) => this.renderTypesSection(s),
       tools: (s) => this.renderToolsSection(s),
@@ -5153,6 +5135,49 @@ var LibraryView = class extends import_obsidian15.ItemView {
     if (key === "extensions")
       return this.mcpServers.length > 0 || this.discoveredPlugins.length > 0;
     return true;
+  }
+  /** Fixed under Library rather than one of the reorderable sections: it's navigation, not a
+   *  filter over this.items, so it collapses but doesn't drag. Health counts what's broken (red); Cleanup counts judgment calls
+   *  (muted), so the two never read as equally urgent. */
+  renderInsightsSection(sidebar) {
+    if (!this.renderCollapsibleHeading(sidebar, "insights", "Insights", void 0, void 0, false))
+      return;
+    const counts = this.getInsightsCounts();
+    for (const { page, label, icon } of INSIGHTS_PAGES) {
+      const count = page === "health" ? counts.health : page === "cleanup" ? counts.cleanup : 0;
+      this.renderNavRow(
+        sidebar,
+        icon,
+        label,
+        count > 0 ? count : null,
+        this.dashboardMode && this.insightsPage === page,
+        () => this.openInsightsPage(page),
+        void 0,
+        false,
+        page === "health" ? "danger" : "default"
+      );
+    }
+  }
+  /** Entering Insights from anywhere else starts fresh: a disk rescan (so an item added or edited
+   *  straight on disk shows up in prune/overlap stats right away, not only after "Rescan tools")
+   *  and a fresh usage scan. Hopping between Insights pages keeps all of that, so it's instant. */
+  openInsightsPage(page) {
+    const entering = !this.dashboardMode;
+    this.dashboardScrollTop = 0;
+    this.insightsPage = page;
+    if (!entering) {
+      this.render();
+      return;
+    }
+    this.clearScopeFilters();
+    this.dashboardMode = true;
+    this.claudeUsage = null;
+    this.claudeUsageLoading = false;
+    this.codexUsage = null;
+    this.codexUsageLoading = false;
+    this.dashboardActiveTool = null;
+    this.dashboardTypeFilter = null;
+    void this.rescan();
   }
   renderExtensionsSection(sidebar) {
     if (!this.renderCollapsibleHeading(sidebar, "extensions", "Extensions"))
@@ -5468,12 +5493,14 @@ var LibraryView = class extends import_obsidian15.ItemView {
       });
     }
   }
-  renderCollapsibleHeading(sidebar, key, title, renderAction, titleBadge) {
+  renderCollapsibleHeading(sidebar, key, title, renderAction, titleBadge, reorderable = true) {
     const isCollapsed = this.collapsedSections.has(key);
     const heading = sidebar.createDiv({ cls: "skillmanager-sidebar-heading skillmanager-sidebar-heading-collapsible" });
-    heading.dataset.sectionKey = key;
+    if (reorderable)
+      heading.dataset.sectionKey = key;
     const left = heading.createDiv({ cls: "skillmanager-sidebar-heading-left" });
-    left.setAttr("draggable", "true");
+    if (reorderable)
+      left.setAttr("draggable", "true");
     const chevron = left.createSpan({ cls: "skillmanager-chevron" });
     (0, import_obsidian15.setIcon)(chevron, isCollapsed ? "chevron-right" : "chevron-down");
     left.createSpan({ text: title });
@@ -5670,7 +5697,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       return;
     }
     if (this.dashboardMode) {
-      this.renderDashboardContent(content);
+      this.renderInsightsContent(content);
       return;
     }
     if (this.mcpMode) {
@@ -8211,19 +8238,22 @@ var LibraryView = class extends import_obsidian15.ItemView {
     }
     return this.dashboardMetrics;
   }
-  /** Cached count behind the sidebar's Dashboard dot — see dashboardAttentionCount. Excludes
-   *  anything the user has already disregarded, same as the Dashboard's own lists. Reads
-   *  whatever Claude Code usage happens to already be cached but never triggers a load itself
+  /** Cached counts behind the sidebar's Health and Cleanup badges — see insightsCounts. Excludes
+   *  anything the user has already disregarded, same as the pages' own lists. Reads whatever
+   *  Claude Code usage happens to already be cached but never triggers a load itself
    *  (`triggerUsageLoad: false`) — renderSidebar calls this on every render, so it must not be
-   *  what kicks off the transcript-directory scan the "Claude Code" tile is meant to gate. */
-  getDashboardAttentionCount() {
-    if (this.dashboardAttentionCount === null) {
+   *  what kicks off the transcript-directory scan. */
+  getInsightsCounts() {
+    if (this.insightsCounts === null) {
       const metrics = this.getDashboardMetrics();
       const { usagePrune, mtimePrune } = this.getDashboardPruneSplit(metrics, false);
       const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
-      this.dashboardAttentionCount = usagePrune.length + mtimePrune.length + overlapPairs.length + this.brokenSymlinks.length + this.getIntegrityRows().length;
+      this.insightsCounts = {
+        health: this.brokenSymlinks.length + this.getIntegrityRows().length,
+        cleanup: usagePrune.length + mtimePrune.length + overlapPairs.length
+      };
     }
-    return this.dashboardAttentionCount;
+    return this.insightsCounts;
   }
   getIntegrityIssues() {
     if (!this.integrityIssues) {
@@ -8300,85 +8330,231 @@ var LibraryView = class extends import_obsidian15.ItemView {
     const settings = this.getSettings();
     settings.dashboardDisregarded = { ...settings.dashboardDisregarded, [key]: Date.now() };
     await this.saveSettings();
-    this.dashboardAttentionCount = null;
+    this.insightsCounts = null;
     this.render();
   }
-  renderDashboardContent(content) {
-    const metrics = this.getDashboardMetrics();
-    const { usagePrune, mtimePrune } = this.getDashboardPruneSplit(metrics);
-    const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
-    const pruneCount = usagePrune.length + mtimePrune.length;
+  renderInsightsContent(content) {
+    const body = (() => {
+      switch (this.insightsPage) {
+        case "usage":
+          return this.renderInsightsUsage(content);
+        case "health":
+          return this.renderInsightsHealth(content);
+        case "cleanup":
+          return this.renderInsightsCleanup(content);
+        default:
+          return this.renderInsightsContext(content);
+      }
+    })();
+    body.scrollTop = this.dashboardScrollTop;
+    body.addEventListener("scroll", () => {
+      this.dashboardScrollTop = body.scrollTop;
+    });
+  }
+  /** Title, subtitle and an optional stat cluster, then the page's scrollable body. */
+  renderInsightsShell(content, title, subtitle, buildStats) {
     const header = content.createDiv({ cls: "skillmanager-content-header" });
     const headerTop = header.createDiv({ cls: "skillmanager-dash-header-top" });
     const headerLeft = headerTop.createDiv({ cls: "skillmanager-dash-header-left" });
     const titleRow = headerLeft.createDiv({ cls: "skillmanager-title-row" });
-    titleRow.createEl("h2", { text: "Dashboard", cls: "skillmanager-title" });
-    headerLeft.createDiv({
-      text: "Source size and estimated context usage across enabled items. Tool-specific loading rules will refine commands and rules later.",
-      cls: "skillmanager-subtitle"
-    });
-    const headerStats = headerTop.createDiv({ cls: "skillmanager-dash-header-stats" });
-    const totalChars = metrics.reduce((sum, m) => sum + m.charCount, 0);
-    const availableChars = metrics.reduce((sum, m) => {
-      var _a;
-      return sum + ((_a = m.alwaysAvailableCharCount) != null ? _a : 0);
-    }, 0);
-    const invocationChars = metrics.reduce((sum, m) => {
-      var _a;
-      return sum + ((_a = m.invocationCharCount) != null ? _a : 0);
-    }, 0);
-    this.renderDashboardStat(headerStats, "Enabled", String(metrics.length));
-    this.renderDashboardStat(
-      headerStats,
-      "Source tokens",
-      formatTokens(totalChars).replace("~", ""),
-      "",
-      "Estimated tokens in each representative source file. This is a file-size estimate, not necessarily per-turn context."
-    );
-    this.renderDashboardStat(
-      headerStats,
-      "Available",
-      formatTokens(availableChars).replace("~", ""),
-      "skillmanager-dash-stat-accent",
-      "Estimated name-and-description metadata exposed while a skill or agent is available. For tools that preload this metadata, it can add to the model's context on every turn even when never invoked. Actual behavior varies by tool; commands and rules are not included until their loading policies are modeled."
-    );
-    this.renderDashboardStat(
-      headerStats,
-      "On invoke",
-      formatTokens(invocationChars).replace("~", ""),
-      "",
-      "Estimated instruction-body tokens loaded when a skill or agent is invoked. Companion files are loaded on demand and are not included here."
-    );
-    this.renderDashboardStat(headerStats, "Prune", String(pruneCount), pruneCount ? "skillmanager-dash-stat-danger" : "");
-    this.renderDashboardStat(headerStats, "Overlaps", String(overlapPairs.length), overlapPairs.length ? "skillmanager-dash-stat-accent" : "");
-    this.renderDashboardStat(headerStats, "Broken links", String(this.brokenSymlinks.length), this.brokenSymlinks.length ? "skillmanager-dash-stat-danger" : "");
-    const integrityRows = this.getIntegrityRows();
-    this.renderDashboardStat(headerStats, "Issues", String(integrityRows.length), integrityRows.length ? "skillmanager-dash-stat-danger" : "");
+    titleRow.createEl("h2", { text: title, cls: "skillmanager-title" });
+    headerLeft.createDiv({ text: subtitle, cls: "skillmanager-subtitle" });
+    if (buildStats)
+      buildStats(headerTop.createDiv({ cls: "skillmanager-dash-header-stats" }));
     header.createDiv({ cls: "skillmanager-dash-divider" });
-    const body = content.createDiv({ cls: "skillmanager-body skillmanager-dash-body" });
+    return content.createDiv({ cls: "skillmanager-body skillmanager-dash-body" });
+  }
+  /** Recently disabled-from-Insights items, still disabled, inside the restore window. */
+  getDashboardRestoreRows() {
+    return Object.entries(this.pruneExpiredDashboardRestores()).map(([entryId, disabledAt]) => ({ item: this.items.find((i) => i.entryId === entryId), disabledAt })).filter((r) => !!r.item && !r.item.enabled);
+  }
+  /** Tools on the Usage page's switcher: only those with at least one skill or agent. */
+  usageToolsPresent() {
+    return USAGE_TOOLS.filter((t) => this.items.some((i) => i.tool === t.id && (i.type === "skill" || i.type === "agent")));
+  }
+  renderInsightsContext(content) {
+    const metrics = this.getDashboardMetrics();
+    const body = this.renderInsightsShell(
+      content,
+      "Context",
+      "Source size and estimated context usage across enabled items. Commands and rules are tool-dependent for now.",
+      (stats) => {
+        const totalChars = metrics.reduce((sum, m) => sum + m.charCount, 0);
+        const availableChars = metrics.reduce((sum, m) => {
+          var _a;
+          return sum + ((_a = m.alwaysAvailableCharCount) != null ? _a : 0);
+        }, 0);
+        const invocationChars = metrics.reduce((sum, m) => {
+          var _a;
+          return sum + ((_a = m.invocationCharCount) != null ? _a : 0);
+        }, 0);
+        this.renderDashboardStat(stats, "Enabled", String(metrics.length));
+        this.renderDashboardStat(
+          stats,
+          "Source tokens",
+          formatTokens(totalChars).replace("~", ""),
+          "",
+          "Estimated tokens in each representative source file. This is a file-size estimate, not necessarily per-turn context."
+        );
+        this.renderDashboardStat(
+          stats,
+          "Available",
+          formatTokens(availableChars).replace("~", ""),
+          "skillmanager-dash-stat-accent",
+          "Estimated name-and-description metadata exposed while a skill or agent is available. For tools that preload this metadata, it can add to the model's context on every turn even when never invoked. Actual behavior varies by tool; commands and rules are not included until their loading policies are modeled."
+        );
+        this.renderDashboardStat(
+          stats,
+          "On invoke",
+          formatTokens(invocationChars).replace("~", ""),
+          "",
+          "Estimated instruction-body tokens loaded when a skill or agent is invoked. Companion files are loaded on demand and are not included here."
+        );
+      }
+    );
     if (metrics.length === 0) {
       body.createDiv({ text: "No enabled items yet.", cls: "skillmanager-empty" });
-      return;
+      return body;
     }
     this.renderDashboardToolCards(body, metrics);
     this.renderDashboardRanked(body, metrics);
-    if (this.dashboardActiveTool === "claude-code" || this.dashboardActiveTool === "codex") {
-      const isClaude = this.dashboardActiveTool === "claude-code";
-      const usage = isClaude ? this.getClaudeUsage() : this.getCodexUsage();
-      const items = this.items.filter(
-        (i) => i.tool === this.dashboardActiveTool && (i.type === "skill" || i.type === "agent")
-      );
-      const topUsed = usage ? rankTopUsedItems(items, usage) : [];
-      this.renderDashboardTopUsed(body, topUsed, !usage, isClaude ? "Claude Code" : "Codex");
+    return body;
+  }
+  /** Per-tool, since each tool's history comes from its own transcripts: a switcher up top
+   *  instead of the old Dashboard's "click the tool card first" gate. */
+  renderInsightsUsage(content) {
+    const tools = this.usageToolsPresent();
+    if (tools.length > 0 && !tools.some((t) => t.id === this.insightsUsageTool))
+      this.insightsUsageTool = tools[0].id;
+    const tool = USAGE_TOOLS.find((t) => t.id === this.insightsUsageTool);
+    const usage = tools.length > 0 ? tool.id === "claude-code" ? this.getClaudeUsage() : this.getCodexUsage() : null;
+    const items = this.items.filter((i) => i.tool === tool.id && (i.type === "skill" || i.type === "agent"));
+    const ranked = usage ? rankTopUsedItems(items, usage) : [];
+    const enabledItems = items.filter((i) => i.enabled);
+    const neverUsed = usage ? enabledItems.filter((i) => {
+      var _a, _b;
+      return ((_b = (_a = usage.get(i.entryId)) == null ? void 0 : _a.lastUsedMs) != null ? _b : 0) === 0 && this.lastHistoryDayMs(i) === 0;
+    }).length : 0;
+    const body = this.renderInsightsShell(
+      content,
+      "Usage",
+      "Which skills and agents you actually use, from each tool's own session history.",
+      tools.length === 0 ? void 0 : (stats) => {
+        const dash = (n) => usage ? String(n) : "\u2026";
+        this.renderDashboardStat(stats, `Runs (${TOP_USED_WINDOW_DAYS}d)`, dash(ranked.reduce((sum, r) => sum + r.stats.count, 0)));
+        this.renderDashboardStat(stats, "Items used", dash(ranked.length));
+        this.renderDashboardStat(
+          stats,
+          "Never used",
+          dash(neverUsed),
+          neverUsed ? "skillmanager-dash-stat-accent" : "",
+          "Enabled skills and agents with no recorded invocation. See Cleanup to review them."
+        );
+      }
+    );
+    if (tools.length === 0) {
+      body.createDiv({
+        text: "Usage history is available for Claude Code and Codex skills and agents. None are installed yet.",
+        cls: "skillmanager-empty"
+      });
+      return body;
     }
+    if (tools.length > 1) {
+      const segmented = body.createDiv({ cls: "skillmanager-segmented skillmanager-insights-switcher" });
+      for (const t of tools) {
+        this.renderSegment(segmented, t.name, t.id === tool.id, () => {
+          this.insightsUsageTool = t.id;
+          this.render();
+        });
+      }
+    }
+    this.renderInsightsActivity(body, tool.id, tool.name, !usage);
+    this.renderDashboardTopUsed(body, ranked, !usage, tool.name);
+    return body;
+  }
+  /** Weekly sessions across every skill and agent of one tool, from the saved history — same
+   *  source and window as an item's own Activity bars in the detail rail, just summed. */
+  renderInsightsActivity(body, toolId, toolName, loading) {
+    var _a, _b;
+    const section = body.createDiv({ cls: "skillmanager-dash-ranked" });
+    this.renderDashboardSectionHead(section, "Activity");
+    const history = (_a = this.getSettings().usageHistory) != null ? _a : {};
+    const merged = {};
+    for (const [key, days] of Object.entries(history)) {
+      if (!key.startsWith(`${toolId}|`))
+        continue;
+      for (const [day, count] of Object.entries(days))
+        merged[day] = ((_b = merged[day]) != null ? _b : 0) + count;
+    }
+    const { columns, total } = buildHeatmap(merged);
+    section.createDiv({
+      text: `Skill and agent sessions per week in ${toolName}, last ${HEATMAP_WEEKS} weeks.`,
+      cls: "skillmanager-subtitle"
+    });
+    if (total === 0) {
+      section.createDiv({
+        text: loading ? `Scanning ${toolName} history\u2026` : "No activity recorded yet.",
+        cls: "skillmanager-empty"
+      });
+      return;
+    }
+    const weeks = columns.map((column) => column.reduce((sum, cell) => sum + cell.count, 0));
+    const max = Math.max(...weeks);
+    const bars = section.createDiv({ cls: "skillmanager-detail-usage-bars skillmanager-insights-activity" });
+    columns.forEach((column, i) => {
+      const bar = bars.createDiv({ cls: `skillmanager-detail-usage-bar${weeks[i] > 0 ? " is-used" : ""}` });
+      bar.style.height = `${Math.max(4, weeks[i] / max * 100)}%`;
+      const week = new Date(column[0].ms).toLocaleDateString(void 0, { month: "short", day: "numeric" });
+      (0, import_obsidian15.setTooltip)(bar, `Week of ${week}: ${weeks[i]} session${weeks[i] === 1 ? "" : "s"}`, { placement: "top" });
+    });
+  }
+  renderInsightsHealth(content) {
+    const integrityRows = this.getIntegrityRows();
+    const body = this.renderInsightsShell(
+      content,
+      "Health",
+      "Problems that stop a tool from seeing or loading an item. These are worth fixing.",
+      (stats) => {
+        this.renderDashboardStat(stats, "Broken links", String(this.brokenSymlinks.length), this.brokenSymlinks.length ? "skillmanager-dash-stat-danger" : "");
+        this.renderDashboardStat(stats, "Issues", String(integrityRows.length), integrityRows.length ? "skillmanager-dash-stat-danger" : "");
+      }
+    );
     this.renderDashboardBrokenSymlinks(body, this.brokenSymlinks);
     this.renderDashboardIntegrity(body, integrityRows);
+    return body;
+  }
+  renderInsightsCleanup(content) {
+    const metrics = this.getDashboardMetrics();
+    const { usagePrune, mtimePrune } = this.getDashboardPruneSplit(metrics);
+    const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
+    const pruneCount = usagePrune.length + mtimePrune.length;
+    const restoreCount = this.getDashboardRestoreRows().length;
+    const body = this.renderInsightsShell(
+      content,
+      "Cleanup",
+      "Suggestions, not problems: items that may not be earning their keep, and items that may be doing the same job.",
+      (stats) => {
+        this.renderDashboardStat(stats, "Prune", String(pruneCount), pruneCount ? "skillmanager-dash-stat-accent" : "");
+        this.renderDashboardStat(stats, "Overlaps", String(overlapPairs.length), overlapPairs.length ? "skillmanager-dash-stat-accent" : "");
+        if (restoreCount)
+          this.renderDashboardStat(stats, "Recently disabled", String(restoreCount));
+      }
+    );
+    if (metrics.length === 0 && restoreCount === 0) {
+      body.createDiv({ text: "No enabled items yet.", cls: "skillmanager-empty" });
+      return body;
+    }
     const columns = body.createDiv({ cls: "skillmanager-dash-columns" });
     this.renderDashboardPruneCandidates(columns, usagePrune, mtimePrune);
     this.renderDashboardOverlaps(columns, overlapPairs, metrics.map((m) => m.item));
-    body.scrollTop = this.dashboardScrollTop;
-    body.addEventListener("scroll", () => {
-      this.dashboardScrollTop = body.scrollTop;
+    return body;
+  }
+  /** Hover tooltip plus the same text on click, so an info icon always answers when poked. */
+  attachInfoTooltip(el, tooltip) {
+    (0, import_obsidian15.setTooltip)(el, tooltip, { placement: "top" });
+    el.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      (0, import_obsidian15.displayTooltip)(el, tooltip, { placement: "top" });
     });
   }
   renderDashboardStat(parent, label, value, accentCls = "", tooltip) {
@@ -8388,7 +8564,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     if (tooltip) {
       const infoIcon = labelEl.createSpan({ cls: "skillmanager-dash-stat-info" });
       (0, import_obsidian15.setIcon)(infoIcon, "info");
-      (0, import_obsidian15.setTooltip)(labelEl, tooltip, { placement: "top" });
+      this.attachInfoTooltip(labelEl, tooltip);
     }
     stat.createDiv({ text: value, cls: `skillmanager-dash-stat-value ${accentCls}`.trim() });
   }
@@ -8412,7 +8588,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
   renderDashboardTypeFilter(parent) {
     const setType = (type) => {
       this.dashboardTypeFilter = type;
-      this.dashboardRankedExpanded = false;
       this.render();
     };
     const filter = parent.createDiv({ cls: "skillmanager-dash-type-filter" });
@@ -8478,8 +8653,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
     const grandTotal = metrics.reduce((s, m) => s + m.charCount, 0);
     const selectTool = (tool) => {
       this.dashboardActiveTool = tool;
-      this.dashboardRankedExpanded = false;
-      this.dashboardTopSkillsExpanded = false;
       this.render();
     };
     const allTile = tileGrid.createDiv({ cls: "skillmanager-dash-tile" });
@@ -8528,8 +8701,9 @@ var LibraryView = class extends import_obsidian15.ItemView {
     context.createSpan({ text: `Available ${formatTokens(available)}` });
     context.createSpan({ text: `On invoke ${formatTokens(invocation)}` });
   }
-  /** Collapsed to a handful by default, filtered by whichever tool card is active and/or type
-   *  pill is selected (the two AND together — e.g. "Claude Code" + "Command"). */
+  /** Every item, filtered by whichever tool card is active and/or type pill is selected (the two
+   *  AND together — e.g. "Claude Code" + "Command"). Last thing on the Context page, so there's
+   *  nothing below it worth collapsing for. */
   renderDashboardRanked(body, metrics) {
     const section = body.createDiv({ cls: "skillmanager-dash-ranked" });
     this.renderDashboardSectionHead(section, "Ranked by cost", (right) => this.renderDashboardTypeFilter(right));
@@ -8538,23 +8712,12 @@ var LibraryView = class extends import_obsidian15.ItemView {
     );
     const sorted = [...filtered].sort((a, b) => b.charCount - a.charCount);
     const maxCharCount = Math.max(...metrics.map((m) => m.charCount), 1);
-    const shown = this.dashboardRankedExpanded ? sorted : sorted.slice(0, DASHBOARD_RANKED_COLLAPSED_COUNT);
     const list = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
-    if (shown.length === 0) {
+    if (sorted.length === 0) {
       list.createDiv({ text: "Nothing matches this filter.", cls: "skillmanager-empty" });
     }
-    for (const metric of shown)
+    for (const metric of sorted)
       this.renderDashboardRow(list, metric, maxCharCount);
-    if (sorted.length > DASHBOARD_RANKED_COLLAPSED_COUNT) {
-      const toggleBtn = section.createEl("button", {
-        text: this.dashboardRankedExpanded ? "Show fewer" : `Show all (${sorted.length})`,
-        cls: "skillmanager-dash-toggle"
-      });
-      toggleBtn.addEventListener("click", () => {
-        this.dashboardRankedExpanded = !this.dashboardRankedExpanded;
-        this.render();
-      });
-    }
   }
   renderDashboardRow(container, metric, maxCharCount) {
     const { item, charCount } = metric;
@@ -8699,7 +8862,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     settings.dashboardRecentlyDisabled = { ...this.pruneExpiredDashboardRestores(), [item.entryId]: Date.now() };
     await this.saveSettings();
     this.dashboardMetrics = null;
-    this.dashboardAttentionCount = null;
+    this.insightsCounts = null;
     this.claudeUsage = null;
     this.codexUsage = null;
     await this.toggleEnabled(item);
@@ -8711,7 +8874,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     settings.dashboardRecentlyDisabled = kept;
     await this.saveSettings();
     this.dashboardMetrics = null;
-    this.dashboardAttentionCount = null;
+    this.insightsCounts = null;
     this.claudeUsage = null;
     this.codexUsage = null;
     await this.toggleEnabled(item);
@@ -8801,20 +8964,25 @@ var LibraryView = class extends import_obsidian15.ItemView {
       text: "Not usage-based: enabled items that share an identical name, or have near-duplicate descriptions, likely fighting over the same trigger conditions.",
       cls: "skillmanager-subtitle"
     });
+    const introRow = section.createDiv({ cls: "skillmanager-subtitle" });
+    introRow.createSpan({ text: "Overlapping items compete for the same requests, so the wrong one may run. " });
+    const whyLink = introRow.createEl("a", { text: "Why this matters", cls: "skillmanager-subtitle-link" });
+    whyLink.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      new InfoModal(
+        this.app,
+        "Why this matters",
+        "A tool decides which skill or agent to use by matching your request against each one's name and description. When two enabled items share a name or describe the same job, the tool has no reliable way to tell them apart. It may pick the older or less complete version, switch between them from one session to the next, or load both and spend context twice. Keeping one clear owner per job makes results more predictable. Compare the pair to decide which to keep, or disregard it if they really do different things."
+      ).open();
+    });
     const now = Date.now();
-    const restoreRows = Object.entries(this.pruneExpiredDashboardRestores()).map(([entryId, disabledAt]) => ({ item: this.items.find((i) => i.entryId === entryId), disabledAt })).filter((r) => !!r.item && !r.item.enabled).map((r) => ({ ...r, match: this.findDashboardOverlapRestoreMatch(r.item, enabledItems) })).filter((r) => !!r.match);
+    const restoreRows = this.getDashboardRestoreRows().map((r) => ({ ...r, match: this.findDashboardOverlapRestoreMatch(r.item, enabledItems) })).filter((r) => !!r.match);
     const rows = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
     if (pairs.length === 0 && restoreRows.length === 0) {
       rows.createDiv({ text: "No overlapping descriptions found.", cls: "skillmanager-empty" });
       return;
     }
-    const totalCount = pairs.length + restoreRows.length;
-    const maxRows = this.dashboardOverlapExpanded ? totalCount : DASHBOARD_RANKED_COLLAPSED_COUNT;
-    let rendered = 0;
     for (const pair of pairs) {
-      if (rendered >= maxRows)
-        break;
-      rendered++;
       const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
       const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
       const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
@@ -8837,9 +9005,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
       });
     }
     for (const { item, disabledAt, match } of restoreRows) {
-      if (rendered >= maxRows)
-        break;
-      rendered++;
       const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
       const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
       const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
@@ -8850,16 +9015,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
       });
       const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
       restoreBtn.addEventListener("click", () => this.confirmToggle(item, () => this.restoreFromDashboard(item)));
-    }
-    if (totalCount > DASHBOARD_RANKED_COLLAPSED_COUNT) {
-      const toggleBtn = section.createEl("button", {
-        text: this.dashboardOverlapExpanded ? "Show fewer" : `Show all (${totalCount})`,
-        cls: "skillmanager-dash-toggle"
-      });
-      toggleBtn.addEventListener("click", () => {
-        this.dashboardOverlapExpanded = !this.dashboardOverlapExpanded;
-        this.render();
-      });
     }
   }
   /** Ranked-by-activity sibling to renderDashboardRanked — rendered for tools with usage data.
@@ -8881,19 +9036,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
       return;
     }
     const maxCount = Math.max(...ranked.map((r) => r.stats.count), 1);
-    const shown = this.dashboardTopSkillsExpanded ? ranked : ranked.slice(0, DASHBOARD_RANKED_COLLAPSED_COUNT);
-    for (const { item, stats } of shown)
+    for (const { item, stats } of ranked)
       this.renderDashboardUsageRow(list, item, stats, maxCount);
-    if (ranked.length > DASHBOARD_RANKED_COLLAPSED_COUNT) {
-      const toggleBtn = section.createEl("button", {
-        text: this.dashboardTopSkillsExpanded ? "Show fewer" : `Show all (${ranked.length})`,
-        cls: "skillmanager-dash-toggle"
-      });
-      toggleBtn.addEventListener("click", () => {
-        this.dashboardTopSkillsExpanded = !this.dashboardTopSkillsExpanded;
-        this.render();
-      });
-    }
   }
   /** Mirrors renderDashboardRow's chrome (icon, name, meta line, bar, right-hand value) — reuses
    *  every skillmanager-dash-row* class as-is, just driven by invocation count instead of cost. */
@@ -8944,46 +9088,22 @@ var LibraryView = class extends import_obsidian15.ItemView {
       ).open();
     });
     const now = Date.now();
-    const recentlyDisabled = this.pruneExpiredDashboardRestores();
-    const restoreRows = Object.entries(recentlyDisabled).map(([entryId, disabledAt]) => ({ item: this.items.find((i) => i.entryId === entryId), disabledAt })).filter((r) => !!r.item && !r.item.enabled);
+    const restoreRows = this.getDashboardRestoreRows();
     const rows = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
     const totalCount = usageCandidates.length + mtimeCandidates.length + restoreRows.length;
     if (totalCount === 0) {
       rows.createDiv({ text: "Nothing flagged. Nice.", cls: "skillmanager-empty" });
       return;
     }
-    const maxRows = this.dashboardPruneExpanded ? totalCount : DASHBOARD_RANKED_COLLAPSED_COUNT;
-    let rendered = 0;
     for (const { item, stats } of usageCandidates) {
-      if (rendered >= maxRows)
-        break;
       const metaText = stats.lastUsedMs === 0 ? "Never invoked" : `Not invoked in ${dashboardRelativeAge(now - stats.lastUsedMs)}`;
       this.renderDashboardPruneRow(rows, item, metaText, "Usage");
-      rendered++;
     }
     for (const { item, charCount, mtimeMs } of mtimeCandidates) {
-      if (rendered >= maxRows)
-        break;
       const metaText = `${formatTokens(charCount)} \xB7 last touched ${mtimeMs ? formatDate(mtimeMs) : "unknown"}`;
       this.renderDashboardPruneRow(rows, item, metaText, "File age");
-      rendered++;
     }
-    for (const { item, disabledAt } of restoreRows) {
-      if (rendered >= maxRows)
-        break;
-      this.renderDashboardRestoreRows(rows, now, [{ item, disabledAt }]);
-      rendered++;
-    }
-    if (totalCount > DASHBOARD_RANKED_COLLAPSED_COUNT) {
-      const toggleBtn = section.createEl("button", {
-        text: this.dashboardPruneExpanded ? "Show fewer" : `Show all (${totalCount})`,
-        cls: "skillmanager-dash-toggle"
-      });
-      toggleBtn.addEventListener("click", () => {
-        this.dashboardPruneExpanded = !this.dashboardPruneExpanded;
-        this.render();
-      });
-    }
+    this.renderDashboardRestoreRows(rows, now, restoreRows);
   }
   renderDashboardPruneRow(rows, item, metaText, methodLabel) {
     const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
@@ -9097,7 +9217,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       return btn;
     };
     const sep5 = () => row.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
-    crumb(this.detailReturnsToDashboard ? "Dashboard" : "Library", false, () => this.backToLibrary());
+    crumb(this.detailReturnsToDashboard ? INSIGHTS_PAGES.find((p) => p.page === this.insightsPage).label : "Library", false, () => this.backToLibrary());
     sep5();
     crumb(item.name, !fileOpenFromTree, fileOpenFromTree ? () => this.backToTree() : void 0);
     if (fileOpenFromTree && this.selectedFilePath) {
@@ -9152,7 +9272,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.renderDetailProperties(section, item, filePath, isManifest, fields);
   }
   /** The big-number row: context cost for the open file, plus sessions/last used for a manifest
-   *  whose tool logs usage, followed by weekly bars once there's any use to chart. */
+   *  whose tool logs usage, followed by a daily heatmap once there's any use to chart. */
   renderDetailCallouts(container, item, filePath, isManifest) {
     var _a, _b, _c;
     const row = container.createDiv({ cls: "skillmanager-detail-callouts" });
@@ -9163,7 +9283,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       labelEl.createSpan({ text: label });
       if (tooltip) {
         (0, import_obsidian15.setIcon)(labelEl.createSpan({ cls: "skillmanager-detail-info" }), "info");
-        (0, import_obsidian15.setTooltip)(labelEl, tooltip, { placement: "top" });
+        this.attachInfoTooltip(labelEl, tooltip);
       }
     };
     if (isManifest && (item.type === "skill" || item.type === "agent")) {
@@ -9196,15 +9316,21 @@ ${item.description}`.length),
     callout(formatRelativeDay((_c = this.lastUsedMs(item)) != null ? _c : 0), "Last used");
     if (total === 0)
       return;
-    const weeks = columns.map((column) => column.reduce((sum, cell) => sum + cell.count, 0));
-    const max = Math.max(...weeks);
-    const bars = container.createDiv({ cls: "skillmanager-detail-usage-bars" });
-    columns.forEach((column, i) => {
-      const bar = bars.createDiv({ cls: `skillmanager-detail-usage-bar${weeks[i] > 0 ? " is-used" : ""}` });
-      bar.style.height = `${Math.max(8, weeks[i] / max * 100)}%`;
-      const week = new Date(column[0].ms).toLocaleDateString(void 0, { month: "short", day: "numeric" });
-      (0, import_obsidian15.setTooltip)(bar, `Week of ${week}: ${weeks[i]} session${weeks[i] === 1 ? "" : "s"}`, { placement: "top" });
-    });
+    const max = Math.max(0, ...columns.flat().map((c) => c.count));
+    const grid = container.createDiv({ cls: "skillmanager-heatmap" });
+    grid.style.gridTemplateColumns = `repeat(${columns.length}, minmax(0, 1fr))`;
+    for (let d = 0; d < 7; d++) {
+      for (const column of columns) {
+        const cell = column[d];
+        const el = grid.createDiv({
+          cls: `skillmanager-heatmap-cell${cell.future ? " is-future" : ` is-level-${heatLevel(cell.count, max)}`}`
+        });
+        if (cell.future)
+          continue;
+        const date = new Date(cell.ms).toLocaleDateString(void 0, { month: "short", day: "numeric", year: "numeric" });
+        (0, import_obsidian15.setTooltip)(el, `${cell.count} session${cell.count === 1 ? "" : "s"} on ${date}`, { placement: "top" });
+      }
+    }
   }
   /** One aligned key/value table on a tinted panel: the skill's own metadata (manifest only),
    *  then file facts, then the source repo and its actions as a footer with real button chrome. */
@@ -9734,7 +9860,7 @@ ${item.description}`.length),
             }
             this.detailEditing = false;
             this.integrityIssues = null;
-            this.dashboardAttentionCount = null;
+            this.insightsCounts = null;
             new import_obsidian15.Notice("Saved.");
             this.render();
           } catch (e) {

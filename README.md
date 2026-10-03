@@ -35,12 +35,12 @@ Organize items with your own tags, star favorites, and group related skills/agen
 Per-item metadata (tags, favorites, collection membership) is stored as plain frontmatter in small markdown notes inside your vault, not hidden in a JSON blob. That means it syncs via whatever you already use to sync your vault, and it's queryable from Dataview or Bases like any other note.
 
 **A detail panel that answers the important questions first**
-Opening an item shows its name and type, the tool (and plugin) it belongs to, and its description. Below that, a row of key numbers: estimated tokens while it's available, tokens loaded when it's invoked, sessions over the last 26 weeks, and when it was last used. Weekly usage bars appear once there's any use to chart. The plugin keeps its own daily usage history for Claude Code and Codex, so it outlasts the tools' own transcript cleanup.
+Opening an item shows its name and type, the tool (and plugin) it belongs to, and its description. Below that, a row of key numbers: estimated tokens while it's available, tokens loaded when it's invoked, sessions over the last 26 weeks, and when it was last used. A daily usage heatmap spanning the last 26 weeks appears once there's any use to chart. The plugin keeps its own daily usage history for Claude Code and Codex, so it outlasts the tools' own transcript cleanup.
 
 Everything else sits in one properties panel: tags, whether it runs automatically or only when called, who manages it (you, a GitHub source, a plugin, or the tool itself) and what that means for edits and updates, version, any other frontmatter fields, file size, path, and where it's symlinked from. For items installed from GitHub, the panel ends with the source repo and its **Check for updates** and **Restore installed** buttons.
 
 **Integrity checks**
-Problems that make a tool skip an item or never pick it up are flagged on the item and collected on the Dashboard: broken or missing frontmatter, a name that doesn't match its folder, a missing or overlong description, a broken symlink, a link to a bundled file that isn't there, or a memory its index never points to.
+Problems that make a tool skip an item or never pick it up are flagged on the item and collected on the Insights Health page: broken or missing frontmatter, a name that doesn't match its folder, a missing or overlong description, a broken symlink, a link to a bundled file that isn't there, or a memory its index never points to.
 
 ![Detail panel previewing a skill's full rendered content alongside its metadata](images/item-preview.png)
 
@@ -65,14 +65,17 @@ Reads Claude Code's installed-plugins registry and Codex's installed plugin cach
 
 Installed bundles are browsable from **Library → Plugin bundles**, with search, tool/group/tag filters, sorting, and a breadcrumb back from a bundle's item list.
 
-**Dashboard**
-A dedicated tab that separates representative source-file size from estimated context exposure. For skills and agents, it shows metadata available before invocation separately from instruction tokens loaded on invocation; commands and rules are marked tool-dependent until their per-tool loading policies are modeled. For Claude Code and Codex, it reads their session history (`~/.claude/projects` and `~/.codex/sessions`) to build a "Top Skills & Agents" usage ranking. Claude Code usage data also flags prune candidates that have never fired or gone stale, instead of guessing from file age. Everywhere else, including Codex prune recommendations, a file-age-based heuristic flags large source files that haven't been touched in a while. A separate "Possible overlaps" list catches enabled items sharing an exact name (an unambiguous collision) or near-duplicate descriptions, likely competing for the same trigger conditions, with a side-by-side compare before you disable one.
+**Insights**
+A collapsible sidebar section with four pages, each answering one question:
 
-An "Integrity issues" list collects every enabled item with a problem, with a one-click jump to the file that needs fixing.
+- **Context**: what's taking up context? Separates representative source-file size from estimated context exposure, by tool and ranked per item. For skills and agents, metadata available before invocation is shown separately from instruction tokens loaded on invocation; commands and rules are marked tool-dependent until their per-tool loading policies are modeled.
+- **Usage**: what do you actually use? Reads Claude Code and Codex session history (`~/.claude/projects` and `~/.codex/sessions`) for a weekly activity chart and a ranked list of your most-used skills and agents.
+- **Health**: what's broken? Broken symlinks and integrity issues, with a one-click jump to the file that needs fixing. Its sidebar badge counts open problems.
+- **Cleanup**: what could go? Prune candidates (Claude Code skills and agents that never fired or have gone stale, and a file-age heuristic everywhere else) and possible overlaps (enabled items sharing an exact name or near-duplicate descriptions), with a side-by-side compare before you disable one and a restore window afterwards.
 
 Any prune, overlap, or integrity suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself.
 
-![Dashboard tab showing cost by tool, ranked items, prune candidates, and possible overlaps](images/dashboard.png)
+![Insights Context page showing cost by tool and ranked items](images/dashboard.png)
 
 **MCP servers, read-only**
 A dedicated page lists every MCP server configured across your tools, global and per-project, read straight from each tool's own config file (`~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, `.vscode/mcp.json`, and more). It's visibility only, nothing here can enable, disable, or edit a server, but you can jump straight to its config file to do that by hand.
@@ -129,7 +132,7 @@ Deleting an item, or updating one from GitHub, moves the old copy to your system
 5. Add a project workspace from the "+" next to Workspaces in the sidebar to see that project's local skills alongside your global ones, and to link global skills into it.
 6. Use **Discover** to browse a GitHub repo for skills/agents/commands/rules and install what you want, or use **Install from GitHub** directly if you already know the repo.
 7. For anything installed that way, use **Check for updates** on its detail panel to review a diff before pulling in changes, or **Restore** to revert to the version you installed.
-8. Open the **Dashboard** tab any time to see source size and estimated context exposure by tool, what's probably safe to prune, and where two items might be overlapping.
+8. Open the **Insights** pages any time to see estimated context exposure by tool, what you actually use, what's broken, and what's probably safe to prune or merge.
 9. Open **MCP servers** from the sidebar to see every server configured across your tools, global and per-project, and jump to its config file.
 
 ## Settings

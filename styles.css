@@ -210,7 +210,7 @@
   color: var(--text-faint);
 }
 
-/* Attention badge (e.g. Dashboard's prune/overlap count) — same size/weight as the other nav
+/* Attention badge (e.g. Insights Health count) — same size/weight as the other nav
  * counts, just colored red so it reads as "needs a look" without standing out structurally. */
 .skillmanager-nav-count-danger {
   font-size: var(--font-ui-smaller);
@@ -1790,7 +1790,49 @@ input.skillmanager-tag-add-input {
   height: 11px;
 }
 
-/* One bar per week over the heatmap window; only drawn once there's any use. */
+/* Detail rail usage heatmap: weeks as columns, Mon to Sun as rows, spanning the rail's width. */
+.skillmanager-heatmap {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+}
+
+.skillmanager-heatmap-cell {
+  aspect-ratio: 1;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+}
+
+/* Empty days match the properties panel below (its dark-theme override included). */
+.skillmanager-heatmap-cell.is-level-0 {
+  background: var(--background-secondary);
+}
+
+.theme-dark .skillmanager-heatmap-cell.is-level-0 {
+  background: color-mix(in srgb, var(--background-primary) 55%, black);
+}
+
+.skillmanager-heatmap-cell.is-future {
+  background: transparent;
+}
+
+.skillmanager-heatmap-cell.is-level-1 {
+  background: color-mix(in srgb, var(--interactive-accent) 30%, var(--background-modifier-border));
+}
+
+.skillmanager-heatmap-cell.is-level-2 {
+  background: color-mix(in srgb, var(--interactive-accent) 55%, var(--background-modifier-border));
+}
+
+.skillmanager-heatmap-cell.is-level-3 {
+  background: color-mix(in srgb, var(--interactive-accent) 78%, var(--background-modifier-border));
+}
+
+.skillmanager-heatmap-cell.is-level-4 {
+  background: var(--interactive-accent);
+}
+
+/* Weekly bars, used by the Insights Usage page's Activity chart. */
 .skillmanager-detail-usage-bars {
   display: flex;
   align-items: flex-end;
@@ -3266,4 +3308,27 @@ input.skillmanager-tag-add-input {
 .skillmanager-list-pill.is-never {
   color: var(--color-red);
   background: color-mix(in srgb, var(--color-red) 12%, transparent);
+}
+
+/* ---------- Insights: Usage switcher and activity chart ---------- */
+
+.skillmanager-insights-switcher {
+  align-self: flex-start;
+  flex-shrink: 0;
+}
+
+/* Page-sized version of the detail rail's weekly bars. */
+.skillmanager-insights-activity {
+  height: 96px;
+  max-width: none;
+  gap: 4px;
+}
+
+.skillmanager-insights-activity .skillmanager-detail-usage-bar {
+  max-width: none;
+  border-radius: 3px;
+}
+
+.skillmanager-dash-body > .skillmanager-dash-columns:first-child {
+  margin-top: 0;
 }
