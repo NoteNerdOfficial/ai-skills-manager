@@ -78,7 +78,7 @@ A file-tree preview with per-file size and estimated token count for multi-file 
 |---|:---:|:---:|:---:|:---:|
 | Claude Code (+ its plugins) | ✓ | ✓ | ✓ | ✓ |
 | Cursor | ✓ | ✓ | | ✓ |
-| Codex | ✓ | ✓ | ✓ | |
+| Codex | ✓ | ✓ | ✓ | ✓ |
 | OpenCode | ✓ | ✓ | ✓ | |
 | Antigravity | ✓ | ✓ | ✓ | ✓ |
 | GitHub Copilot | ✓ | | ✓ | ✓ |
@@ -93,7 +93,7 @@ A file-tree preview with per-file size and estimated token count for multi-file 
 | Continue | | | ✓ | ✓ |
 | Shared (`~/.agents/skills`) | ✓ | | | |
 
-Rules is a mix of directories of many rule files (e.g. Cursor's `.cursor/rules/`) and single instructions files that are scanned and toggled as one item (e.g. Claude Code's `CLAUDE.md`, Pi's `AGENTS.md`).
+Rules is a mix of directories of many rule files (e.g. Cursor's `.cursor/rules/`) and single instructions files that are scanned and toggled as one item (e.g. Claude Code's `CLAUDE.md`, Codex's `AGENTS.md`, Pi's `AGENTS.md`). Codex's `AGENTS.md` files are persistent instructions, not Claude-style auto-memory files; no Codex memory directory is assumed by default.
 
 Checkmarks reflect the paths scanned by default. Every one of them, plus a few documented-but-unconfirmed guesses for newer tools, can be added, changed, or turned off per tool in Settings.
 

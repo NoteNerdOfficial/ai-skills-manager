@@ -620,37 +620,49 @@ input.skillmanager-search {
   white-space: nowrap;
 }
 
-/* Label on the left, an attached accent square holding the x on the right, so it reads as a
-   dismiss action rather than another dropdown. */
-.skillmanager-clear-filters-btn {
+/* Filter button plus, while any filter is active, an attached accent square holding the x —
+   one click clears everything without opening the menu, and reads as a dismiss action rather
+   than another dropdown. */
+.skillmanager-filter-group {
+  display: flex;
   align-items: stretch;
-  gap: 0;
-  padding: 0 0 0 10px;
+  flex-shrink: 0;
+  border-radius: 7px;
   overflow: hidden;
 }
 
-/* Same vertical padding as the other toolbar buttons so the height matches them. */
-.skillmanager-clear-filters-btn .skillmanager-sort-btn-label {
-  display: flex;
-  align-items: center;
-  padding: 3px 10px 3px 0;
+.skillmanager-filter-group .skillmanager-sort-btn {
+  border-radius: 0;
 }
 
-.skillmanager-clear-filters-x {
+.skillmanager-filter-group .skillmanager-sort-btn.is-active {
+  color: var(--text-normal);
+}
+
+/* Scoped through the group and the button tag so it outranks Obsidian's own
+   button:not(.clickable-icon) background, which otherwise paints over the accent. Hover matches
+   the install button's accent recipe. */
+.skillmanager-filter-group button.skillmanager-filter-clear {
   display: flex;
   align-items: center;
   justify-content: center;
-  align-self: stretch;
   padding: 0 7px;
+  height: auto;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
   background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  cursor: pointer;
+}
+
+.skillmanager-filter-group button.skillmanager-filter-clear:hover,
+.skillmanager-filter-group button.skillmanager-filter-clear:focus-visible {
+  background: var(--interactive-accent-hover);
   color: var(--text-on-accent);
 }
 
-.skillmanager-clear-filters-btn:hover .skillmanager-clear-filters-x {
-  background: var(--interactive-accent-hover);
-}
-
-.skillmanager-clear-filters-x .svg-icon {
+.skillmanager-filter-clear .svg-icon {
   width: 14px;
   height: 14px;
 }
@@ -1531,12 +1543,21 @@ input.skillmanager-search {
   flex-shrink: 0;
 }
 
+/* Header block above the file body: title row, tool line, description, callouts, properties. */
+.skillmanager-detail-head {
+  margin-bottom: 24px;
+}
+
 .skillmanager-detail-header {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
   min-width: 0;
+}
+
+.skillmanager-detail-head .skillmanager-detail-header {
+  margin-bottom: 0;
 }
 
 .skillmanager-detail-title {
@@ -1551,6 +1572,7 @@ input.skillmanager-search {
   white-space: nowrap;
 }
 
+.skillmanager-detail-type-pill,
 .skillmanager-detail-tool-pill {
   display: inline-flex;
   align-items: center;
@@ -1571,35 +1593,34 @@ input.skillmanager-search {
   margin-left: auto;
 }
 
-/* Two-column strip below the header, shown only once a file is open (see renderIdentityBand):
-   identity (tags/description/path/extra frontmatter) on the left, file stats + source status on
-   the right. align-items: stretch (the default, stated explicitly here) makes both columns match
-   the taller one's height, so the right column's divider always reaches down to wherever the
-   left column actually ends — including the "N more fields" toggle — rather than stopping short
-   at the right column's own, usually shorter, content. */
-.skillmanager-detail-band {
+/* Which tool sees this (Claude Code · plugin · Global), plain text under the title. */
+.skillmanager-detail-tool {
   display: flex;
-  gap: 20px;
-  align-items: stretch;
-  margin-bottom: 14px;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
 }
 
-.skillmanager-detail-band-left {
-  flex: 1;
-  min-width: 0;
+.skillmanager-detail-tool-icon {
+  display: flex;
+  flex-shrink: 0;
 }
 
-.skillmanager-detail-band-right {
-  flex: 0 0 230px;
-  border-left: 1px solid var(--background-modifier-border);
-  padding-left: 16px;
+.skillmanager-detail-tool-icon .svg-icon,
+.skillmanager-detail-tool-icon svg,
+.skillmanager-detail-tool-icon img {
+  width: 14px;
+  height: 14px;
 }
 
 .skillmanager-detail-desc {
-  color: var(--text-muted);
+  color: var(--text-normal);
   font-size: var(--font-ui-small);
-  line-height: var(--line-height-normal);
-  margin: 0 0 8px;
+  line-height: 1.5;
+  max-width: 68ch;
+  margin: 14px 0 0;
 }
 
 .skillmanager-detail-path {
@@ -1614,16 +1635,6 @@ input.skillmanager-search {
 
 .skillmanager-detail-path-target {
   color: var(--text-accent);
-}
-
-.skillmanager-fm-toggle {
-  border: none !important;
-  box-shadow: none !important;
-  background: transparent !important;
-  color: var(--text-accent);
-  font-size: var(--font-ui-smaller);
-  padding: 2px 0;
-  cursor: pointer;
 }
 
 .skillmanager-detail-frontmatter {
@@ -1672,7 +1683,6 @@ input.skillmanager-search {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 10px;
 }
 
 .skillmanager-tag-chip {
@@ -1682,7 +1692,7 @@ input.skillmanager-search {
   align-items: center;
   gap: 4px;
   background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
+  border: 1px solid var(--text-faint);
   color: var(--text-muted);
   border-radius: 999px;
   padding: 0 6px 0 10px;
@@ -1707,10 +1717,10 @@ input.skillmanager-search {
 .skillmanager-tag-add-btn {
   box-sizing: border-box;
   height: 22px;
-  border: 1px dashed var(--background-modifier-border) !important;
+  border: 1px dashed var(--text-faint) !important;
   box-shadow: none !important;
   background: transparent !important;
-  color: var(--text-faint);
+  color: var(--text-muted);
   border-radius: 999px;
   padding: 0 10px;
   font-size: var(--font-ui-smaller);
@@ -1735,44 +1745,128 @@ input.skillmanager-tag-add-input {
   font-size: var(--font-ui-smaller);
 }
 
-/* ---- right column: file stats + compact source status ---- */
+/* ---- callout stats: big numbers in one row, divided by hairlines ---- */
 
-.skillmanager-detail-stats {
-  margin-bottom: 10px;
-}
-
-.skillmanager-detail-stat-row {
+.skillmanager-detail-callouts {
   display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 2px 0;
-  font-size: var(--font-ui-smaller);
-  font-family: var(--font-monospace);
+  flex-wrap: wrap;
+  row-gap: 10px;
+  margin-top: 18px;
 }
 
-.skillmanager-detail-stat-label {
-  color: var(--text-faint);
-  display: inline-flex;
+.skillmanager-detail-callout {
+  padding: 0 18px;
+  border-left: 1px solid var(--background-modifier-border);
+}
+
+.skillmanager-detail-callout:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+
+.skillmanager-detail-callout-value {
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+  white-space: nowrap;
+}
+
+.skillmanager-detail-callout-label {
+  display: flex;
   align-items: center;
   gap: 4px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
 }
 
-.skillmanager-detail-stat-info {
+.skillmanager-detail-info {
   display: inline-flex;
+  color: var(--text-faint);
   cursor: help;
 }
 
-.skillmanager-detail-stat-info svg {
+.skillmanager-detail-info svg {
   width: 11px;
   height: 11px;
 }
 
-.skillmanager-detail-stat-value {
-  color: var(--text-muted);
+/* One bar per week over the heatmap window; only drawn once there's any use. */
+.skillmanager-detail-usage-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 28px;
+  max-width: 320px;
+  margin-top: 12px;
 }
 
-.skillmanager-detail-stat-value.skillmanager-detail-stat-warn {
-  color: var(--text-warning);
+.skillmanager-detail-usage-bar {
+  flex: 1;
+  max-width: 10px;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+}
+
+.skillmanager-detail-usage-bar.is-used {
+  background: var(--interactive-accent);
+}
+
+/* ---- properties panel: tinted key/value table, source footer ---- */
+
+.skillmanager-detail-props-panel {
+  margin-top: 20px;
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  overflow: hidden;
+}
+
+/* Secondary reads as lighter grey on dark themes, so go deeper than the page instead. */
+.theme-dark .skillmanager-detail-props-panel {
+  background: color-mix(in srgb, var(--background-primary) 55%, black);
+}
+
+.skillmanager-detail-props {
+  display: grid;
+  grid-template-columns: minmax(110px, max-content) minmax(0, 1fr);
+  gap: 6px 16px;
+  padding: 12px 16px;
+  font-size: var(--font-ui-small);
+}
+
+.skillmanager-detail-prop-key {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-faint);
+}
+
+.skillmanager-detail-prop-value {
+  min-width: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.skillmanager-detail-prop-value.is-mono {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+
+.skillmanager-detail-props-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.skillmanager-detail-props-source-repo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-size: var(--font-ui-small);
 }
 
 /* Integrity issues, listed under the path in the band's left column. */
@@ -1783,6 +1877,10 @@ input.skillmanager-tag-add-input {
   margin: 6px 0;
   font-size: var(--font-ui-smaller);
   color: var(--text-warning);
+}
+
+.skillmanager-detail-head .skillmanager-detail-issues {
+  margin: 14px 0 0;
 }
 
 .skillmanager-detail-issue {
@@ -1801,112 +1899,13 @@ input.skillmanager-tag-add-input {
   height: 12px;
 }
 
-/* ---- usage heatmap: weeks as columns, Mon to Sun as rows ---- */
-
-.skillmanager-heatmap {
-  margin: 4px 0 16px;
-  max-width: 640px;
-}
-
-.skillmanager-heatmap-summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-}
-
-.skillmanager-heatmap-grid {
-  display: grid;
-  grid-template-columns: 28px repeat(26, minmax(0, 1fr));
-  gap: 3px;
-}
-
-.skillmanager-heatmap-corner,
-.skillmanager-heatmap-month,
-.skillmanager-heatmap-weekday {
-  font-size: var(--font-ui-smaller);
-  color: var(--text-faint);
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.skillmanager-heatmap-month {
-  overflow: visible;
-  padding-bottom: 2px;
-}
-
-.skillmanager-heatmap-weekday {
-  display: flex;
-  align-items: center;
-}
-
-.skillmanager-heatmap-cell {
-  aspect-ratio: 1;
-  border-radius: 2px;
-  background: var(--background-modifier-border);
-}
-
-.skillmanager-heatmap-cell.is-future {
-  background: transparent;
-}
-
-.skillmanager-heatmap-cell.is-level-1 {
-  background: color-mix(in srgb, var(--interactive-accent) 30%, var(--background-modifier-border));
-}
-
-.skillmanager-heatmap-cell.is-level-2 {
-  background: color-mix(in srgb, var(--interactive-accent) 55%, var(--background-modifier-border));
-}
-
-.skillmanager-heatmap-cell.is-level-3 {
-  background: color-mix(in srgb, var(--interactive-accent) 78%, var(--background-modifier-border));
-}
-
-.skillmanager-heatmap-cell.is-level-4 {
-  background: var(--interactive-accent);
-}
-
-.skillmanager-heatmap-legend {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 3px;
-  margin-top: 6px;
-  font-size: var(--font-ui-smaller);
-  color: var(--text-faint);
-}
-
-.skillmanager-heatmap-legend .skillmanager-heatmap-cell {
-  width: 10px;
-}
-
-.skillmanager-heatmap-legend span:first-child {
-  margin-right: 3px;
-}
-
-.skillmanager-heatmap-legend span:last-child {
-  margin-left: 3px;
-}
-
-/* Right-column variant: sits below the stats rows in the two-column band, once a file is open. */
-.skillmanager-detail-source {
-  padding-top: 10px;
-  border-top: 1px solid var(--background-modifier-border);
-}
-
-.skillmanager-detail-source .skillmanager-detail-source-repo {
-  margin-bottom: 4px;
-}
-
-/* Inline variant: a full-width row directly under the header, used whenever there's no open
-   file to pair source status with in a two-column band (browsing a tree, or mid-review). */
+/* Inline variant: a full-width row under the tool line, used whenever no file is open to give
+   source status a properties panel (browsing a tree, or mid-review). */
 .skillmanager-detail-source-inline {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 10px 0 4px;
+  margin-top: 14px;
 }
 
 .skillmanager-detail-source-inline .skillmanager-detail-source-repo {
@@ -1951,34 +1950,35 @@ input.skillmanager-tag-add-input {
   text-decoration: underline;
 }
 
-/* Check for updates + Restore installed side by side, wrapping to a second line only if the
-   column's too narrow to fit both (e.g. a long tool pill pushed the rail itself narrower). */
+/* Check for updates (accent) + Restore installed as real buttons, so they don't read as more
+   text; they wrap to a second line only if the rail's too narrow to fit both. */
 .skillmanager-detail-source-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px 4px;
+  gap: 6px;
 }
 
 .skillmanager-detail-source-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--radius-s);
   font-size: var(--font-ui-smaller);
-  padding: 3px 6px;
-  height: auto;
-  border: none !important;
-  box-shadow: none !important;
-  background: transparent !important;
-  color: var(--text-muted);
+  color: var(--text-normal);
   cursor: pointer;
   white-space: nowrap;
 }
 
-.skillmanager-detail-source-btn:hover,
-.skillmanager-detail-source-btn:focus {
-  color: var(--text-normal);
-  background: var(--background-modifier-hover) !important;
+.skillmanager-detail-source-btn:first-child {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.skillmanager-detail-source-btn:first-child:hover {
+  background: var(--interactive-accent-hover);
 }
 
 .skillmanager-detail-source-btn-icon {
@@ -1994,6 +1994,12 @@ input.skillmanager-tag-add-input {
 .skillmanager-detail-body {
   border-top: 1px solid var(--background-modifier-border);
   padding-top: 16px;
+}
+
+/* The tinted properties panel already closes off the header, so no divider after it. */
+.skillmanager-detail-head + .skillmanager-detail-body {
+  border-top: none;
+  padding-top: 0;
 }
 
 .skillmanager-review-status {
@@ -2024,6 +2030,13 @@ input.skillmanager-tag-add-input {
   overflow: visible;
   padding: 0;
   contain: none;
+}
+
+/* Code blocks match the properties panel's deeper tint on dark themes (see
+   .skillmanager-detail-props-panel); light themes keep the theme's own code background. */
+.theme-dark .skillmanager-detail-body .skillmanager-markdown-preview pre {
+  --code-background: color-mix(in srgb, var(--background-primary) 55%, black);
+  background: var(--code-background);
 }
 
 .skillmanager-detail-body .skillmanager-markdown-preview .markdown-preview-sizer {
@@ -2404,8 +2417,8 @@ input.skillmanager-tag-add-input {
 }
 
 /* ---------- source / install ----------
-   Source status (truncated repo + Check for updates/Restore installed) lives right after the
-   identity band — see .skillmanager-detail-source* above, next to .skillmanager-detail-band. */
+   Source status (repo + Check for updates/Restore installed) lives in the detail header; see
+   .skillmanager-detail-props-source and .skillmanager-detail-source* above. */
 
 /* ---------- "All agents" tools page ---------- */
 
@@ -2499,10 +2512,10 @@ input.skillmanager-tag-add-input {
 }
 
 .skillmanager-toolpath-add-btn {
-  border: 1px dashed var(--background-modifier-border) !important;
+  border: 1px dashed var(--text-faint) !important;
   box-shadow: none !important;
   background: transparent !important;
-  color: var(--text-faint);
+  color: var(--text-muted);
   border-radius: 6px;
   padding: 2px 10px;
   font-size: var(--font-ui-smaller);

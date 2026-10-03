@@ -169,7 +169,7 @@ export default class SkillManagerPlugin extends Plugin {
       return {
         ...defaultTool,
         paths: saved.paths,
-        projectPaths: saved.projectPaths ?? defaultTool.projectPaths,
+        projectPaths: saved.projectPaths ? { ...defaultTool.projectPaths, ...saved.projectPaths } : defaultTool.projectPaths,
         disabled: saved.disabled,
         pluginsRegistry: saved.pluginsRegistry ?? defaultTool.pluginsRegistry,
         pluginsPaths: saved.pluginsPaths ?? defaultTool.pluginsPaths,
@@ -183,6 +183,8 @@ export default class SkillManagerPlugin extends Plugin {
         // Same treatment — user-edited via LibraryView's renderRuleAdditionalPaths.
         ruleAdditionalPaths: saved.ruleAdditionalPaths ?? defaultTool.ruleAdditionalPaths,
         ruleAdditionalProjectPaths: saved.ruleAdditionalProjectPaths ?? defaultTool.ruleAdditionalProjectPaths,
+        memoryPath: saved.memoryPath ?? defaultTool.memoryPath,
+        projectMemoryPath: saved.projectMemoryPath ?? defaultTool.projectMemoryPath,
       };
     });
     // A user-added tool isn't in DEFAULT_TOOLS at all, so the map above never sees it — carry it

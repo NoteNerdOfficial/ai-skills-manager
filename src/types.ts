@@ -27,6 +27,14 @@ export const TYPE_LABELS: Record<ItemType, string> = {
   rule: "Rules",
 };
 
+/** TYPE_LABELS as a library category (sidebar, scope title, type filters): Rules also holds
+ *  agent-written memories (see memories.ts), so it's named for both there. Path fields, install
+ *  pickers and counts keep TYPE_LABELS, since memories have their own path and can't be installed. */
+export const TYPE_CATEGORY_LABELS: Record<ItemType, string> = {
+  ...TYPE_LABELS,
+  rule: "Memories & Rules",
+};
+
 /** Singular form for labeling one item at a time — a card's type pill, its detail panel.
  *  TYPE_LABELS stays plural since it's a category label (sidebar counts, section titles). */
 export const TYPE_LABEL_SINGULAR: Record<ItemType, string> = {
@@ -109,6 +117,17 @@ export interface ToolConfig {
    *  instead of forcing everything through the one paths.rule slot. */
   ruleAdditionalPaths?: RulePathEntry[];
   ruleAdditionalProjectPaths?: RulePathEntry[];
+  /** Folder holding memory files the agent writes for itself, listed under Rules with a
+   *  "Memories" kind (see memories.ts). Either Claude Code's per-project layout
+   *  (<root>/<project-slug>/memory/*.md, slugs matched to workspaces) or a flat folder of memory
+   *  files, told apart from disk. Only Claude Code's is confirmed; other tools' are user-entered
+   *  from the tool detail rail. An empty string means "cleared by the user" and is kept as-is on
+   *  load, rather than falling back to the default the way an absent value does. */
+  memoryPath?: string;
+  /** Project-relative folder of memory files kept inside each workspace (e.g. ".tool/memory"),
+   *  for a tool that stores per-project memories in the repo rather than under its home folder.
+   *  Scanned flat in every workspace; no tool's location is confirmed, so there's no default. */
+  projectMemoryPath?: string;
   /** Path to this tool's global MCP server config JSON (a "mcpServers" map), if known — e.g.
    *  Claude Code's ~/.claude.json. Read-only: MCP servers are surfaced for visibility, never
    *  toggled from here. */
@@ -408,6 +427,9 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
     // scanned at all.
     ruleAdditionalPaths: [{ path: "~/.claude/rules", singleFile: false }],
     ruleAdditionalProjectPaths: [{ path: ".claude/rules", singleFile: false }],
+    // Auto-memory, documented at https://code.claude.com/docs/en/memory: one memory/ folder per
+    // project under ~/.claude/projects/<path-slug>/, with a MEMORY.md index loaded every session.
+    memoryPath: "~/.claude/projects",
     pluginsRegistry: "~/.claude/plugins/installed_plugins.json",
     pluginsSettingsPath: "~/.claude/settings.json",
     // ~/.claude/skills/synced/<workspace>_<user>/ is a vendor-managed cache of Claude Code's own
@@ -461,37 +483,38 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
     // for the full-color gradient blobs, forced to currentColor like every other tool here.
     svgIcon:
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 15" fill="currentColor"><path d="M14.0777 13.984C14.945 14.6345 16.2458 14.2008 15.0533 13.0084C11.476 9.53949 12.2349 0 7.79033 0C3.34579 0 4.10461 9.53949 0.527295 13.0084C-0.773543 14.3092 0.635692 14.6345 1.50293 13.984C4.86344 11.7076 4.64663 7.69664 7.79033 7.69664C10.934 7.69664 10.7172 11.7076 14.0777 13.984Z"/></svg>',
-    // Only "skill" is confirmed at the global/machine-wide scope (~/.gemini/config/skills,
-    // shared across Antigravity, the Gemini CLI, and the IDE). Rules live in a single
-    // ~/.gemini/GEMINI.md file rather than a directory skillmanager can scan, and there's no
-    // documented global directory for Workflows (Antigravity's slash-command equivalent) or
-    // named custom Agents — only the project-scoped locations below. Double-check/adjust in
-    // Settings if that's grown global directories since.
+    // Global skills live in ~/.gemini/config/skills. Global rules live in ~/.gemini/GEMINI.md
+    // (configured under ruleAdditionalPaths below).
     paths: {
       skill: "~/.gemini/config/skills",
     },
-    // Guessed by symmetry with the confirmed skills path above — Workflows/Agents may well live
-    // at sibling folders under ~/.gemini/config/ but that's not documented anywhere found.
+    // Workflows and agents may live in sibling folders under ~/.gemini/config/
     unconfirmedPaths: {
       agent: "~/.gemini/config/agents",
       command: "~/.gemini/config/workflows",
+      rule: "~/.gemini/config/rules",
     },
-    // All project-scoped under .agents/ — a different folder entirely from the global skill
-    // path above, not just it relocated. (Antigravity still falls back to the legacy singular
-    // .agent/ for skills/rules/workflows if .agents/ isn't found; only the current .agents/
-    // form is set here.)
-    //
-    // "skill" deliberately omitted: Antigravity's project-scoped skills convention IS the
-    // shared cross-tool standard (<project>/.agents/skills), the exact same path the
-    // "global" (Shared) tool below already derives per-project automatically (it has no
-    // projectPaths override, so scanProject strips "~/" off its global ~/.agents/skills path).
-    // Declaring it again here would scan that same directory twice and list every skill in it
-    // under two different tool tags.
+    // Project customizations live under .agents/ at the repository root.
     projectPaths: {
+      skill: ".agents/skills",
       agent: ".agents/agents",
       command: ".agents/workflows",
       rule: ".agents/rules",
     },
+    // Global instructions rule file: ~/.gemini/GEMINI.md
+    ruleAdditionalPaths: [
+      { path: "~/.gemini/GEMINI.md", singleFile: true },
+    ],
+    // Project-root instructions files: Antigravity discovers GEMINI.md and AGENTS.md directly
+    // at the workspace root alongside the .agents/rules directory above.
+    ruleAdditionalProjectPaths: [
+      { path: "GEMINI.md", singleFile: true },
+      { path: "AGENTS.md", singleFile: true },
+    ],
+    // Global MCP server configuration: ~/.gemini/config/mcp_config.json
+    mcpConfigPath: "~/.gemini/config/mcp_config.json",
+    // Built-in skills bundled in Antigravity (e.g. ~/.gemini/antigravity-cli/builtin/skills)
+    builtInDirnames: ["builtin"],
   },
   {
     id: "codex",
@@ -503,7 +526,16 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
       skill: "~/.codex/skills",
       command: "~/.codex/prompts",
       agent: "~/.codex/agents",
+      // Codex loads the global AGENTS.md file as persistent instructions. It is an
+      // instructions file, not an auto-memory store, so it belongs under Rules.
+      rule: "~/.codex/AGENTS.md",
     },
+    // Codex also discovers AGENTS.md from the project root through the current
+    // directory. The project workspace represents the repository root here.
+    projectPaths: {
+      rule: "AGENTS.md",
+    },
+    singleFileRule: true,
     pluginsPaths: ["~/.codex/plugins/cache"],
     // Codex only loads cached plugins listed (and not set to enabled = false) here; the cache
     // also keeps copies it isn't loading, e.g. a stale openai-curated-remote marketplace folder.

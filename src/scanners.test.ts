@@ -4,7 +4,7 @@ import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DISABLED_DIRNAME, DISABLED_SUFFIX, toggleItemEnabled } from "./itemToggle";
 import { makeEntryId, scanAllPlugins, scanAllTools, scanBrokenSymlinks, scanProject, scanTool, stableEntryPath } from "./scanners";
-import { ProjectWorkspace, ToolConfig } from "./types";
+import { ProjectWorkspace, ToolConfig, DEFAULT_TOOLS } from "./types";
 
 function makeTool(pluginsRegistry: string, pluginsSettingsPath: string): ToolConfig {
   return {
@@ -205,6 +205,16 @@ describe("ruleAdditionalPaths / ruleAdditionalProjectPaths", () => {
     expect(claudeCode?.ruleAdditionalPaths).toEqual([{ path: "~/.claude/rules", singleFile: false }]);
     expect(claudeCode?.ruleAdditionalProjectPaths).toEqual([{ path: ".claude/rules", singleFile: false }]);
   });
+
+  it("Codex's DEFAULT_TOOLS entry scans AGENTS.md as a single global and project rule", async () => {
+    const { DEFAULT_TOOLS } = await import("./types");
+    const codex = DEFAULT_TOOLS.find((tool) => tool.id === "codex");
+    expect(codex?.paths.rule).toBe("~/.codex/AGENTS.md");
+    expect(codex?.projectPaths?.rule).toBe("AGENTS.md");
+    expect(codex?.singleFileRule).toBe(true);
+    expect(codex?.memoryPath).toBeUndefined();
+    expect(codex?.projectMemoryPath).toBeUndefined();
+  });
 });
 
 describe("index/readme-like flat files are excluded from skill/agent/command, kept for rule", () => {
@@ -380,3 +390,69 @@ describe("install-side entryId", () => {
     expect(ids.has(makeEntryId("test", "command", null, null, "deploy", stableEntryPath(command)))).toBe(true);
   });
 });
+
+describe("Antigravity scanning", () => {
+  let root: string;
+  let project: ProjectWorkspace;
+  let antigravityTool: ToolConfig;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "skillmanager-antigravity-"));
+    project = { id: "proj-ag", name: "Antigravity Project", path: join(root, "project") };
+    mkdirSync(project.path, { recursive: true });
+    antigravityTool = DEFAULT_TOOLS.find((t) => t.id === "antigravity")!;
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("scans project skills from .agents/skills", () => {
+    const skillDir = join(project.path, ".agents", "skills", "deploy-helper");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), "---\nname: deploy-helper\ndescription: Deployment helper\n---\n");
+
+    const items = scanProject([antigravityTool], project);
+    const skill = items.find((i) => i.name === "deploy-helper" && i.type === "skill");
+    expect(skill).toBeDefined();
+    expect(skill?.tool).toBe("antigravity");
+    expect(skill?.projectId).toBe(project.id);
+  });
+
+  it("scans project agents from .agents/agents", () => {
+    const agentsDir = join(project.path, ".agents", "agents");
+    mkdirSync(agentsDir, { recursive: true });
+    writeFileSync(join(agentsDir, "reviewer.md"), "---\nname: Code Reviewer\ndescription: Reviews code\n---\n");
+
+    const items = scanProject([antigravityTool], project);
+    const agent = items.find((i) => i.name === "Code Reviewer" && i.type === "agent");
+    expect(agent).toBeDefined();
+    expect(agent?.tool).toBe("antigravity");
+  });
+
+  it("scans project workflows from .agents/workflows as commands", () => {
+    const workflowsDir = join(project.path, ".agents", "workflows");
+    mkdirSync(workflowsDir, { recursive: true });
+    writeFileSync(join(workflowsDir, "audit.md"), "---\nname: Audit\ndescription: Runs audit\n---\n");
+
+    const items = scanProject([antigravityTool], project);
+    const cmd = items.find((i) => i.name === "Audit" && i.type === "command");
+    expect(cmd).toBeDefined();
+    expect(cmd?.tool).toBe("antigravity");
+  });
+
+  it("scans project rules from .agents/rules as well as GEMINI.md and AGENTS.md root files", () => {
+    const rulesDir = join(project.path, ".agents", "rules");
+    mkdirSync(rulesDir, { recursive: true });
+    writeFileSync(join(rulesDir, "style.md"), "---\nname: Style Guide\n---\nRules here");
+    writeFileSync(join(project.path, "GEMINI.md"), "# Project Gemini Rules");
+    writeFileSync(join(project.path, "AGENTS.md"), "# Project Agent Rules");
+
+    const items = scanProject([antigravityTool], project);
+    const ruleNames = items.filter((i) => i.type === "rule").map((i) => i.name);
+    expect(ruleNames).toContain("Style Guide");
+    expect(ruleNames).toContain("GEMINI");
+    expect(ruleNames).toContain("AGENTS");
+  });
+});
+

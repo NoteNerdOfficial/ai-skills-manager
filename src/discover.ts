@@ -62,6 +62,8 @@ const TYPE_DIRNAMES: Record<string, ItemType> = {
   commands: "command",
   prompt: "command",
   prompts: "command",
+  workflow: "command",
+  workflows: "command",
   rule: "rule",
   rules: "rule",
 };

@@ -21,12 +21,14 @@ import {
   LibraryLayout,
   ToolConfig,
   TYPE_LABEL_SINGULAR,
+  TYPE_CATEGORY_LABELS,
   TYPE_LABELS,
 } from "../types";
 import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, expandHome, toProjectRelative } from "../scanners";
 import { addToProject, removeFromProject } from "../projectLink";
 import { deleteItem, disabledLocation, previewToggle, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
+import { MEMORY_INDEX_FILENAME, checkMemoryIndexed, forgetMemoryIndexEntry, isMemoryIndex, isMemoryItem, toggleMemoryEnabled } from "../memories";
 import { ShadowNoteStore } from "../store";
 import { deleteCollectionAndSync, upsertCollectionAndSync } from "../collections";
 import { CollectionEditModal } from "../modals/CollectionEditModal";
@@ -203,9 +205,13 @@ const SOURCE_FILTER_LABELS: Record<"github" | "builtin" | "local", string> = {
   local: "Local",
 };
 
-const RULE_KIND_LABELS: Record<"instructions" | "granular", string> = {
+type RuleKind = "instructions" | "granular" | "memory";
+/** A Filter-menu section (see renderFilterButton). */
+type FilterDimension = "type" | "kind" | "tool" | "scope" | "source";
+const RULE_KIND_LABELS: Record<RuleKind, string> = {
   instructions: "Instructions files",
   granular: "Individual rules",
+  memory: "Memories",
 };
 
 export class LibraryView extends ItemView {
@@ -231,9 +237,14 @@ export class LibraryView extends ItemView {
   /** Same compounding, sticks-around-across-navigation shape as sourceFilter, but scoped to
    *  ItemType "rule": "instructions" narrows to a tool's single loaded-every-session file (e.g.
    *  Claude Code's CLAUDE.md, ToolConfig.singleFileRule), "granular" to a directory of many
-   *  separate rule files (e.g. Cursor's ~/.cursor/rules). Rendered only while typeFilter ===
-   *  "rule" (see renderRuleKindButton) since it's meaningless for any other type. */
-  private ruleKindFilter: "instructions" | "granular" | null = null;
+   *  separate rule files (e.g. Cursor's ~/.cursor/rules), "memory" to files the agent wrote
+   *  itself (ToolConfig.memoryPath). Rendered only while typeFilter === "rule" (see
+   *  renderRuleKindButton) since it's meaningless for any other type. */
+  private ruleKindFilter: RuleKind | null = null;
+  /** Page-level scope filter from the Filter menu (see renderFilterButton): "global" for items
+   *  found under a tool's home-directory paths, or a workspace id. Hidden, and ignored, on a
+   *  workspace page, where the sidebar already fixes the scope. */
+  private pageScopeFilter: string | null = null;
   /** Per-session only (see silentUpdateItem/bulkCheckForUpdates) — whether a sourceRepo item was
    *  last confirmed current or behind. Absent (including for anything with no sourceRepo at all)
    *  reads as "unknown," the same muted dot as "not tracked from GitHub," until an explicit check
@@ -401,7 +412,6 @@ export class LibraryView extends ItemView {
   private addingTagFor: string | null = null;
   // Whether the "N more fields" frontmatter disclosure is open — local UI state, reset whenever
   // selection changes so a freshly-opened file always starts collapsed.
-  private moreFieldsExpanded = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -643,7 +653,8 @@ export class LibraryView extends ItemView {
    *  on it. This changes the item's path, so a rescan (not an optimistic patch) follows. */
   private async toggleEnabled(item: ItemMetadata) {
     try {
-      toggleItemEnabled(item);
+      if (this.isMemory(item)) toggleMemoryEnabled(item);
+      else toggleItemEnabled(item);
     } catch (e) {
       new Notice(`Couldn't toggle "${item.name}": ` + errorMessage(e));
       return;
@@ -666,12 +677,18 @@ export class LibraryView extends ItemView {
     }
     const preview = previewToggle(item);
     const toolText = this.toolLabel(item).text;
+    const indexNote =
+      this.isMemory(item) && !isMemoryIndex(item)
+        ? preview.willDisable
+          ? ` Its line in ${MEMORY_INDEX_FILENAME} is removed too.`
+          : ` Its line in ${MEMORY_INDEX_FILENAME} is restored too.`
+        : "";
     new ConfirmModal(
       this.app,
       preview.willDisable ? `Disable "${item.name}"?` : `Enable "${item.name}"?`,
       preview.willDisable
-        ? `This moves "${item.name}" to ${preview.toPath}, so ${toolText} stops seeing it.`
-        : `This moves "${item.name}" back to ${preview.toPath}, so ${toolText} can see it again.`,
+        ? `This moves "${item.name}" to ${preview.toPath}, so ${toolText} stops seeing it.${indexNote}`
+        : `This moves "${item.name}" back to ${preview.toPath}, so ${toolText} can see it again.${indexNote}`,
       preview.willDisable ? "Disable" : "Enable",
       async () => {
         await perform();
@@ -859,6 +876,7 @@ export class LibraryView extends ItemView {
     this.toolFilter = null;
     this.pageToolFilter = null;
     this.pageTypeFilter = null;
+    this.pageScopeFilter = null;
     this.collectionFilter = null;
     this.projectFilter = null;
     this.pluginFilter = null;
@@ -879,7 +897,6 @@ export class LibraryView extends ItemView {
     this.selectedFilePath = null;
     this.detailLoadedFor = null;
     this.addingTagFor = null;
-    this.moreFieldsExpanded = false;
   }
 
   private isScoped(): boolean {
@@ -910,7 +927,8 @@ export class LibraryView extends ItemView {
     if (this.pageToolFilter) {
       labels.push(this.getSettings().tools.find((t) => t.id === this.pageToolFilter)?.name ?? "One tool");
     }
-    if (this.pageTypeFilter) labels.push(TYPE_LABELS[this.pageTypeFilter]);
+    if (this.pageTypeFilter) labels.push(TYPE_CATEGORY_LABELS[this.pageTypeFilter]);
+    if (this.pageScopeFilter) labels.push(this.scopeFilterLabel(this.pageScopeFilter));
     return labels;
   }
 
@@ -922,45 +940,57 @@ export class LibraryView extends ItemView {
     this.ruleKindFilter = null;
     this.pageToolFilter = null;
     this.pageTypeFilter = null;
+    this.pageScopeFilter = null;
     this.tagbarScrollLeft = 0;
   }
 
   private filteredItems(): ItemMetadata[] {
+    return this.sortItems(this.items.filter((item) => this.matchesFilters(item)));
+  }
+
+  /** Every sidebar scope and page filter, except the Filter-menu dimension named in `ignore` —
+   *  that's how the menu counts what each option would show if picked (see renderFilterButton). */
+  private matchesFilters(item: ItemMetadata, ignore?: FilterDimension): boolean {
     const query = this.search.trim().toLowerCase();
-    const filtered = this.items.filter((item) => {
-      // Baseline, not a togglable filter (unlike everything below) — a disabled tool's items
-      // never show in the main grid, same spirit as enabledFilter already being separate from
-      // the scope-filter group. this.items itself stays the full set (rescan.ts deliberately
-      // doesn't drop them, to keep their shadow-note metadata alive across a disable/re-enable),
-      // so the "All tools" page can still read true per-tool counts straight off this.items.
-      if (this.isToolDisabled(item.tool)) return false;
-      if (this.enabledFilter === "enabled" && !item.enabled) return false;
-      if (this.enabledFilter === "disabled" && item.enabled) return false;
-      if (this.favoritesOnly && !item.favorite) return false;
-      if (this.typeFilter && item.type !== this.typeFilter) return false;
-      if (this.toolFilter && item.tool !== this.toolFilter) return false;
-      if (this.pageTypeFilter && item.type !== this.pageTypeFilter) return false;
-      if (this.pageToolFilter && item.tool !== this.pageToolFilter) return false;
-      if (this.collectionFilter && !item.collections.includes(this.collectionFilter)) return false;
-      if (this.projectFilter && item.projectId !== this.projectFilter) return false;
-      if (this.pluginFilter && item.pluginId !== this.pluginFilter) return false;
-      if (this.ruleKindFilter && item.type === "rule") {
-        const single = this.isSingleFileRuleTool(item.tool);
-        if (this.ruleKindFilter === "instructions" && !single) return false;
-        if (this.ruleKindFilter === "granular" && single) return false;
-      }
+    // Baseline, not a togglable filter (unlike everything below) — a disabled tool's items
+    // never show in the main grid, same spirit as enabledFilter already being separate from
+    // the scope-filter group. this.items itself stays the full set (rescan.ts deliberately
+    // doesn't drop them, to keep their shadow-note metadata alive across a disable/re-enable),
+    // so the "All tools" page can still read true per-tool counts straight off this.items.
+    if (this.isToolDisabled(item.tool)) return false;
+    if (this.enabledFilter === "enabled" && !item.enabled) return false;
+    if (this.enabledFilter === "disabled" && item.enabled) return false;
+    if (this.favoritesOnly && !item.favorite) return false;
+    if (this.typeFilter && item.type !== this.typeFilter) return false;
+    if (this.toolFilter && item.tool !== this.toolFilter) return false;
+    if (ignore !== "type" && this.pageTypeFilter && item.type !== this.pageTypeFilter) return false;
+    if (ignore !== "tool" && this.pageToolFilter && item.tool !== this.pageToolFilter) return false;
+    if (this.collectionFilter && !item.collections.includes(this.collectionFilter)) return false;
+    if (this.projectFilter && item.projectId !== this.projectFilter) return false;
+    if (ignore !== "scope" && this.pageScopeFilter && !this.projectFilter && this.scopeKeyOf(item) !== this.pageScopeFilter) return false;
+    if (this.pluginFilter && item.pluginId !== this.pluginFilter) return false;
+    if (ignore !== "kind" && this.ruleKindFilter && item.type === "rule" && this.ruleKindOf(item) !== this.ruleKindFilter) return false;
+    if (ignore !== "source") {
       if (this.sourceFilter === "github" && !item.sourceRepo) return false;
       if (this.sourceFilter === "builtin" && !this.isBuiltIn(item)) return false;
       if (this.sourceFilter === "local" && (item.sourceRepo || this.isBuiltIn(item))) return false;
-      if (this.untaggedOnly && item.tags.length > 0) return false;
-      if (this.tagFilter && !item.tags.includes(this.tagFilter)) return false;
-      if (query) {
-        const haystack = `${item.name} ${item.description}`.toLowerCase();
-        if (!haystack.includes(query)) return false;
-      }
-      return true;
-    });
-    return this.sortItems(filtered);
+    }
+    if (this.untaggedOnly && item.tags.length > 0) return false;
+    if (this.tagFilter && !item.tags.includes(this.tagFilter)) return false;
+    if (query) {
+      const haystack = `${item.name} ${item.description}`.toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+    return true;
+  }
+
+  private scopeKeyOf(item: ItemMetadata): string {
+    return item.projectId ?? "global";
+  }
+
+  private scopeFilterLabel(key: string): string {
+    if (key === "global") return "Global";
+    return this.getAllProjects().find((p) => p.id === key)?.name ?? "Workspace";
   }
 
   private sortItems(items: ItemMetadata[]): ItemMetadata[] {
@@ -1045,7 +1075,7 @@ export class LibraryView extends ItemView {
     if (this.collectionFilter) {
       return settings.collections.find((c) => c.id === this.collectionFilter)?.name ?? "Collection";
     }
-    if (this.typeFilter) return TYPE_LABELS[this.typeFilter];
+    if (this.typeFilter) return TYPE_CATEGORY_LABELS[this.typeFilter];
     if (this.toolFilter) {
       return settings.tools.find((t) => t.id === this.toolFilter)?.name ?? "Tool";
     }
@@ -1397,7 +1427,7 @@ export class LibraryView extends ItemView {
     if (!this.renderCollapsibleHeading(sidebar, "types", "Types")) return;
     for (const type of Object.keys(TYPE_LABELS) as ItemType[]) {
       const count = this.items.filter((i) => i.type === type).length;
-      this.renderNavRow(sidebar, TYPE_ICONS[type], TYPE_LABELS[type], count, this.typeFilter === type, () => {
+      this.renderNavRow(sidebar, TYPE_ICONS[type], TYPE_CATEGORY_LABELS[type], count, this.typeFilter === type, () => {
         this.clearScopeFilters();
         this.typeFilter = this.typeFilter === type ? null : type;
         this.render();
@@ -1816,6 +1846,21 @@ export class LibraryView extends ItemView {
 
   private isSingleFileRuleTool(toolId: string): boolean {
     return !!this.getSettings().tools.find((t) => t.id === toolId)?.singleFileRule;
+  }
+
+  private isMemory(item: ItemMetadata): boolean {
+    return item.type === "rule" && isMemoryItem(item, this.getSettings().tools.find((t) => t.id === item.tool), this.getAllProjects());
+  }
+
+  private ruleKindOf(item: ItemMetadata): RuleKind {
+    if (this.isMemory(item)) return "memory";
+    return this.isSingleFileRuleTool(item.tool) ? "instructions" : "granular";
+  }
+
+  /** TYPE_LABEL_SINGULAR, except a memory reads as "Memory" rather than "Rule" wherever one
+   *  item is labeled, so agent-written files stand apart from rules the user wrote. */
+  private itemTypeLabel(item: ItemMetadata): string {
+    return this.isMemory(item) ? "Memory" : TYPE_LABEL_SINGULAR[item.type];
   }
 
   private syncStatusFor(item: ItemMetadata): "current" | "stale" | "unknown" {
@@ -3374,8 +3419,11 @@ export class LibraryView extends ItemView {
    *  correctly-configured tool with zero skills yet is still "detected." */
   private toolIsDetected(tool: ToolConfig): boolean {
     return Object.values(tool.paths).some((p) => p && existsSync(expandHome(p)))
+      || (tool.ruleAdditionalPaths ?? []).some((e) => e.path.trim() && existsSync(expandHome(e.path.trim())))
+      || (tool.mcpConfigPath ? existsSync(expandHome(tool.mcpConfigPath)) : false)
       || (tool.pluginsRegistry ? existsSync(expandHome(tool.pluginsRegistry)) : false)
-      || (tool.pluginsPaths ?? []).some((p) => p && existsSync(expandHome(p)));
+      || (tool.pluginsPaths ?? []).some((p) => p && existsSync(expandHome(p)))
+      || (tool.memoryPath?.trim() ? existsSync(expandHome(tool.memoryPath.trim())) : false);
   }
 
   private toolMatchesStatusFilter(tool: ToolConfig): boolean {
@@ -3672,6 +3720,23 @@ export class LibraryView extends ItemView {
       );
       if (type === "rule") this.renderRuleAdditionalPaths(body, tool, "global");
     }
+    // Kept as "" when cleared (not deleted) so a built-in default doesn't come back on reload;
+    // see ToolConfig.memoryPath.
+    this.renderToolPathField(
+      body,
+      "Memories",
+      tool.memoryPath ?? "",
+      "~/.example/memory",
+      (raw) => expandHome(raw),
+      (value) => {
+        tool.memoryPath = value.trim();
+        void this.saveSettings().then(() => this.rescan());
+      }
+    );
+    body.createDiv({
+      cls: "setting-item-description",
+      text: "Folder of memory files the agent writes itself. Per-project subfolders (<project>/memory) are matched to your workspaces. Listed under Memories & Rules.",
+    });
 
     body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Project-scoped paths" });
     body.createDiv({
@@ -3700,6 +3765,18 @@ export class LibraryView extends ItemView {
       );
       if (type === "rule") this.renderRuleAdditionalPaths(body, tool, "project");
     }
+    this.renderToolPathField(
+      body,
+      "Memories",
+      tool.projectMemoryPath ?? "",
+      ".example/memory",
+      (raw) => (vaultPath ? join(vaultPath, raw) : null),
+      (value) => {
+        if (value.trim()) tool.projectMemoryPath = value.trim();
+        else delete tool.projectMemoryPath;
+        void this.saveSettings().then(() => this.rescan());
+      }
+    );
 
     body.createDiv({ cls: "skillmanager-sidebar-heading", text: "MCP servers" });
     body.createDiv({
@@ -3862,25 +3939,9 @@ export class LibraryView extends ItemView {
     }
 
     const controls = tagbar.createDiv({ cls: "skillmanager-tagbar-controls" });
-    if (this.typeFilter === "rule") this.renderRuleKindButton(controls);
-    if (this.typeFilter) this.renderToolFilterButton(controls);
-    if (this.toolFilter) this.renderTypeFilterButton(controls);
-    this.renderSourceButton(controls);
+    this.renderFilterButton(controls);
     this.renderSortButton(controls);
     this.renderLayoutToggle(controls);
-    const activeCount = this.activeFilterLabels().length;
-    if (activeCount > 0) {
-      const clearBtn = controls.createEl("button", {
-        cls: "skillmanager-sort-btn skillmanager-clear-filters-btn",
-        attr: { "aria-label": `Clear filters: ${this.activeFilterLabels().join(", ")}` },
-      });
-      clearBtn.createSpan({ text: `Clear filters (${activeCount})`, cls: "skillmanager-sort-btn-label" });
-      setIcon(clearBtn.createSpan({ cls: "skillmanager-clear-filters-x" }), "x");
-      clearBtn.addEventListener("click", () => {
-        this.clearFilters();
-        this.render();
-      });
-    }
   }
 
   /** Grid/list switch. The choice is saved, so the library reopens in the same layout. */
@@ -3905,145 +3966,154 @@ export class LibraryView extends ItemView {
     option("list", "list", "List view");
   }
 
-  /** A type page can narrow to one tool without changing the type sidebar scope. */
-  private renderToolFilterButton(container: HTMLElement) {
-    const settings = this.getSettings();
-    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by tool" } });
-    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
-    setIcon(icon, "filter");
-    const label = this.pageToolFilter ? settings.tools.find((t) => t.id === this.pageToolFilter)?.name ?? "Tool" : "All tools";
-    btn.createSpan({ text: label, cls: "skillmanager-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
-    setIcon(chevron, "chevron-down");
-    btn.addEventListener("click", (evt) => {
-      const menu = new Menu();
-      menu.addItem((menuItem) =>
-        menuItem
-          .setTitle("All tools")
-          .setChecked(this.pageToolFilter === null)
-          .onClick(() => {
-            this.pageToolFilter = null;
-            this.render();
-          })
-      );
-      for (const tool of settings.tools) {
-        const count = this.items.filter((item) => item.type === this.typeFilter && item.tool === tool.id).length;
-        menu.addItem((menuItem) =>
-          menuItem
-            .setTitle(`${tool.name} (${count})`)
-            .setChecked(this.pageToolFilter === tool.id)
-            .onClick(() => {
-              this.pageToolFilter = tool.id;
-              this.render();
-            })
-        );
-      }
-      menu.showAtMouseEvent(evt);
+  /** One Filter button in place of separate per-dimension dropdowns: a single menu with a
+   *  section per dimension (source, scope, type, rule kind, tool). A section is left out when the
+   *  sidebar scope already fixes that dimension (no Type on a type page, no Scope on a workspace
+   *  page), and an option only appears when picking it would show something; each count is what
+   *  the list would hold with that option picked and every other filter kept. While anything is
+   *  active the button shows the count with an attached x that clears it all in one click; the
+   *  menu ends with the same "Clear all" for anyone already in it. */
+  private renderFilterButton(container: HTMLElement) {
+    const activeLabels = this.activeFilterLabels();
+    const group = container.createDiv({ cls: "skillmanager-filter-group" });
+    const btn = group.createEl("button", {
+      cls: `skillmanager-sort-btn${activeLabels.length > 0 ? " is-active" : ""}`,
+      attr: { "aria-label": activeLabels.length > 0 ? `Filters: ${activeLabels.join(", ")}` : "Filter" },
     });
-  }
+    setIcon(btn.createSpan({ cls: "skillmanager-sort-btn-icon" }), "filter");
+    btn.createSpan({ text: activeLabels.length > 0 ? `Filter (${activeLabels.length})` : "Filter", cls: "skillmanager-sort-btn-label" });
+    setIcon(btn.createSpan({ cls: "skillmanager-sort-btn-chevron" }), "chevron-down");
+    if (activeLabels.length > 0) {
+      const clearBtn = group.createEl("button", {
+        cls: "skillmanager-filter-clear",
+        attr: { "aria-label": `Clear filters: ${activeLabels.join(", ")}` },
+      });
+      setIcon(clearBtn, "x");
+      clearBtn.addEventListener("click", () => {
+        this.clearFilters();
+        this.render();
+      });
+    }
 
-  /** A tool page can narrow to one type without changing the tool sidebar scope. */
-  private renderTypeFilterButton(container: HTMLElement) {
-    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by type" } });
-    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
-    setIcon(icon, "filter");
-    btn.createSpan({ text: this.pageTypeFilter ? TYPE_LABELS[this.pageTypeFilter] : "All types", cls: "skillmanager-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
-    setIcon(chevron, "chevron-down");
     btn.addEventListener("click", (evt) => {
       const menu = new Menu();
-      menu.addItem((menuItem) =>
-        menuItem
-          .setTitle("All types")
-          .setChecked(this.pageTypeFilter === null)
-          .onClick(() => {
-            this.pageTypeFilter = null;
-            this.render();
-          })
-      );
-      for (const type of Object.keys(TYPE_LABELS) as ItemType[]) {
-        const count = this.items.filter((item) => item.tool === this.toolFilter && item.type === type).length;
-        menu.addItem((menuItem) =>
-          menuItem
-            .setTitle(`${TYPE_LABELS[type]} (${count})`)
-            .setChecked(this.pageTypeFilter === type)
+      const settings = this.getSettings();
+      const countFor = (dim: FilterDimension, match: (item: ItemMetadata) => boolean) =>
+        this.items.filter((item) => this.matchesFilters(item, dim) && match(item)).length;
+      const section = <K extends string>(
+        title: string,
+        dim: FilterDimension,
+        options: { key: K; label: string; match: (item: ItemMetadata) => boolean }[],
+        current: K | null,
+        set: (key: K | null) => void
+      ) => {
+        const shown = options
+          .map((option) => ({ ...option, count: countFor(dim, option.match) }))
+          .filter((option) => option.count > 0 || option.key === current);
+        // A single option can't narrow anything, so the section would only be noise.
+        if (shown.length < 2 && current === null) return;
+        menu.addItem((item) => item.setTitle(title).setIsLabel(true));
+        menu.addItem((item) =>
+          item
+            .setTitle("All")
+            .setChecked(current === null)
             .onClick(() => {
-              this.pageTypeFilter = type;
+              set(null);
               this.render();
             })
         );
-      }
-      menu.showAtMouseEvent(evt);
-    });
-  }
+        for (const option of shown) {
+          menu.addItem((item) =>
+            item
+              .setTitle(`${option.label} (${option.count})`)
+              .setChecked(current === option.key)
+              .onClick(() => {
+                set(option.key);
+                this.render();
+              })
+          );
+        }
+        menu.addSeparator();
+      };
 
-  /** Only rendered while typeFilter === "rule" (see renderTagBar) — lets a mixed Rules list (a
-   *  tool's single CLAUDE.md-style instructions file alongside another tool's directory of many
-   *  granular rule files) narrow to just one kind. See ruleKindFilter/isSingleFileRuleTool. */
-  private renderRuleKindButton(container: HTMLElement) {
-    const labels = RULE_KIND_LABELS;
-    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by rule kind" } });
-    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
-    setIcon(icon, "filter");
-    btn.createSpan({ text: this.ruleKindFilter ? labels[this.ruleKindFilter] : "All rules", cls: "skillmanager-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
-    setIcon(chevron, "chevron-down");
-    btn.addEventListener("click", (evt) => {
-      const menu = new Menu();
-      menu.addItem((menuItem) =>
-        menuItem
-          .setTitle("All rules")
-          .setChecked(this.ruleKindFilter === null)
+      section(
+        "Source",
+        "source",
+        (Object.keys(SOURCE_FILTER_LABELS) as (keyof typeof SOURCE_FILTER_LABELS)[]).map((key) => ({
+          key,
+          label: SOURCE_FILTER_LABELS[key],
+          match: (item: ItemMetadata) =>
+            key === "github" ? !!item.sourceRepo : key === "builtin" ? this.isBuiltIn(item) : !item.sourceRepo && !this.isBuiltIn(item),
+        })),
+        this.sourceFilter,
+        (key) => (this.sourceFilter = key)
+      );
+      if (!this.projectFilter) {
+        section(
+          "Scope",
+          "scope",
+          [
+            { key: "global", label: "Global", match: (item: ItemMetadata) => item.projectId === null },
+            ...this.getAllProjects().map((project) => ({
+              key: project.id,
+              label: project.name,
+              match: (item: ItemMetadata) => item.projectId === project.id,
+            })),
+          ],
+          this.pageScopeFilter,
+          (key) => (this.pageScopeFilter = key)
+        );
+      }
+      if (!this.typeFilter) {
+        section(
+          "Type",
+          "type",
+          (Object.keys(TYPE_LABELS) as ItemType[]).map((type) => ({
+            key: type,
+            label: TYPE_CATEGORY_LABELS[type],
+            match: (item: ItemMetadata) => item.type === type,
+          })),
+          this.pageTypeFilter,
+          (key) => {
+            this.pageTypeFilter = key;
+            // Kind only means something for Memories & Rules; drop it once that's not in view.
+            if (key !== "rule") this.ruleKindFilter = null;
+          }
+        );
+      }
+      if (this.typeFilter === "rule" || this.pageTypeFilter === "rule") {
+        section(
+          "Kind",
+          "kind",
+          (Object.keys(RULE_KIND_LABELS) as RuleKind[]).map((kind) => ({
+            key: kind,
+            label: RULE_KIND_LABELS[kind],
+            match: (item: ItemMetadata) => item.type === "rule" && this.ruleKindOf(item) === kind,
+          })),
+          this.ruleKindFilter,
+          (key) => (this.ruleKindFilter = key)
+        );
+      }
+      if (!this.toolFilter) {
+        section(
+          "Tool",
+          "tool",
+          settings.tools.map((tool) => ({ key: tool.id, label: tool.name, match: (item: ItemMetadata) => item.tool === tool.id })),
+          this.pageToolFilter,
+          (key) => (this.pageToolFilter = key)
+        );
+      }
+
+      menu.addItem((item) =>
+        item
+          .setTitle("Clear all")
+          .setIcon("x")
+          .setDisabled(activeLabels.length === 0)
           .onClick(() => {
-            this.ruleKindFilter = null;
+            this.clearFilters();
             this.render();
           })
       );
-      for (const key of Object.keys(labels) as (keyof typeof labels)[]) {
-        menu.addItem((menuItem) =>
-          menuItem
-            .setTitle(labels[key])
-            .setChecked(this.ruleKindFilter === key)
-            .onClick(() => {
-              this.ruleKindFilter = key;
-              this.render();
-            })
-        );
-      }
-      menu.showAtMouseEvent(evt);
-    });
-  }
-
-  private renderSourceButton(container: HTMLElement) {
-    const labels = SOURCE_FILTER_LABELS;
-    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by source" } });
-    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
-    setIcon(icon, "filter");
-    btn.createSpan({ text: this.sourceFilter ? labels[this.sourceFilter] : "All sources", cls: "skillmanager-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
-    setIcon(chevron, "chevron-down");
-    btn.addEventListener("click", (evt) => {
-      const menu = new Menu();
-      menu.addItem((menuItem) =>
-        menuItem
-          .setTitle("All sources")
-          .setChecked(this.sourceFilter === null)
-          .onClick(() => {
-            this.sourceFilter = null;
-            this.render();
-          })
-      );
-      for (const key of Object.keys(labels) as (keyof typeof labels)[]) {
-        menu.addItem((menuItem) =>
-          menuItem
-            .setTitle(labels[key])
-            .setChecked(this.sourceFilter === key)
-            .onClick(() => {
-              this.sourceFilter = key;
-              this.render();
-            })
-        );
-      }
       menu.showAtMouseEvent(evt);
     });
   }
@@ -4262,7 +4332,7 @@ export class LibraryView extends ItemView {
     toolCell.createSpan({ text: tool.text, cls: "skillmanager-list-ellipsis", attr: { title: tool.text } });
 
     row.createDiv({ cls: "skillmanager-list-cell col-type is-wide" }).createSpan({
-      text: TYPE_LABEL_SINGULAR[item.type],
+      text: this.itemTypeLabel(item),
       cls: "skillmanager-card-type skillmanager-card-type-sm",
     });
 
@@ -4343,7 +4413,7 @@ export class LibraryView extends ItemView {
       attr: { "aria-label": dotLabel },
     });
     head.createSpan({ text: item.name, cls: "skillmanager-card-name" });
-    head.createSpan({ text: TYPE_LABEL_SINGULAR[item.type], cls: "skillmanager-card-type skillmanager-card-type-sm" });
+    head.createSpan({ text: this.itemTypeLabel(item), cls: "skillmanager-card-type skillmanager-card-type-sm" });
 
     // Surfaced in the footer-right as the link icon — same slot whether the card is global or a
     // Linked project instance, so both states read from the same place on the card.
@@ -4609,6 +4679,7 @@ export class LibraryView extends ItemView {
       async () => {
         try {
           await deleteItem(item, (path) => this.trashPath(path));
+          if (this.isMemory(item)) forgetMemoryIndexEntry(item);
           await this.rescan();
         } catch (e) {
           new Notice(`Couldn't delete "${item.name}": ` + errorMessage(e));
@@ -4694,6 +4765,7 @@ export class LibraryView extends ItemView {
           continue;
         }
         const issues = checkIntegrity(item, raw, parseYaml);
+        if (this.isMemory(item)) issues.push(...checkMemoryIndexed(item));
         if (issues.length > 0) issuesById.set(item.entryId, issues);
       }
       this.integrityIssues = issuesById;
@@ -4761,7 +4833,10 @@ export class LibraryView extends ItemView {
    *  project one are meant to coexist, not compete, so instructions files never enter this
    *  comparison at all. */
   private overlapPairsFor(items: ItemMetadata[]): OverlapPair[] {
-    const eligible = items.filter((item) => !(item.type === "rule" && this.isSingleFileRuleTool(item.tool)));
+    // Memory index files are excluded for the same reason: every project's MEMORY.md shares a name.
+    const eligible = items.filter(
+      (item) => !(item.type === "rule" && (this.isSingleFileRuleTool(item.tool) || (this.isMemory(item) && isMemoryIndex(item))))
+    );
     const disregarded = this.getSettings().dashboardDisregarded;
     return findOverlapPairs(eligible).filter((p) => !disregarded[this.overlapPairKey(p.a, p.b)]);
   }
@@ -4913,7 +4988,7 @@ export class LibraryView extends ItemView {
     allPill.addEventListener("click", () => setType(null));
 
     for (const type of Object.keys(DASHBOARD_TYPE_COLORS) as ItemType[]) {
-      const pill = filter.createSpan({ text: TYPE_LABELS[type], cls: "skillmanager-dash-type-pill" });
+      const pill = filter.createSpan({ text: TYPE_CATEGORY_LABELS[type], cls: "skillmanager-dash-type-pill" });
       if (this.dashboardTypeFilter === type) pill.addClass("is-active");
       pill.addEventListener("click", () => setType(type));
     }
@@ -5142,7 +5217,7 @@ export class LibraryView extends ItemView {
       identity.createDiv({ text: item.name, cls: "skillmanager-dash-row-name" });
       const managed = this.managedBy(item);
       identity.createDiv({
-        text: `${this.toolLabel(item).text} · ${TYPE_LABEL_SINGULAR[item.type]}${managed.label === "You" ? "" : ` · ${managed.label}`}`,
+        text: `${this.toolLabel(item).text} · ${this.itemTypeLabel(item)}${managed.label === "You" ? "" : ` · ${managed.label}`}`,
         cls: "skillmanager-dash-row-meta",
       });
       const issueList = row.createDiv({ cls: "skillmanager-detail-issues" });
@@ -5227,6 +5302,7 @@ export class LibraryView extends ItemView {
     this.untaggedOnly = false;
     this.sourceFilter = null;
     this.ruleKindFilter = null;
+    this.pageScopeFilter = null;
     // Dashboard's own content branch never touches the grid, so wasDocked is left at whatever it
     // was the last time the plain Library was rendered — if that happened to be true, renderContent
     // would think the grid is "already docked" and restore the old dockedScrollTop instead of
@@ -5545,7 +5621,6 @@ export class LibraryView extends ItemView {
     this.selectedItem = item;
     this.detailEditing = false;
     this.addingTagFor = null;
-    this.moreFieldsExpanded = false;
     this.collapsedTreeFolders = new Set();
     this.selectedFilePath = hasTree && !openManifest ? null : item.sourcePath;
     this.pendingDetailAnimation = "forward";
@@ -5557,7 +5632,6 @@ export class LibraryView extends ItemView {
     this.selectedFilePath = filePath;
     this.detailEditing = false;
     this.addingTagFor = null;
-    this.moreFieldsExpanded = false;
     this.pendingDetailAnimation = "forward";
     this.render();
   }
@@ -5570,7 +5644,6 @@ export class LibraryView extends ItemView {
     this.selectedFilePath = null;
     this.detailLoadedFor = null;
     this.addingTagFor = null;
-    this.moreFieldsExpanded = false;
     this.pendingDetailAnimation = "back";
     if (returnToDashboard) this.dashboardMode = true;
     this.render();
@@ -5581,7 +5654,6 @@ export class LibraryView extends ItemView {
     this.selectedFilePath = null;
     this.detailLoadedFor = null;
     this.addingTagFor = null;
-    this.moreFieldsExpanded = false;
     this.pendingDetailAnimation = "back";
     this.render();
   }
@@ -5598,10 +5670,9 @@ export class LibraryView extends ItemView {
 
     const filePath = tree && !this.selectedFilePath ? null : this.selectedFilePath;
     if (filePath) this.loadFileContent(item, filePath);
-    this.renderIdentityBand(panel, item, filePath);
-
     const review = this.review?.entryId === item.entryId ? this.review : null;
-    if (!review && (!filePath || filePath === item.sourcePath)) this.renderUsageHeatmap(panel, item);
+
+    this.renderDetailHeader(panel, item, filePath, review);
     if (review?.status === "ready") {
       this.renderDiffReview(panel, review);
     } else if (tree && !this.selectedFilePath) {
@@ -5644,86 +5715,180 @@ export class LibraryView extends ItemView {
     }
   }
 
-  /** Title + tool pill + edit action, then a two-column strip: tags/description/path/extra
-   *  frontmatter on the left (only meaningful once a file is open, and tags/description/
-   *  frontmatter only for the manifest — they're the skill's own metadata, not a sibling file's),
-   *  file stats + source status on the right. Source status is the one thing in the right column
-   *  that doesn't need a file open — it describes the item, not a specific file — so it's still
-   *  visible while just browsing a multi-file skill's tree. Favourite/add-to-collection/
-   *  project-link all live on the card now (see renderCard/openCardMenu) — Edit is the only
-   *  action left here, since it's file-scoped rather than skill-scoped and stays available for
-   *  any file in the tree, not just the manifest. */
-  private renderIdentityBand(panel: HTMLElement, item: ItemMetadata, filePath: string | null) {
+  /** Title + type pill + edit action, the tool line under it, then (once a file is open) the
+   *  description, a row of callout stats, weekly usage bars and a tinted properties panel whose
+   *  footer carries the source repo's actions. Browsing a multi-file skill's tree with nothing
+   *  open shows just the header plus the source row, since everything else is file-scoped.
+   *  Favourite/add-to-collection/project-link all live on the card (see renderCard/openCardMenu);
+   *  Edit is the only action here, since it's file-scoped and works for any file in the tree. */
+  private renderDetailHeader(panel: HTMLElement, item: ItemMetadata, filePath: string | null, review: ReviewState | null) {
     const isManifest = !!filePath && filePath === item.sourcePath;
     // Loading/error states stay layered over the normal preview. Only a ready review replaces
     // the file body with diff content.
-    const isReviewing = this.review?.status === "ready" && this.review.entryId === item.entryId;
+    const isReviewing = review?.status === "ready";
+    const section = panel.createDiv({ cls: "skillmanager-detail-head" });
 
-    const header = panel.createDiv({ cls: "skillmanager-detail-header" });
+    const header = section.createDiv({ cls: "skillmanager-detail-header" });
     header.createEl("h3", {
       text: isReviewing
-        ? `${this.review?.mode === "restore" ? "Restore" : "Update"} "${item.name}"`
+        ? `${review?.mode === "restore" ? "Restore" : "Update"} "${item.name}"`
         : filePath && !isManifest
           ? basename(filePath)
           : item.name,
       cls: "skillmanager-detail-title",
     });
-    header.createSpan({ text: this.sourceLabel(item), cls: "skillmanager-detail-tool-pill" });
-    if (filePath && !isReviewing) {
-      const actions = header.createDiv({ cls: "skillmanager-detail-actions" });
-      this.renderDetailActions(actions);
+    header.createSpan({ text: this.itemTypeLabel(item), cls: "skillmanager-detail-type-pill" });
+    if (filePath && !isReviewing) this.renderDetailActions(header.createDiv({ cls: "skillmanager-detail-actions" }));
+
+    const toolInfo = this.toolLabel(item);
+    const toolLine = section.createDiv({ cls: "skillmanager-detail-tool" });
+    this.renderIcon(toolLine.createSpan({ cls: "skillmanager-detail-tool-icon" }), toolInfo.icon, toolInfo.svgIcon);
+    toolLine.createSpan({ text: this.sourceLabel(item) });
+
+    // A review replaces the file view with a diff (see renderDiffReview); the file-scoped stuff
+    // below would either duplicate or fight with that diff, so it's suppressed while it's open.
+    if (!filePath || isReviewing) {
+      if (item.sourceRepo) this.renderSourceStatusInline(section, item);
+      return;
     }
 
-    // A review replaces the file view with a diff (see renderDiffReview) — the file-scoped stuff
-    // below (tags, description, path, extra frontmatter, stats) would either duplicate or fight
-    // with that diff, so it's suppressed for as long as the review is open.
-    if (filePath && !isReviewing) {
-      // The two-column band only makes sense once there's something to put in both columns — a
-      // file's own stats on the right, paired with its tags/description/path on the left. With
-      // nothing open (just browsing a tree, or mid-review), source status renders as its own
-      // full-width row below instead (see the else-if branch) rather than floating a divider and
-      // a right column over an empty left one.
-      const fields = isManifest ? parseFrontmatter(this.detailContent).filter((f) => f.value) : [];
+    const fields = isManifest ? parseFrontmatter(this.detailContent).filter((f) => f.value) : [];
+    // The raw frontmatter is already editable via the textarea below in edit mode, so the parsed
+    // description/extra fields are suppressed while editing to avoid showing the same thing twice.
+    if (!this.detailEditing) {
+      const description = fields.find((f) => f.key === "description");
+      if (description) section.createDiv({ cls: "skillmanager-detail-desc", text: description.value });
+    }
 
-      const band = panel.createDiv({ cls: "skillmanager-detail-band" });
-      const left = band.createDiv({ cls: "skillmanager-detail-band-left" });
+    const issues = isManifest ? checkIntegrity(item, this.detailContent, parseYaml) : [];
+    if (issues.length > 0) {
+      const list = section.createDiv({ cls: "skillmanager-detail-issues" });
+      setTooltip(list, "Checks frontmatter, name, description, symlink and links to bundled files. Rechecked every time this opens.", { placement: "top" });
+      for (const issue of issues) {
+        const row = list.createDiv({ cls: "skillmanager-detail-issue" });
+        setIcon(row.createSpan({ cls: "skillmanager-detail-issue-icon" }), "alert-triangle");
+        row.createSpan({ text: issue });
+      }
+    }
 
-      if (isManifest) this.renderTagChips(left, item);
+    this.renderDetailCallouts(section, item, filePath, isManifest);
+    this.renderDetailProperties(section, item, filePath, isManifest, fields);
+  }
 
-      // The raw frontmatter is already editable via the textarea below in edit mode, so the
-      // parsed description/extra-fields views are suppressed while editing to avoid showing two
-      // versions of the same thing at once — tags aren't part of that textarea, so they stay.
+  /** The big-number row: context cost for the open file, plus sessions/last used for a manifest
+   *  whose tool logs usage, followed by weekly bars once there's any use to chart. */
+  private renderDetailCallouts(container: HTMLElement, item: ItemMetadata, filePath: string, isManifest: boolean) {
+    const row = container.createDiv({ cls: "skillmanager-detail-callouts" });
+    const callout = (value: string, label: string, tooltip?: string) => {
+      const c = row.createDiv({ cls: "skillmanager-detail-callout" });
+      c.createDiv({ text: value, cls: "skillmanager-detail-callout-value" });
+      const labelEl = c.createDiv({ cls: "skillmanager-detail-callout-label" });
+      labelEl.createSpan({ text: label });
+      // The label itself is the hover target so the icon reads as a cue, not decoration.
+      if (tooltip) {
+        setIcon(labelEl.createSpan({ cls: "skillmanager-detail-info" }), "info");
+        setTooltip(labelEl, tooltip, { placement: "top" });
+      }
+    };
+
+    if (isManifest && (item.type === "skill" || item.type === "agent")) {
+      callout(
+        formatTokens(`${item.name}\n${item.description}`.length),
+        "Available",
+        "Estimated name-and-description metadata exposed while this skill or agent is available. For tools that preload it, this can add to the model's context on every turn even when never invoked. Actual behavior varies by tool."
+      );
+      callout(formatTokens(stripFrontmatter(this.detailContent).length), "On invoke", "Estimated instruction-body tokens loaded when this skill or agent is invoked.");
+    } else if (isManifest) {
+      callout("Tool-dependent", "Context", "Commands and rules have tool-specific loading behavior. Their context cost is not estimated yet.");
+    } else {
+      callout(formatTokens(this.detailContent.length), "File tokens", "Estimated tokens in this file. This is a source-size estimate, not necessarily per-turn context.");
+    }
+
+    const key = isManifest ? this.usageHistoryKey(item) : null;
+    if (!key) return;
+    const usage = item.tool === "codex" ? this.getCodexUsage() : this.getClaudeUsage();
+    if (!usage) {
+      callout("…", "Reading usage");
+      return;
+    }
+    const { columns, total } = buildHeatmap(this.getSettings().usageHistory?.[key] ?? {});
+    callout(
+      String(total),
+      `Sessions (${HEATMAP_WEEKS}w)`,
+      item.tool === "codex" ? "Codex doesn't log skill calls by name, so these are matched from file paths in its sessions and may be approximate." : undefined
+    );
+    callout(formatRelativeDay(this.lastUsedMs(item) ?? 0), "Last used");
+    if (total === 0) return;
+
+    const weeks = columns.map((column) => column.reduce((sum, cell) => sum + cell.count, 0));
+    const max = Math.max(...weeks);
+    const bars = container.createDiv({ cls: "skillmanager-detail-usage-bars" });
+    columns.forEach((column, i) => {
+      const bar = bars.createDiv({ cls: `skillmanager-detail-usage-bar${weeks[i] > 0 ? " is-used" : ""}` });
+      bar.style.height = `${Math.max(8, (weeks[i] / max) * 100)}%`;
+      const week = new Date(column[0].ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      setTooltip(bar, `Week of ${week}: ${weeks[i]} session${weeks[i] === 1 ? "" : "s"}`, { placement: "top" });
+    });
+  }
+
+  /** One aligned key/value table on a tinted panel: the skill's own metadata (manifest only),
+   *  then file facts, then the source repo and its actions as a footer with real button chrome. */
+  private renderDetailProperties(container: HTMLElement, item: ItemMetadata, filePath: string, isManifest: boolean, fields: FrontmatterField[]) {
+    const panel = container.createDiv({ cls: "skillmanager-detail-props-panel" });
+    const props = panel.createDiv({ cls: "skillmanager-detail-props" });
+    const prop = (label: string, fill: (value: HTMLElement) => void, tooltip?: string, valueCls = "") => {
+      const key = props.createDiv({ cls: "skillmanager-detail-prop-key" });
+      key.createSpan({ text: label });
+      if (tooltip) {
+        setIcon(key.createSpan({ cls: "skillmanager-detail-info" }), "info");
+        setTooltip(key, tooltip, { placement: "top" });
+      }
+      fill(props.createDiv({ cls: `skillmanager-detail-prop-value${valueCls ? ` ${valueCls}` : ""}` }));
+    };
+    const text = (value: string) => (el: HTMLElement) => el.setText(value);
+
+    let modified = Date.now();
+    let fileSize = 0;
+    try {
+      const stat = statSync(filePath);
+      fileSize = stat.size;
+      modified = stat.mtimeMs;
+    } catch {
+      // file may have moved since the last scan; stats just show defaults
+    }
+
+    if (isManifest) {
+      const field = (key: string) => fields.find((f) => f.key === key)?.value.trim() ?? "";
+      prop("Tags", (el) => this.renderTagChips(el, item));
+      if (item.type === "skill") {
+        const manualOnly = field("disable-model-invocation") === "true";
+        prop(
+          "Invocation",
+          text(manualOnly ? "Manual only" : "Auto"),
+          manualOnly ? "Runs only when you call it by name." : "The model can pick this up on its own when the description matches."
+        );
+      }
+      const managed = this.managedBy(item);
+      prop("Managed by", text(managed.label), managed.tooltip);
+      const version = field("version") || (item.pluginId ? this.discoveredPlugins.find((p) => p.id === item.pluginId)?.version : "");
+      if (version) prop("Version", text(version));
+      // name is the title and description is shown as prose above, so neither repeats here.
       if (!this.detailEditing) {
-        const description = fields.find((f) => f.key === "description");
-        if (description) left.createDiv({ cls: "skillmanager-detail-desc", text: description.value });
-      }
-
-      const pathBlock = left.createDiv({ cls: "skillmanager-detail-path", attr: { title: filePath } });
-      pathBlock.createDiv({ text: filePath });
-      if (isManifest && item.realPath !== item.sourcePath) {
-        pathBlock.createDiv({ text: `→ symlinked from ${item.realPath}`, cls: "skillmanager-detail-path-target" });
-      }
-
-      const issues = isManifest ? checkIntegrity(item, this.detailContent, parseYaml) : [];
-      if (issues.length > 0) {
-        const list = left.createDiv({ cls: "skillmanager-detail-issues" });
-        for (const issue of issues) {
-          const row = list.createDiv({ cls: "skillmanager-detail-issue" });
-          setIcon(row.createSpan({ cls: "skillmanager-detail-issue-icon" }), "alert-triangle");
-          row.createSpan({ text: issue });
+        for (const f of fields) {
+          if (f.key !== "name" && f.key !== "description" && f.key !== "version") prop(f.key, text(f.value));
         }
       }
+    }
+    prop("File", text(`${formatBytes(fileSize)} · ${this.detailContent.length.toLocaleString()} chars · modified ${formatDate(modified)}`));
+    prop("Path", text(filePath), undefined, "is-mono");
+    if (isManifest && item.realPath !== item.sourcePath) prop("Symlinked from", text(item.realPath), undefined, "is-mono");
 
-      if (!this.detailEditing) {
-        const moreFields = fields.filter((f) => f.key !== "description");
-        if (moreFields.length > 0) this.renderMoreFields(left, moreFields);
-      }
-
-      const right = band.createDiv({ cls: "skillmanager-detail-band-right" });
-      this.renderFileStats(right, item, filePath, issues);
-      if (item.sourceRepo) this.renderSourceStatus(right, item);
-    } else if (item.sourceRepo) {
-      this.renderSourceStatusInline(panel, item);
+    if (item.sourceRepo) {
+      const footer = panel.createDiv({ cls: "skillmanager-detail-props-source" });
+      const left = footer.createDiv({ cls: "skillmanager-detail-props-source-repo" });
+      left.createSpan({ text: "Source", cls: "skillmanager-detail-prop-key" });
+      this.renderSourceRepoLine(left, item);
+      this.renderSourceButtons(footer.createDiv({ cls: "skillmanager-detail-source-actions" }), item);
     }
   }
 
@@ -5737,67 +5902,6 @@ export class LibraryView extends ItemView {
       this.detailEditing = !this.detailEditing;
       this.render();
     });
-  }
-
-  private renderFileStats(container: HTMLElement, item: ItemMetadata, filePath: string, issues: string[]) {
-    let fileSize = 0;
-    let modified = Date.now();
-    try {
-      const stat = statSync(filePath);
-      fileSize = stat.size;
-      modified = stat.mtimeMs;
-    } catch {
-      // file may have moved since the last scan; stats just show defaults
-    }
-    const stats = container.createDiv({ cls: "skillmanager-detail-stats" });
-    const row = (label: string, value: string, tooltip?: string, valueCls = "") => {
-      const r = stats.createDiv({ cls: "skillmanager-detail-stat-row" });
-      const labelEl = r.createSpan({ cls: "skillmanager-detail-stat-label" });
-      labelEl.createSpan({ text: label });
-      // The label itself is the hover target (rather than the whole row) so the icon doesn't
-      // read as decoration — it's the visible cue that there's more to read on hover.
-      if (tooltip) {
-        const infoIcon = labelEl.createSpan({ cls: "skillmanager-detail-stat-info" });
-        setIcon(infoIcon, "info");
-        setTooltip(labelEl, tooltip, { placement: "top" });
-      }
-      r.createSpan({ text: value, cls: `skillmanager-detail-stat-value${valueCls ? ` ${valueCls}` : ""}` });
-    };
-    row("Size", formatBytes(fileSize));
-    row("Length", `${this.detailContent.length.toLocaleString()} chars`);
-    row("File tokens", formatTokens(this.detailContent.length), "Estimated tokens in this file. This is a source-size estimate, not necessarily per-turn context.");
-    if (filePath === item.sourcePath && (item.type === "skill" || item.type === "agent")) {
-      const availableChars = `${item.name}\n${item.description}`.length;
-      const invocationChars = stripFrontmatter(this.detailContent).length;
-      row("Available", formatTokens(availableChars), "Estimated name-and-description metadata exposed while this skill or agent is available. For tools that preload it, this can add to the model's context on every turn even when never invoked. Actual behavior varies by tool.");
-      row("On invoke", formatTokens(invocationChars), "Estimated instruction-body tokens loaded when this skill or agent is invoked.");
-    } else if (filePath === item.sourcePath) {
-      row("Context", "Tool-dependent", "Commands and rules have tool-specific loading behavior. Their context cost is not estimated yet.");
-    }
-    row("Modified", formatDate(modified));
-    row("Type", TYPE_LABEL_SINGULAR[item.type]);
-    if (filePath !== item.sourcePath) return;
-
-    const fields = parseFrontmatter(this.detailContent);
-    const field = (key: string) => fields.find((f) => f.key === key)?.value.trim() ?? "";
-    const version = field("version") || (item.pluginId ? this.discoveredPlugins.find((p) => p.id === item.pluginId)?.version : "");
-    if (version) row("Version", version);
-    if (item.type === "skill") {
-      const manualOnly = field("disable-model-invocation") === "true";
-      row(
-        "Invocation",
-        manualOnly ? "Manual only" : "Auto",
-        manualOnly ? "Runs only when you call it by name." : "The model can pick this up on its own when the description matches."
-      );
-    }
-    const managed = this.managedBy(item);
-    row("Managed by", managed.label, managed.tooltip);
-    row(
-      "Integrity",
-      issues.length === 0 ? "OK" : `${issues.length} issue${issues.length === 1 ? "" : "s"}`,
-      "Checks frontmatter, name, description, symlink and links to bundled files. Rechecked every time this opens.",
-      issues.length === 0 ? "" : "skillmanager-detail-stat-warn"
-    );
   }
 
   /** Who owns this item's files and how it gets updated: a plugin or the tool itself (both
@@ -5840,75 +5944,10 @@ export class LibraryView extends ItemView {
     return null;
   }
 
-  /** Sessions per day over the last HEATMAP_WEEKS weeks, read from the saved history (see
-   *  usage-history.ts) once this tool's transcripts have been scanned and merged into it. */
-  private renderUsageHeatmap(panel: HTMLElement, item: ItemMetadata) {
-    const key = this.usageHistoryKey(item);
-    if (!key) return;
-    const section = panel.createDiv({ cls: "skillmanager-heatmap" });
-    const usage = item.tool === "codex" ? this.getCodexUsage() : this.getClaudeUsage();
-    const summary = section.createDiv({ cls: "skillmanager-heatmap-summary" });
-    if (!usage) {
-      summary.setText("Reading usage history…");
-      return;
-    }
-
-    const { columns, total } = buildHeatmap(this.getSettings().usageHistory?.[key] ?? {});
-    summary.createSpan({ text: `${total} session${total === 1 ? "" : "s"} in the last ${HEATMAP_WEEKS} weeks` });
-    if (item.tool === "codex") {
-      const info = summary.createSpan({ cls: "skillmanager-detail-stat-info" });
-      setIcon(info, "info");
-      setTooltip(info, "Codex doesn't log skill calls by name, so these are matched from file paths in its sessions and may be approximate.", { placement: "top" });
-    }
-
-    const max = Math.max(0, ...columns.flat().map((c) => c.count));
-    const grid = section.createDiv({ cls: "skillmanager-heatmap-grid" });
-    grid.createDiv({ cls: "skillmanager-heatmap-corner" });
-    let lastMonth = -1;
-    for (const column of columns) {
-      const month = new Date(column[0].ms).getMonth();
-      const label = grid.createDiv({ cls: "skillmanager-heatmap-month" });
-      if (month !== lastMonth) {
-        label.setText(new Date(column[0].ms).toLocaleDateString(undefined, { month: "short" }));
-        lastMonth = month;
-      }
-    }
-    const weekdays = ["Mon", "", "Wed", "", "Fri", "", ""];
-    for (let d = 0; d < 7; d++) {
-      grid.createDiv({ cls: "skillmanager-heatmap-weekday", text: weekdays[d] });
-      for (const column of columns) {
-        const cell = column[d];
-        const el = grid.createDiv({
-          cls: `skillmanager-heatmap-cell${cell.future ? " is-future" : ` is-level-${heatLevel(cell.count, max)}`}`,
-        });
-        if (!cell.future) {
-          const date = new Date(cell.ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-          el.setAttr("aria-label", `${cell.count} session${cell.count === 1 ? "" : "s"} on ${date}`);
-        }
-      }
-    }
-
-    const legend = section.createDiv({ cls: "skillmanager-heatmap-legend" });
-    legend.createSpan({ text: "Less" });
-    for (let level = 0; level <= 4; level++) legend.createDiv({ cls: `skillmanager-heatmap-cell is-level-${level}` });
-    legend.createSpan({ text: "More" });
-  }
-
-  /** Only shown for an item installed through the "Install from GitHub" flow (see
-   *  InstallFromGitHubModal) — a manually-placed skill has no sourceRepo and gets no update
-   *  tracking. The check itself is on-demand only (a network call), never run automatically
-   *  during a rescan — see the versioning plan's "manual update checks" decision. The repo URL
-   *  truncates (full URL is the aria-label/title) since the right column is narrow. */
-  private renderSourceStatus(container: HTMLElement, item: ItemMetadata) {
-    const section = container.createDiv({ cls: "skillmanager-detail-source" });
-    this.renderSourceRepoLine(section, item);
-    this.renderSourceButtons(section.createDiv({ cls: "skillmanager-detail-source-actions" }), item);
-  }
-
-  /** Same repo status as renderSourceStatus, but as one full-width row instead of a stacked
-   *  right-column card — used whenever there's no open file to pair it with in a two-column band
-   *  (browsing a multi-file skill's tree, or an active review), where the band would otherwise
-   *  float a divider and a right column over an empty left one. */
+  /** Repo line + update actions as one row, for when no file is open (browsing a multi-file
+   *  skill's tree, or an active review). With a file open they sit in the properties panel's
+   *  footer instead (see renderDetailProperties). Only items installed through "Install from
+   *  GitHub" have a sourceRepo; the check itself is on-demand only (a network call). */
   private renderSourceStatusInline(panel: HTMLElement, item: ItemMetadata) {
     const row = panel.createDiv({ cls: "skillmanager-detail-source-inline" });
     this.renderSourceRepoLine(row, item);
@@ -6309,7 +6348,7 @@ export class LibraryView extends ItemView {
 
   // ---------- file content (rendered inside the detail rail, below the identity band) ----------
 
-  /** Reads (and caches) the open file's content — shared by renderIdentityBand (stats, parsed
+  /** Reads (and caches) the open file's content — shared by renderDetailHeader (stats, parsed
    *  frontmatter) and renderFileBody (the textarea/reading view), so both see the same content
    *  without reading the file twice per render. */
   private loadFileContent(item: ItemMetadata, filePath: string) {
@@ -6438,26 +6477,8 @@ export class LibraryView extends ItemView {
     row.createSpan({ text: value, cls: "skillmanager-fm-value" });
   }
 
-  /** A collapsed-by-default view of every frontmatter field except description (which the band
-   *  already shows as prose) — license, argument-hint, allowed-tools, whatever else a tool
-   *  declares. Kept out of the way by default since most of it is rarely needed at a glance. */
-  private renderMoreFields(container: HTMLElement, fields: FrontmatterField[]) {
-    const toggle = container.createEl("button", {
-      cls: "skillmanager-fm-toggle",
-      text: `${this.moreFieldsExpanded ? "▾" : "▸"} ${fields.length} more field${fields.length === 1 ? "" : "s"}`,
-    });
-    toggle.addEventListener("click", () => {
-      this.moreFieldsExpanded = !this.moreFieldsExpanded;
-      this.render();
-    });
-    if (this.moreFieldsExpanded) {
-      const box = container.createDiv({ cls: "skillmanager-detail-frontmatter" });
-      for (const field of fields) this.renderFrontmatterRow(box, field.key, field.value);
-    }
-  }
-
   /** Tag chips, each with its own remove button, plus a "+ tag" affordance that swaps itself for
-   *  an inline input. Shown at the top of the band (see renderIdentityBand) rather than the old
+   *  an inline input. Shown in the properties panel (see renderDetailProperties) rather than the old
    *  comma-separated text field at the very bottom of the panel. */
   private renderTagChips(container: HTMLElement, item: ItemMetadata) {
     const row = container.createDiv({ cls: "skillmanager-detail-tags-row" });

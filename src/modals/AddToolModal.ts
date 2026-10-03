@@ -29,6 +29,7 @@ export class AddToolModal extends Modal {
   private name = "";
   private paths: Partial<Record<ItemType, string>> = {};
   private mcpConfigPath = "";
+  private memoryPath = "";
   private projectMcpConfigPath = "";
   private mcpConfigKey = "";
   /** Raw inline SVG markup — same field/rendering contract as ToolConfig.svgIcon (parsed with
@@ -72,6 +73,15 @@ export class AddToolModal extends Modal {
         })
       );
     }
+
+    new Setting(contentEl)
+      .setName("Memories")
+      .setDesc("Folder of memory files the agent writes itself. Listed under Memories & Rules.")
+      .addText((text) =>
+        text.setPlaceholder("~/.example/memory").onChange((value) => {
+          this.memoryPath = value.trim();
+        })
+      );
 
     contentEl.createEl("h4", { text: "MCP servers (optional)" });
     contentEl.createDiv({
@@ -177,6 +187,7 @@ export class AddToolModal extends Modal {
       paths: this.paths,
       custom: true,
       mcpConfigPath: this.mcpConfigPath || undefined,
+      memoryPath: this.memoryPath || undefined,
       projectMcpConfigPath: this.projectMcpConfigPath || undefined,
       mcpConfigKey: this.mcpConfigKey || undefined,
     });

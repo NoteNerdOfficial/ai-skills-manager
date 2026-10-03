@@ -231,7 +231,7 @@ function scanCategoryFolder(
   return [...items, ...scanEntries(join(dir, DISABLED_DIRNAME), tool, type, projectId, pluginId, false, depth)];
 }
 
-function scanDirectory(
+export function scanDirectory(
   dir: string,
   tool: ToolConfig,
   type: ItemType,

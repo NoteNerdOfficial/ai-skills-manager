@@ -39,6 +39,10 @@ var TYPE_LABELS = {
   command: "Commands",
   rule: "Rules"
 };
+var TYPE_CATEGORY_LABELS = {
+  ...TYPE_LABELS,
+  rule: "Memories & Rules"
+};
 var TYPE_LABEL_SINGULAR = {
   skill: "Skill",
   agent: "Agent",
@@ -72,6 +76,9 @@ var DEFAULT_TOOLS = [
     // scanned at all.
     ruleAdditionalPaths: [{ path: "~/.claude/rules", singleFile: false }],
     ruleAdditionalProjectPaths: [{ path: ".claude/rules", singleFile: false }],
+    // Auto-memory, documented at https://code.claude.com/docs/en/memory: one memory/ folder per
+    // project under ~/.claude/projects/<path-slug>/, with a MEMORY.md index loaded every session.
+    memoryPath: "~/.claude/projects",
     pluginsRegistry: "~/.claude/plugins/installed_plugins.json",
     pluginsSettingsPath: "~/.claude/settings.json",
     // ~/.claude/skills/synced/<workspace>_<user>/ is a vendor-managed cache of Claude Code's own
@@ -122,37 +129,38 @@ var DEFAULT_TOOLS = [
     // Derived from Google's brand mark: just the monochrome silhouette path it uses as a mask
     // for the full-color gradient blobs, forced to currentColor like every other tool here.
     svgIcon: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 15" fill="currentColor"><path d="M14.0777 13.984C14.945 14.6345 16.2458 14.2008 15.0533 13.0084C11.476 9.53949 12.2349 0 7.79033 0C3.34579 0 4.10461 9.53949 0.527295 13.0084C-0.773543 14.3092 0.635692 14.6345 1.50293 13.984C4.86344 11.7076 4.64663 7.69664 7.79033 7.69664C10.934 7.69664 10.7172 11.7076 14.0777 13.984Z"/></svg>',
-    // Only "skill" is confirmed at the global/machine-wide scope (~/.gemini/config/skills,
-    // shared across Antigravity, the Gemini CLI, and the IDE). Rules live in a single
-    // ~/.gemini/GEMINI.md file rather than a directory skillmanager can scan, and there's no
-    // documented global directory for Workflows (Antigravity's slash-command equivalent) or
-    // named custom Agents — only the project-scoped locations below. Double-check/adjust in
-    // Settings if that's grown global directories since.
+    // Global skills live in ~/.gemini/config/skills. Global rules live in ~/.gemini/GEMINI.md
+    // (configured under ruleAdditionalPaths below).
     paths: {
       skill: "~/.gemini/config/skills"
     },
-    // Guessed by symmetry with the confirmed skills path above — Workflows/Agents may well live
-    // at sibling folders under ~/.gemini/config/ but that's not documented anywhere found.
+    // Workflows and agents may live in sibling folders under ~/.gemini/config/
     unconfirmedPaths: {
       agent: "~/.gemini/config/agents",
-      command: "~/.gemini/config/workflows"
+      command: "~/.gemini/config/workflows",
+      rule: "~/.gemini/config/rules"
     },
-    // All project-scoped under .agents/ — a different folder entirely from the global skill
-    // path above, not just it relocated. (Antigravity still falls back to the legacy singular
-    // .agent/ for skills/rules/workflows if .agents/ isn't found; only the current .agents/
-    // form is set here.)
-    //
-    // "skill" deliberately omitted: Antigravity's project-scoped skills convention IS the
-    // shared cross-tool standard (<project>/.agents/skills), the exact same path the
-    // "global" (Shared) tool below already derives per-project automatically (it has no
-    // projectPaths override, so scanProject strips "~/" off its global ~/.agents/skills path).
-    // Declaring it again here would scan that same directory twice and list every skill in it
-    // under two different tool tags.
+    // Project customizations live under .agents/ at the repository root.
     projectPaths: {
+      skill: ".agents/skills",
       agent: ".agents/agents",
       command: ".agents/workflows",
       rule: ".agents/rules"
-    }
+    },
+    // Global instructions rule file: ~/.gemini/GEMINI.md
+    ruleAdditionalPaths: [
+      { path: "~/.gemini/GEMINI.md", singleFile: true }
+    ],
+    // Project-root instructions files: Antigravity discovers GEMINI.md and AGENTS.md directly
+    // at the workspace root alongside the .agents/rules directory above.
+    ruleAdditionalProjectPaths: [
+      { path: "GEMINI.md", singleFile: true },
+      { path: "AGENTS.md", singleFile: true }
+    ],
+    // Global MCP server configuration: ~/.gemini/config/mcp_config.json
+    mcpConfigPath: "~/.gemini/config/mcp_config.json",
+    // Built-in skills bundled in Antigravity (e.g. ~/.gemini/antigravity-cli/builtin/skills)
+    builtInDirnames: ["builtin"]
   },
   {
     id: "codex",
@@ -162,8 +170,17 @@ var DEFAULT_TOOLS = [
     paths: {
       skill: "~/.codex/skills",
       command: "~/.codex/prompts",
-      agent: "~/.codex/agents"
+      agent: "~/.codex/agents",
+      // Codex loads the global AGENTS.md file as persistent instructions. It is an
+      // instructions file, not an auto-memory store, so it belongs under Rules.
+      rule: "~/.codex/AGENTS.md"
     },
+    // Codex also discovers AGENTS.md from the project root through the current
+    // directory. The project workspace represents the repository root here.
+    projectPaths: {
+      rule: "AGENTS.md"
+    },
+    singleFileRule: true,
     pluginsPaths: ["~/.codex/plugins/cache"],
     // Codex only loads cached plugins listed (and not set to enabled = false) here; the cache
     // also keeps copies it isn't loading, e.g. a stale openai-curated-remote marketplace folder.
@@ -414,8 +431,8 @@ var import_obsidian16 = require("obsidian");
 // src/views/LibraryView.ts
 var import_obsidian15 = require("obsidian");
 var import_child_process2 = require("child_process");
-var import_fs15 = require("fs");
-var import_path15 = require("path");
+var import_fs16 = require("fs");
+var import_path16 = require("path");
 
 // src/scanners.ts
 var import_fs2 = require("fs");
@@ -1073,10 +1090,9 @@ function scanAllPlugins(tools) {
 var import_fs3 = require("fs");
 var import_path4 = require("path");
 function addToProject(item, tool, project) {
-  const rawPath = tool.paths[item.type];
-  if (!rawPath)
+  const targetDir = resolveToolDir(tool, item.type, project);
+  if (!targetDir)
     throw new Error(`${tool.name} has no configured ${item.type} path`);
-  const targetDir = (0, import_path4.join)(expandHome2(project.path), rawPath.replace(/^~\/?/, ""));
   (0, import_fs3.mkdirSync)(targetDir, { recursive: true });
   const unit = linkableUnit(item.sourcePath);
   const linkPath = (0, import_path4.join)(targetDir, unit.name);
@@ -1090,6 +1106,185 @@ function removeFromProject(projectItemSourcePath) {
     throw new Error("This item isn't a symlink, so it won't be deleted as a real file or folder.");
   }
   (0, import_fs3.unlinkSync)(unit.path);
+}
+
+// src/memories.ts
+var import_fs4 = require("fs");
+var import_path5 = require("path");
+var MEMORY_INDEX_FILENAME = "MEMORY.md";
+var DISABLED_INDEX_SIDECAR = "memory-index.json";
+function projectSlug(projectPath) {
+  return projectPath.replace(/[^a-zA-Z0-9]/g, "-");
+}
+function memoryRoot(tool) {
+  var _a;
+  const raw = (_a = tool.memoryPath) == null ? void 0 : _a.trim();
+  return raw ? expandHome2(raw) : null;
+}
+function projectMemoryDir(tool, project) {
+  var _a;
+  const raw = (_a = tool.projectMemoryPath) == null ? void 0 : _a.trim();
+  return raw ? (0, import_path5.join)(expandHome2(project.path), raw) : null;
+}
+function isUnder(path, root) {
+  return path.startsWith(root.endsWith(import_path5.sep) ? root : root + import_path5.sep);
+}
+function isMemoryItem(item, tool, projects = []) {
+  if (!tool)
+    return false;
+  const path = stableEntryPath(item.sourcePath);
+  const root = memoryRoot(tool);
+  if (root && isUnder(path, root))
+    return true;
+  const project = item.projectId ? projects.find((p) => p.id === item.projectId) : void 0;
+  const projectDir = project ? projectMemoryDir(tool, project) : null;
+  return projectDir !== null && isUnder(path, projectDir);
+}
+function isMemoryIndex(item) {
+  return (0, import_path5.basename)(stableEntryPath(item.sourcePath)) === MEMORY_INDEX_FILENAME;
+}
+function childDirs(dir) {
+  try {
+    return (0, import_fs4.readdirSync)(dir).filter((name) => {
+      try {
+        return (0, import_fs4.statSync)((0, import_path5.join)(dir, name)).isDirectory();
+      } catch (e) {
+        return false;
+      }
+    });
+  } catch (e) {
+    return [];
+  }
+}
+function scanMemories(tool, projects) {
+  const root = memoryRoot(tool);
+  if (!root || !(0, import_fs4.existsSync)(root))
+    return [];
+  const projectDirs = childDirs(root).filter((name) => (0, import_fs4.existsSync)((0, import_path5.join)(root, name, "memory")));
+  if (projectDirs.length === 0)
+    return scanDirectory(root, tool, "rule", null, null);
+  const bySlug = new Map(projects.map((p) => [projectSlug(expandHome2(p.path)).toLowerCase(), p.id]));
+  return projectDirs.flatMap(
+    (name) => {
+      var _a;
+      return scanDirectory((0, import_path5.join)(root, name, "memory"), tool, "rule", (_a = bySlug.get(name.toLowerCase())) != null ? _a : null, null);
+    }
+  );
+}
+function scanProjectMemories(tool, projects) {
+  return projects.flatMap((project) => {
+    const dir = projectMemoryDir(tool, project);
+    return dir ? scanDirectory(dir, tool, "rule", project.id, null) : [];
+  });
+}
+function scanAllMemories(tools, projects) {
+  return tools.flatMap((tool) => [...scanMemories(tool, projects), ...scanProjectMemories(tool, projects)]);
+}
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function linkPattern(fileName) {
+  return new RegExp(`\\]\\(\\s*<?(?:\\./)?${escapeRegExp(fileName)}>?(?:\\s+"[^"]*")?\\s*\\)`);
+}
+function indexLinksTo(indexText, fileName) {
+  return linkPattern(fileName).test(indexText);
+}
+function removeIndexLines(indexPath, fileName) {
+  if (!(0, import_fs4.existsSync)(indexPath))
+    return null;
+  const text = (0, import_fs4.readFileSync)(indexPath, "utf-8");
+  const pattern = linkPattern(fileName);
+  const lines = text.split("\n");
+  const removed = lines.filter((line) => pattern.test(line));
+  if (removed.length === 0)
+    return null;
+  (0, import_fs4.writeFileSync)(indexPath, lines.filter((line) => !pattern.test(line)).join("\n"));
+  return removed.join("\n");
+}
+function appendIndexLine(indexPath, fileName, line) {
+  if (!(0, import_fs4.existsSync)(indexPath))
+    return;
+  const text = (0, import_fs4.readFileSync)(indexPath, "utf-8");
+  if (indexLinksTo(text, fileName))
+    return;
+  const separator = text === "" || text.endsWith("\n") ? "" : "\n";
+  (0, import_fs4.writeFileSync)(indexPath, `${text}${separator}${line}
+`);
+}
+function readSidecar(memoryDir) {
+  try {
+    return JSON.parse((0, import_fs4.readFileSync)((0, import_path5.join)(memoryDir, DISABLED_DIRNAME, DISABLED_INDEX_SIDECAR), "utf-8"));
+  } catch (e) {
+    return {};
+  }
+}
+function writeSidecar(memoryDir, entries) {
+  const path = (0, import_path5.join)(memoryDir, DISABLED_DIRNAME, DISABLED_INDEX_SIDECAR);
+  if (Object.keys(entries).length === 0) {
+    if ((0, import_fs4.existsSync)(path))
+      (0, import_fs4.unlinkSync)(path);
+    return;
+  }
+  (0, import_fs4.writeFileSync)(path, JSON.stringify(entries, null, 2) + "\n");
+}
+function generatedIndexLine(filePath, fileName) {
+  let meta = { name: "", description: "" };
+  try {
+    meta = parseSourceMeta((0, import_fs4.readFileSync)(filePath, "utf-8").slice(0, 4e3));
+  } catch (e) {
+  }
+  const title = meta.name || fileName.replace(/\.md$/, "");
+  return `- [${title}](${fileName})${meta.description ? `: ${meta.description}` : ""}`;
+}
+function toggleMemoryEnabled(item) {
+  var _a;
+  if (isMemoryIndex(item)) {
+    toggleItemEnabled(item);
+    return;
+  }
+  const { willDisable, fromPath, toPath } = previewToggle(item);
+  toggleItemEnabled(item);
+  const memoryDir = (0, import_path5.dirname)(willDisable ? fromPath : toPath);
+  const fileName = (0, import_path5.basename)(willDisable ? fromPath : toPath);
+  const indexPath = (0, import_path5.join)(memoryDir, MEMORY_INDEX_FILENAME);
+  const sidecar = readSidecar(memoryDir);
+  if (willDisable) {
+    const removed = removeIndexLines(indexPath, fileName);
+    if (removed !== null)
+      writeSidecar(memoryDir, { ...sidecar, [fileName]: removed });
+  } else {
+    appendIndexLine(indexPath, fileName, (_a = sidecar[fileName]) != null ? _a : generatedIndexLine(toPath, fileName));
+    delete sidecar[fileName];
+    writeSidecar(memoryDir, sidecar);
+  }
+}
+function forgetMemoryIndexEntry(item) {
+  if (isMemoryIndex(item))
+    return;
+  const stablePath = stableEntryPath(item.sourcePath);
+  const memoryDir = (0, import_path5.dirname)(stablePath);
+  const fileName = (0, import_path5.basename)(stablePath);
+  if (item.enabled) {
+    removeIndexLines((0, import_path5.join)(memoryDir, MEMORY_INDEX_FILENAME), fileName);
+  } else {
+    const sidecar = readSidecar(memoryDir);
+    delete sidecar[fileName];
+    writeSidecar(memoryDir, sidecar);
+  }
+}
+function checkMemoryIndexed(item) {
+  if (!item.enabled || isMemoryIndex(item))
+    return [];
+  const indexPath = (0, import_path5.join)((0, import_path5.dirname)(item.sourcePath), MEMORY_INDEX_FILENAME);
+  if (!(0, import_fs4.existsSync)(indexPath))
+    return [];
+  try {
+    if (indexLinksTo((0, import_fs4.readFileSync)(indexPath, "utf-8"), (0, import_path5.basename)(item.sourcePath)))
+      return [];
+  } catch (e) {
+    return [];
+  }
+  return [`Not listed in ${MEMORY_INDEX_FILENAME}, so it's never loaded`];
 }
 
 // src/collections.ts
@@ -1382,30 +1577,30 @@ var import_obsidian6 = require("obsidian");
 
 // src/rescan.ts
 var import_obsidian5 = require("obsidian");
-var import_path6 = require("path");
+var import_path7 = require("path");
 
 // src/mcpScanners.ts
-var import_fs4 = require("fs");
-var import_path5 = require("path");
+var import_fs5 = require("fs");
+var import_path6 = require("path");
 function readMcpServersFromFile(path, key = "mcpServers") {
   var _a;
-  if (!(0, import_fs4.existsSync)(path))
+  if (!(0, import_fs5.existsSync)(path))
     return {};
   try {
-    const raw = JSON.parse((0, import_fs4.readFileSync)(path, "utf-8"));
+    const raw = JSON.parse((0, import_fs5.readFileSync)(path, "utf-8"));
     return (_a = raw[key]) != null ? _a : {};
   } catch (e) {
     return {};
   }
 }
 function readMcpServersFromToml(path, tablePrefix = "mcp_servers") {
-  if (!(0, import_fs4.existsSync)(path))
+  if (!(0, import_fs5.existsSync)(path))
     return {};
   try {
     const prefix = `[${tablePrefix}.`;
     const servers = {};
     let current = null;
-    for (const rawLine of (0, import_fs4.readFileSync)(path, "utf-8").split(/\r?\n/)) {
+    for (const rawLine of (0, import_fs5.readFileSync)(path, "utf-8").split(/\r?\n/)) {
       const line = rawLine.trim();
       if (!line || line.startsWith("#"))
         continue;
@@ -1507,7 +1702,7 @@ function scanMcpServers(tools, projects) {
     }
     if (tool.projectMcpConfigPath) {
       for (const project of projects) {
-        const projectPath = (0, import_path5.join)(expandHome2(project.path), tool.projectMcpConfigPath);
+        const projectPath = (0, import_path6.join)(expandHome2(project.path), tool.projectMcpConfigPath);
         for (const [name, config] of Object.entries(readMcpServers(projectPath, tool))) {
           entries.push({
             entryId: `${tool.id}:project:${project.id}:${projectPath}:${name}`,
@@ -1540,6 +1735,7 @@ async function performRescan(app, settings, store, includeMcpServers = true) {
   const discovered = [
     ...scanAllTools(settings.tools),
     ...scanAllProjects(settings.tools, projects),
+    ...scanAllMemories(settings.tools, projects),
     ...pluginScan.items
   ];
   const brokenSymlinks = scanBrokenSymlinks(settings.tools, projects);
@@ -1563,7 +1759,7 @@ async function performRescan(app, settings, store, includeMcpServers = true) {
   }
   const existing = await store.list();
   const brokenPaths = new Set(brokenSymlinks.map((link) => link.path));
-  const retainedBrokenIds = existing.filter((item) => brokenPaths.has(item.sourcePath) || brokenPaths.has((0, import_path6.dirname)(item.sourcePath))).map((item) => item.entryId);
+  const retainedBrokenIds = existing.filter((item) => brokenPaths.has(item.sourcePath) || brokenPaths.has((0, import_path7.dirname)(item.sourcePath))).map((item) => item.entryId);
   const validIds = /* @__PURE__ */ new Set([...discovered.map((d) => d.entryId), ...retainedBrokenIds]);
   await store.pruneMissing(validIds);
   return {
@@ -1676,14 +1872,14 @@ var ProjectEditModal = class extends import_obsidian7.Modal {
 
 // src/modals/InstallFromGitHubModal.ts
 var import_obsidian8 = require("obsidian");
-var import_fs6 = require("fs");
-var import_path8 = require("path");
+var import_fs7 = require("fs");
+var import_path9 = require("path");
 
 // src/git.ts
 var import_child_process = require("child_process");
-var import_fs5 = require("fs");
+var import_fs6 = require("fs");
 var import_os3 = require("os");
-var import_path7 = require("path");
+var import_path8 = require("path");
 function git(args, cwd) {
   try {
     return (0, import_child_process.execFileSync)("git", args, {
@@ -1712,7 +1908,7 @@ function remoteHeadCommit(repoUrl, ref) {
   return sha;
 }
 function shallowCloneRepo(repoUrl, ref) {
-  const dir = (0, import_fs5.mkdtempSync)((0, import_path7.join)((0, import_os3.tmpdir)(), "skillmanager-clone-"));
+  const dir = (0, import_fs6.mkdtempSync)((0, import_path8.join)((0, import_os3.tmpdir)(), "skillmanager-clone-"));
   try {
     const args = ["clone", "--depth", "1", "--single-branch"];
     if (ref)
@@ -1720,22 +1916,22 @@ function shallowCloneRepo(repoUrl, ref) {
     args.push(repoUrl, dir);
     git(args);
     const commit = git(["rev-parse", "HEAD"], dir);
-    return { dir, commit, cleanup: () => (0, import_fs5.rmSync)(dir, { recursive: true, force: true }) };
+    return { dir, commit, cleanup: () => (0, import_fs6.rmSync)(dir, { recursive: true, force: true }) };
   } catch (e) {
-    (0, import_fs5.rmSync)(dir, { recursive: true, force: true });
+    (0, import_fs6.rmSync)(dir, { recursive: true, force: true });
     throw e;
   }
 }
 function shallowCloneAtCommit(repoUrl, commitSha) {
-  const dir = (0, import_fs5.mkdtempSync)((0, import_path7.join)((0, import_os3.tmpdir)(), "skillmanager-clone-"));
+  const dir = (0, import_fs6.mkdtempSync)((0, import_path8.join)((0, import_os3.tmpdir)(), "skillmanager-clone-"));
   try {
     git(["init", "-q", dir]);
     git(["remote", "add", "origin", repoUrl], dir);
     git(["fetch", "--depth", "1", "origin", commitSha], dir);
     git(["checkout", "-q", "FETCH_HEAD"], dir);
-    return { dir, commit: commitSha, cleanup: () => (0, import_fs5.rmSync)(dir, { recursive: true, force: true }) };
+    return { dir, commit: commitSha, cleanup: () => (0, import_fs6.rmSync)(dir, { recursive: true, force: true }) };
   } catch (e) {
-    (0, import_fs5.rmSync)(dir, { recursive: true, force: true });
+    (0, import_fs6.rmSync)(dir, { recursive: true, force: true });
     throw new Error(
       `Couldn't fetch the originally-installed commit from this host. Try "Check for updates" instead. (${errorMessage(e)})`
     );
@@ -1923,26 +2119,26 @@ var InstallFromGitHubModal = class extends import_obsidian8.Modal {
     let clone = null;
     try {
       clone = shallowCloneRepo(repoUrl, ref || void 0);
-      (0, import_fs6.rmSync)((0, import_path8.join)(clone.dir, ".git"), { recursive: true, force: true });
-      const sourceRoot = subpath ? (0, import_path8.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs6.existsSync)(sourceRoot)) {
+      (0, import_fs7.rmSync)((0, import_path9.join)(clone.dir, ".git"), { recursive: true, force: true });
+      const sourceRoot = subpath ? (0, import_path9.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs7.existsSync)(sourceRoot)) {
         throw new Error(`"${subpath}" doesn't exist in this repo${ref ? ` at ${ref}` : ""}.`);
       }
-      const sourceStat = (0, import_fs6.statSync)(sourceRoot);
+      const sourceStat = (0, import_fs7.statSync)(sourceRoot);
       const isDirectory = sourceStat.isDirectory();
-      const unitName = subpath ? (0, import_path8.basename)(subpath) : (0, import_path8.basename)(repoUrl, ".git");
-      const destPath = (0, import_path8.join)(destDir, unitName);
-      if ((0, import_fs6.existsSync)(destPath)) {
+      const unitName = subpath ? (0, import_path9.basename)(subpath) : (0, import_path9.basename)(repoUrl, ".git");
+      const destPath = (0, import_path9.join)(destDir, unitName);
+      if ((0, import_fs7.existsSync)(destPath)) {
         throw new Error(`"${unitName}" already exists at ${destDir}.`);
       }
-      (0, import_fs6.mkdirSync)(destDir, { recursive: true });
+      (0, import_fs7.mkdirSync)(destDir, { recursive: true });
       if (isDirectory) {
-        (0, import_fs6.cpSync)(sourceRoot, destPath, { recursive: true });
+        (0, import_fs7.cpSync)(sourceRoot, destPath, { recursive: true });
       } else {
-        (0, import_fs6.copyFileSync)(sourceRoot, destPath);
+        (0, import_fs7.copyFileSync)(sourceRoot, destPath);
       }
-      const primaryFile = isDirectory ? (0, import_path8.join)(destPath, "SKILL.md") : destPath;
-      const meta = (0, import_fs6.existsSync)(primaryFile) ? parseSourceMeta((0, import_fs6.readFileSync)(primaryFile, "utf-8").slice(0, 4e3)) : { name: "", description: "" };
+      const primaryFile = isDirectory ? (0, import_path9.join)(destPath, "SKILL.md") : destPath;
+      const meta = (0, import_fs7.existsSync)(primaryFile) ? parseSourceMeta((0, import_fs7.readFileSync)(primaryFile, "utf-8").slice(0, 4e3)) : { name: "", description: "" };
       const baseName = isDirectory ? unitName : unitName.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
       const name = meta.name || baseName;
       const entryId = makeEntryId(tool.id, this.type, (_d = project == null ? void 0 : project.id) != null ? _d : null, null, baseName, stableEntryPath(primaryFile));
@@ -1975,8 +2171,8 @@ var InstallFromGitHubModal = class extends import_obsidian8.Modal {
 var import_obsidian10 = require("obsidian");
 
 // src/discover.ts
-var import_fs7 = require("fs");
-var import_path9 = require("path");
+var import_fs8 = require("fs");
+var import_path10 = require("path");
 var import_crypto = require("crypto");
 var import_obsidian9 = require("obsidian");
 function discoverEntryId(repoUrl, entrySubpath, name) {
@@ -2005,6 +2201,8 @@ var TYPE_DIRNAMES = {
   commands: "command",
   prompt: "command",
   prompts: "command",
+  workflow: "command",
+  workflows: "command",
   rule: "rule",
   rules: "rule"
 };
@@ -2012,8 +2210,8 @@ function findRepoManifests(rootDir) {
   const results = [];
   function walk2(dir, depth, typeHint) {
     var _a;
-    const skillManifest = (0, import_path9.join)(dir, "SKILL.md");
-    if ((0, import_fs7.existsSync)(skillManifest)) {
+    const skillManifest = (0, import_path10.join)(dir, "SKILL.md");
+    if ((0, import_fs8.existsSync)(skillManifest)) {
       results.push({ type: "skill", path: skillManifest });
       return;
     }
@@ -2021,22 +2219,22 @@ function findRepoManifests(rootDir) {
       return;
     let entries;
     try {
-      entries = (0, import_fs7.readdirSync)(dir, { withFileTypes: true }).filter((e) => !SKIP_DIRNAMES2.has(e.name)).map((e) => ({ name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() }));
+      entries = (0, import_fs8.readdirSync)(dir, { withFileTypes: true }).filter((e) => !SKIP_DIRNAMES2.has(e.name)).map((e) => ({ name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() }));
     } catch (e) {
       return;
     }
-    const dirType = (_a = TYPE_DIRNAMES[(0, import_path9.basename)(dir).toLowerCase()]) != null ? _a : null;
+    const dirType = (_a = TYPE_DIRNAMES[(0, import_path10.basename)(dir).toLowerCase()]) != null ? _a : null;
     const effectiveType = dirType != null ? dirType : typeHint;
     if (effectiveType) {
       for (const entry of entries) {
         if (entry.isFile && entry.name.endsWith(".md")) {
-          results.push({ type: effectiveType, path: (0, import_path9.join)(dir, entry.name) });
+          results.push({ type: effectiveType, path: (0, import_path10.join)(dir, entry.name) });
         }
       }
     }
     for (const entry of entries) {
       if (entry.isDirectory)
-        walk2((0, import_path9.join)(dir, entry.name), depth + 1, effectiveType);
+        walk2((0, import_path10.join)(dir, entry.name), depth + 1, effectiveType);
     }
   }
   walk2(rootDir, 0, null);
@@ -2045,8 +2243,8 @@ function findRepoManifests(rootDir) {
 async function discoverGitSkills(repoUrl, ref, subpath) {
   const clone = shallowCloneRepo(repoUrl, ref || void 0);
   try {
-    const sourceRoot = subpath ? (0, import_path9.join)(clone.dir, subpath) : clone.dir;
-    if (!(0, import_fs7.existsSync)(sourceRoot)) {
+    const sourceRoot = subpath ? (0, import_path10.join)(clone.dir, subpath) : clone.dir;
+    if (!(0, import_fs8.existsSync)(sourceRoot)) {
       throw new Error(`"${subpath}" doesn't exist in this repo${ref ? ` at ${ref}` : ""}.`);
     }
     const found = findRepoManifests(sourceRoot);
@@ -2055,16 +2253,16 @@ async function discoverGitSkills(repoUrl, ref, subpath) {
     }
     const discoveredAt = Date.now();
     return found.map(({ type, path: manifestPath }) => {
-      const manifestText = (0, import_fs7.readFileSync)(manifestPath, "utf-8");
+      const manifestText = (0, import_fs8.readFileSync)(manifestPath, "utf-8");
       const fields = parseFrontmatter(manifestText);
       const find = (key) => {
         var _a, _b;
         return (_b = (_a = fields.find((f) => f.key === key)) == null ? void 0 : _a.value) != null ? _b : "";
       };
-      const itemPath = type === "skill" ? (0, import_path9.dirname)(manifestPath) : manifestPath;
-      const relFromSourceRoot = (0, import_path9.relative)(sourceRoot, itemPath).split(import_path9.sep).join("/");
+      const itemPath = type === "skill" ? (0, import_path10.dirname)(manifestPath) : manifestPath;
+      const relFromSourceRoot = (0, import_path10.relative)(sourceRoot, itemPath).split(import_path10.sep).join("/");
       const entrySubpath = [subpath, relFromSourceRoot].filter((s) => s && s !== ".").join("/");
-      const fallbackName = type === "skill" ? (0, import_path9.basename)(itemPath) : (0, import_path9.basename)(itemPath).replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
+      const fallbackName = type === "skill" ? (0, import_path10.basename)(itemPath) : (0, import_path10.basename)(itemPath).replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
       const name = find("name") || fallbackName;
       const tags = find("tags").split(",").map((t) => t.trim()).filter(Boolean);
       return {
@@ -2109,11 +2307,11 @@ async function addDiscoverSource(settings, repoUrl, ref, subpath, isInstalled) {
 async function refetchDiscoverEntry(entry) {
   const clone = shallowCloneRepo(entry.repoUrl, entry.ref || void 0);
   try {
-    const manifestPath = entry.type === "skill" ? (0, import_path9.join)(clone.dir, entry.subpath, "SKILL.md") : (0, import_path9.join)(clone.dir, entry.subpath);
-    if (!(0, import_fs7.existsSync)(manifestPath)) {
+    const manifestPath = entry.type === "skill" ? (0, import_path10.join)(clone.dir, entry.subpath, "SKILL.md") : (0, import_path10.join)(clone.dir, entry.subpath);
+    if (!(0, import_fs8.existsSync)(manifestPath)) {
       throw new Error(`"${entry.subpath}" no longer exists in this repo${entry.ref ? ` at ${entry.ref}` : ""}.`);
     }
-    const manifestText = (0, import_fs7.readFileSync)(manifestPath, "utf-8");
+    const manifestText = (0, import_fs8.readFileSync)(manifestPath, "utf-8");
     const fields = parseFrontmatter(manifestText);
     const find = (key) => {
       var _a, _b;
@@ -2298,7 +2496,7 @@ var ConfirmModal = class extends import_obsidian11.Modal {
 
 // src/modals/AddToolModal.ts
 var import_obsidian12 = require("obsidian");
-var import_fs8 = require("fs");
+var import_fs9 = require("fs");
 function attachPathStatus(controlEl) {
   const el = controlEl.createSpan({ cls: "skillmanager-path-status" });
   return (rawPath) => {
@@ -2310,7 +2508,7 @@ function attachPathStatus(controlEl) {
       return;
     }
     const resolved = expandHome2(trimmed);
-    const found = (0, import_fs8.existsSync)(resolved);
+    const found = (0, import_fs9.existsSync)(resolved);
     el.setText(found ? "found" : "not found");
     el.title = resolved;
     el.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
@@ -2325,6 +2523,7 @@ var AddToolModal = class extends import_obsidian12.Modal {
     this.name = "";
     this.paths = {};
     this.mcpConfigPath = "";
+    this.memoryPath = "";
     this.projectMcpConfigPath = "";
     this.mcpConfigKey = "";
     /** Raw inline SVG markup — same field/rendering contract as ToolConfig.svgIcon (parsed with
@@ -2356,6 +2555,11 @@ var AddToolModal = class extends import_obsidian12.Modal {
         })
       );
     }
+    new import_obsidian12.Setting(contentEl).setName("Memories").setDesc("Folder of memory files the agent writes itself. Listed under Memories & Rules.").addText(
+      (text) => text.setPlaceholder("~/.example/memory").onChange((value) => {
+        this.memoryPath = value.trim();
+      })
+    );
     contentEl.createEl("h4", { text: "MCP servers (optional)" });
     contentEl.createDiv({
       cls: "setting-item-description",
@@ -2449,6 +2653,7 @@ var AddToolModal = class extends import_obsidian12.Modal {
       paths: this.paths,
       custom: true,
       mcpConfigPath: this.mcpConfigPath || void 0,
+      memoryPath: this.memoryPath || void 0,
       projectMcpConfigPath: this.projectMcpConfigPath || void 0,
       mcpConfigKey: this.mcpConfigKey || void 0
     });
@@ -2518,7 +2723,7 @@ var ItemOverlapModal = class extends import_obsidian13.Modal {
 };
 
 // src/dashboard.ts
-var import_fs9 = require("fs");
+var import_fs10 = require("fs");
 function isSameName(a, b) {
   return a.type === b.type && a.name.trim().toLowerCase() === b.name.trim().toLowerCase();
 }
@@ -2527,7 +2732,7 @@ function computeDashboardMetrics(items) {
   for (const item of items) {
     let content;
     try {
-      content = (0, import_fs9.readFileSync)(item.sourcePath, "utf-8");
+      content = (0, import_fs10.readFileSync)(item.sourcePath, "utf-8");
     } catch (e) {
       continue;
     }
@@ -2538,7 +2743,7 @@ ${item.description}`.length : null;
     const invocationCharCount = isSkillOrAgent ? stripFrontmatter(content).length : null;
     let mtimeMs = 0;
     try {
-      mtimeMs = (0, import_fs9.statSync)(item.sourcePath).mtimeMs;
+      mtimeMs = (0, import_fs10.statSync)(item.sourcePath).mtimeMs;
     } catch (e) {
     }
     metrics.push({ item, charCount, alwaysAvailableCharCount, invocationCharCount, mtimeMs });
@@ -2596,8 +2801,8 @@ function findOverlapPairs(items, threshold = OVERLAP_THRESHOLD) {
 }
 
 // src/claude-usage.ts
-var import_fs10 = require("fs");
-var import_path10 = require("path");
+var import_fs11 = require("fs");
+var import_path11 = require("path");
 
 // src/usage-history.ts
 var HEATMAP_WEEKS = 26;
@@ -2692,27 +2897,27 @@ function usageKey(type, name) {
 }
 function listTranscriptFiles(projectsDir) {
   const files = [];
-  if (!(0, import_fs10.existsSync)(projectsDir))
+  if (!(0, import_fs11.existsSync)(projectsDir))
     return files;
   let projectDirs;
   try {
-    projectDirs = (0, import_fs10.readdirSync)(projectsDir);
+    projectDirs = (0, import_fs11.readdirSync)(projectsDir);
   } catch (e) {
     return files;
   }
   for (const dir of projectDirs) {
-    const dirPath = (0, import_path10.join)(projectsDir, dir);
+    const dirPath = (0, import_path11.join)(projectsDir, dir);
     let entries;
     try {
-      if (!(0, import_fs10.statSync)(dirPath).isDirectory())
+      if (!(0, import_fs11.statSync)(dirPath).isDirectory())
         continue;
-      entries = (0, import_fs10.readdirSync)(dirPath);
+      entries = (0, import_fs11.readdirSync)(dirPath);
     } catch (e) {
       continue;
     }
     for (const entry of entries) {
       if (entry.endsWith(".jsonl"))
-        files.push((0, import_path10.join)(dirPath, entry));
+        files.push((0, import_path11.join)(dirPath, entry));
     }
   }
   return files;
@@ -2721,7 +2926,7 @@ function scanTranscriptFile(filePath, into, sinceMs = 0, daysInto) {
   var _a;
   let stats;
   try {
-    stats = (0, import_fs10.statSync)(filePath);
+    stats = (0, import_fs11.statSync)(filePath);
   } catch (e) {
     return;
   }
@@ -2729,7 +2934,7 @@ function scanTranscriptFile(filePath, into, sinceMs = 0, daysInto) {
     return;
   let raw;
   try {
-    raw = (0, import_fs10.readFileSync)(filePath, "utf-8");
+    raw = (0, import_fs11.readFileSync)(filePath, "utf-8");
   } catch (e) {
     return;
   }
@@ -2817,22 +3022,22 @@ function rankTopUsedItems(items, usageByEntryId) {
 }
 
 // src/codex-usage.ts
-var import_fs11 = require("fs");
-var import_path11 = require("path");
+var import_fs12 = require("fs");
+var import_path12 = require("path");
 var CODEX_SESSIONS_DIR = "~/.codex/sessions";
 function listCodexSessionFiles(sessionsDir) {
   const files = [];
   const visit = (dir) => {
     let entries;
     try {
-      entries = (0, import_fs11.readdirSync)(dir);
+      entries = (0, import_fs12.readdirSync)(dir);
     } catch (e) {
       return;
     }
     for (const entry of entries) {
-      const path = (0, import_path11.join)(dir, entry);
+      const path = (0, import_path12.join)(dir, entry);
       try {
-        if ((0, import_fs11.statSync)(path).isDirectory())
+        if ((0, import_fs12.statSync)(path).isDirectory())
           visit(path);
         else if (entry.endsWith(".jsonl"))
           files.push(path);
@@ -2840,7 +3045,7 @@ function listCodexSessionFiles(sessionsDir) {
       }
     }
   };
-  if ((0, import_fs11.existsSync)(sessionsDir))
+  if ((0, import_fs12.existsSync)(sessionsDir))
     visit(sessionsDir);
   return files;
 }
@@ -2855,7 +3060,7 @@ function scanCodexSessionFile(filePath, items, into, sinceMs = 0, daysInto) {
   var _a;
   let raw;
   try {
-    raw = (0, import_fs11.readFileSync)(filePath, "utf-8");
+    raw = (0, import_fs12.readFileSync)(filePath, "utf-8");
   } catch (e) {
     return;
   }
@@ -2907,19 +3112,19 @@ function computeCodexUsage(items, rawUsage) {
 }
 
 // src/integrity.ts
-var import_fs12 = require("fs");
-var import_path12 = require("path");
+var import_fs13 = require("fs");
+var import_path13 = require("path");
 var MAX_DESCRIPTION_CHARS = 1024;
 var SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 var MAX_SKILL_NAME_CHARS = 64;
 function checkIntegrity(item, raw, parseYaml2) {
   const issues = [];
-  if (item.realPath !== item.sourcePath && !(0, import_fs12.existsSync)(item.realPath)) {
+  if (item.realPath !== item.sourcePath && !(0, import_fs13.existsSync)(item.realPath)) {
     issues.push("Symlink target is missing");
   }
   if (item.type === "skill" || item.type === "agent")
     issues.push(...checkFrontmatter(item, raw, parseYaml2));
-  issues.push(...findBrokenLinks(raw, (0, import_path12.dirname)(item.sourcePath)));
+  issues.push(...findBrokenLinks(raw, (0, import_path13.dirname)(item.sourcePath)));
   return issues;
 }
 function checkFrontmatter(item, raw, parseYaml2) {
@@ -2946,12 +3151,12 @@ function checkFrontmatter(item, raw, parseYaml2) {
   const manualOnly = field("disable-model-invocation") === "true";
   if (!name && !(item.type === "skill" && item.tool === "claude-code"))
     issues.push("Missing name");
-  const isFolderSkill = item.type === "skill" && (0, import_path12.basename)(item.sourcePath).toLowerCase() === "skill.md";
+  const isFolderSkill = item.type === "skill" && (0, import_path13.basename)(item.sourcePath).toLowerCase() === "skill.md";
   if (name && item.type === "skill") {
     if (!SKILL_NAME_PATTERN.test(name) || name.length > MAX_SKILL_NAME_CHARS) {
       issues.push("Name should be lowercase letters, numbers and hyphens (64 max)");
     }
-    const folder = (0, import_path12.basename)((0, import_path12.dirname)(item.sourcePath));
+    const folder = (0, import_path13.basename)((0, import_path13.dirname)(item.sourcePath));
     if (isFolderSkill && folder !== name)
       issues.push(`Name "${name}" doesn't match folder "${folder}"`);
   }
@@ -2969,7 +3174,7 @@ function findBrokenLinks(raw, baseDir) {
     const target = match[1];
     if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("#") || target.startsWith("~"))
       continue;
-    if ((0, import_path12.isAbsolute)(target))
+    if ((0, import_path13.isAbsolute)(target))
       continue;
     let path = target.replace(/[#?].*$/, "");
     if (!path)
@@ -2978,29 +3183,29 @@ function findBrokenLinks(raw, baseDir) {
       path = decodeURIComponent(path);
     } catch (e) {
     }
-    if (!(0, import_fs12.existsSync)((0, import_path12.resolve)(baseDir, path)))
+    if (!(0, import_fs13.existsSync)((0, import_path13.resolve)(baseDir, path)))
       broken.add(path);
   }
   return [...broken].map((path) => `Broken link: ${path}`);
 }
 
 // src/fileTree.ts
-var import_fs13 = require("fs");
-var import_path13 = require("path");
+var import_fs14 = require("fs");
+var import_path14 = require("path");
 var SKIP_ENTRIES = /* @__PURE__ */ new Set(["node_modules", ".git", ".DS_Store"]);
 var MAX_DEPTH = 4;
 function isFolderItem(item) {
-  return (0, import_path13.basename)(item.sourcePath) === "SKILL.md";
+  return (0, import_path14.basename)(item.sourcePath) === "SKILL.md";
 }
 function skillFolder(item) {
-  return (0, import_path13.dirname)(item.sourcePath);
+  return (0, import_path14.dirname)(item.sourcePath);
 }
 function walk(dir, prefix, depth) {
   if (depth > MAX_DEPTH)
     return [];
   let entries;
   try {
-    entries = (0, import_fs13.readdirSync)(dir);
+    entries = (0, import_fs14.readdirSync)(dir);
   } catch (e) {
     return [];
   }
@@ -3008,11 +3213,11 @@ function walk(dir, prefix, depth) {
   for (const entry of entries) {
     if (SKIP_ENTRIES.has(entry) || entry.startsWith("."))
       continue;
-    const absPath = (0, import_path13.join)(dir, entry);
+    const absPath = (0, import_path14.join)(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
     let isDir = false;
     try {
-      isDir = (0, import_fs13.statSync)(absPath).isDirectory();
+      isDir = (0, import_fs14.statSync)(absPath).isDirectory();
     } catch (e) {
       continue;
     }
@@ -3707,18 +3912,18 @@ function renderDiffLine(container, line) {
 }
 
 // src/diff/companions.ts
-var import_fs14 = require("fs");
-var import_path14 = require("path");
+var import_fs15 = require("fs");
+var import_path15 = require("path");
 function listFilesRecursive(dir, prefix = "") {
-  if (!(0, import_fs14.existsSync)(dir))
+  if (!(0, import_fs15.existsSync)(dir))
     return [];
   const files = [];
-  for (const entry of (0, import_fs14.readdirSync)(dir)) {
+  for (const entry of (0, import_fs15.readdirSync)(dir)) {
     if (entry === ".git")
       continue;
-    const entryPath = (0, import_path14.join)(dir, entry);
+    const entryPath = (0, import_path15.join)(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
-    if ((0, import_fs14.statSync)(entryPath).isDirectory()) {
+    if ((0, import_fs15.statSync)(entryPath).isDirectory()) {
       files.push(...listFilesRecursive(entryPath, relPath));
     } else {
       files.push(relPath);
@@ -3728,7 +3933,7 @@ function listFilesRecursive(dir, prefix = "") {
 }
 function filesEqual(a, b) {
   try {
-    return (0, import_fs14.readFileSync)(a).equals((0, import_fs14.readFileSync)(b));
+    return (0, import_fs15.readFileSync)(a).equals((0, import_fs15.readFileSync)(b));
   } catch (e) {
     return false;
   }
@@ -3740,7 +3945,7 @@ function computeCompanionChanges(oldDir, newDir) {
   for (const file of newFiles) {
     if (!oldFiles.has(file))
       rows.push({ file, status: "added" });
-    else if (!filesEqual((0, import_path14.join)(oldDir, file), (0, import_path14.join)(newDir, file)))
+    else if (!filesEqual((0, import_path15.join)(oldDir, file), (0, import_path15.join)(newDir, file)))
       rows.push({ file, status: "modified" });
   }
   for (const file of oldFiles) {
@@ -3850,9 +4055,12 @@ var SOURCE_FILTER_LABELS = {
 };
 var RULE_KIND_LABELS = {
   instructions: "Instructions files",
-  granular: "Individual rules"
+  granular: "Individual rules",
+  memory: "Memories"
 };
 var LibraryView = class extends import_obsidian15.ItemView {
+  // Whether the "N more fields" frontmatter disclosure is open — local UI state, reset whenever
+  // selection changes so a freshly-opened file always starts collapsed.
   constructor(leaf, getSettings, store, saveSettings) {
     super(leaf);
     this.getSettings = getSettings;
@@ -3880,9 +4088,14 @@ var LibraryView = class extends import_obsidian15.ItemView {
     /** Same compounding, sticks-around-across-navigation shape as sourceFilter, but scoped to
      *  ItemType "rule": "instructions" narrows to a tool's single loaded-every-session file (e.g.
      *  Claude Code's CLAUDE.md, ToolConfig.singleFileRule), "granular" to a directory of many
-     *  separate rule files (e.g. Cursor's ~/.cursor/rules). Rendered only while typeFilter ===
-     *  "rule" (see renderRuleKindButton) since it's meaningless for any other type. */
+     *  separate rule files (e.g. Cursor's ~/.cursor/rules), "memory" to files the agent wrote
+     *  itself (ToolConfig.memoryPath). Rendered only while typeFilter === "rule" (see
+     *  renderRuleKindButton) since it's meaningless for any other type. */
     this.ruleKindFilter = null;
+    /** Page-level scope filter from the Filter menu (see renderFilterButton): "global" for items
+     *  found under a tool's home-directory paths, or a workspace id. Hidden, and ignored, on a
+     *  workspace page, where the sidebar already fixes the scope. */
+    this.pageScopeFilter = null;
     /** Per-session only (see silentUpdateItem/bulkCheckForUpdates) — whether a sourceRepo item was
      *  last confirmed current or behind. Absent (including for anything with no sourceRepo at all)
      *  reads as "unknown," the same muted dot as "not tracked from GitHub," until an explicit check
@@ -4047,9 +4260,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
     // entryId of the item currently showing the inline "add a tag" input in place of the "+ tag"
     // button — local UI state, not persisted, reset whenever selection changes.
     this.addingTagFor = null;
-    // Whether the "N more fields" frontmatter disclosure is open — local UI state, reset whenever
-    // selection changes so a freshly-opened file always starts collapsed.
-    this.moreFieldsExpanded = false;
   }
   getViewType() {
     return LIBRARY_VIEW_TYPE;
@@ -4103,9 +4313,9 @@ var LibraryView = class extends import_obsidian15.ItemView {
         if (this.selectedFilePath === previousSourcePath) {
           this.selectedFilePath = updated.sourcePath;
         } else {
-          const previousDir = (0, import_path15.dirname)(previousSourcePath);
-          if (this.selectedFilePath.startsWith(previousDir + import_path15.sep)) {
-            const updatedDir = (0, import_path15.dirname)(updated.sourcePath);
+          const previousDir = (0, import_path16.dirname)(previousSourcePath);
+          if (this.selectedFilePath.startsWith(previousDir + import_path16.sep)) {
+            const updatedDir = (0, import_path16.dirname)(updated.sourcePath);
             this.selectedFilePath = updatedDir + this.selectedFilePath.slice(previousDir.length);
           }
         }
@@ -4248,7 +4458,10 @@ var LibraryView = class extends import_obsidian15.ItemView {
    *  on it. This changes the item's path, so a rescan (not an optimistic patch) follows. */
   async toggleEnabled(item) {
     try {
-      toggleItemEnabled(item);
+      if (this.isMemory(item))
+        toggleMemoryEnabled(item);
+      else
+        toggleItemEnabled(item);
     } catch (e) {
       new import_obsidian15.Notice(`Couldn't toggle "${item.name}": ` + errorMessage(e));
       return;
@@ -4270,10 +4483,11 @@ var LibraryView = class extends import_obsidian15.ItemView {
     }
     const preview = previewToggle(item);
     const toolText = this.toolLabel(item).text;
+    const indexNote = this.isMemory(item) && !isMemoryIndex(item) ? preview.willDisable ? ` Its line in ${MEMORY_INDEX_FILENAME} is removed too.` : ` Its line in ${MEMORY_INDEX_FILENAME} is restored too.` : "";
     new ConfirmModal(
       this.app,
       preview.willDisable ? `Disable "${item.name}"?` : `Enable "${item.name}"?`,
-      preview.willDisable ? `This moves "${item.name}" to ${preview.toPath}, so ${toolText} stops seeing it.` : `This moves "${item.name}" back to ${preview.toPath}, so ${toolText} can see it again.`,
+      preview.willDisable ? `This moves "${item.name}" to ${preview.toPath}, so ${toolText} stops seeing it.${indexNote}` : `This moves "${item.name}" back to ${preview.toPath}, so ${toolText} can see it again.${indexNote}`,
       preview.willDisable ? "Disable" : "Enable",
       async () => {
         await perform();
@@ -4455,6 +4669,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.toolFilter = null;
     this.pageToolFilter = null;
     this.pageTypeFilter = null;
+    this.pageScopeFilter = null;
     this.collectionFilter = null;
     this.projectFilter = null;
     this.pluginFilter = null;
@@ -4475,7 +4690,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.selectedFilePath = null;
     this.detailLoadedFor = null;
     this.addingTagFor = null;
-    this.moreFieldsExpanded = false;
   }
   isScoped() {
     return !!(this.typeFilter || this.toolFilter || this.collectionFilter || this.projectFilter || this.pluginFilter || this.favoritesOnly || this.discoverMode || this.toolsMode || this.dashboardMode || this.mcpMode || this.pluginBundlesMode);
@@ -4499,7 +4713,9 @@ var LibraryView = class extends import_obsidian15.ItemView {
       labels.push((_b = (_a = this.getSettings().tools.find((t) => t.id === this.pageToolFilter)) == null ? void 0 : _a.name) != null ? _b : "One tool");
     }
     if (this.pageTypeFilter)
-      labels.push(TYPE_LABELS[this.pageTypeFilter]);
+      labels.push(TYPE_CATEGORY_LABELS[this.pageTypeFilter]);
+    if (this.pageScopeFilter)
+      labels.push(this.scopeFilterLabel(this.pageScopeFilter));
     return labels;
   }
   clearFilters() {
@@ -4510,58 +4726,70 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.ruleKindFilter = null;
     this.pageToolFilter = null;
     this.pageTypeFilter = null;
+    this.pageScopeFilter = null;
     this.tagbarScrollLeft = 0;
   }
   filteredItems() {
+    return this.sortItems(this.items.filter((item) => this.matchesFilters(item)));
+  }
+  /** Every sidebar scope and page filter, except the Filter-menu dimension named in `ignore` —
+   *  that's how the menu counts what each option would show if picked (see renderFilterButton). */
+  matchesFilters(item, ignore) {
     const query = this.search.trim().toLowerCase();
-    const filtered = this.items.filter((item) => {
-      if (this.isToolDisabled(item.tool))
-        return false;
-      if (this.enabledFilter === "enabled" && !item.enabled)
-        return false;
-      if (this.enabledFilter === "disabled" && item.enabled)
-        return false;
-      if (this.favoritesOnly && !item.favorite)
-        return false;
-      if (this.typeFilter && item.type !== this.typeFilter)
-        return false;
-      if (this.toolFilter && item.tool !== this.toolFilter)
-        return false;
-      if (this.pageTypeFilter && item.type !== this.pageTypeFilter)
-        return false;
-      if (this.pageToolFilter && item.tool !== this.pageToolFilter)
-        return false;
-      if (this.collectionFilter && !item.collections.includes(this.collectionFilter))
-        return false;
-      if (this.projectFilter && item.projectId !== this.projectFilter)
-        return false;
-      if (this.pluginFilter && item.pluginId !== this.pluginFilter)
-        return false;
-      if (this.ruleKindFilter && item.type === "rule") {
-        const single = this.isSingleFileRuleTool(item.tool);
-        if (this.ruleKindFilter === "instructions" && !single)
-          return false;
-        if (this.ruleKindFilter === "granular" && single)
-          return false;
-      }
+    if (this.isToolDisabled(item.tool))
+      return false;
+    if (this.enabledFilter === "enabled" && !item.enabled)
+      return false;
+    if (this.enabledFilter === "disabled" && item.enabled)
+      return false;
+    if (this.favoritesOnly && !item.favorite)
+      return false;
+    if (this.typeFilter && item.type !== this.typeFilter)
+      return false;
+    if (this.toolFilter && item.tool !== this.toolFilter)
+      return false;
+    if (ignore !== "type" && this.pageTypeFilter && item.type !== this.pageTypeFilter)
+      return false;
+    if (ignore !== "tool" && this.pageToolFilter && item.tool !== this.pageToolFilter)
+      return false;
+    if (this.collectionFilter && !item.collections.includes(this.collectionFilter))
+      return false;
+    if (this.projectFilter && item.projectId !== this.projectFilter)
+      return false;
+    if (ignore !== "scope" && this.pageScopeFilter && !this.projectFilter && this.scopeKeyOf(item) !== this.pageScopeFilter)
+      return false;
+    if (this.pluginFilter && item.pluginId !== this.pluginFilter)
+      return false;
+    if (ignore !== "kind" && this.ruleKindFilter && item.type === "rule" && this.ruleKindOf(item) !== this.ruleKindFilter)
+      return false;
+    if (ignore !== "source") {
       if (this.sourceFilter === "github" && !item.sourceRepo)
         return false;
       if (this.sourceFilter === "builtin" && !this.isBuiltIn(item))
         return false;
       if (this.sourceFilter === "local" && (item.sourceRepo || this.isBuiltIn(item)))
         return false;
-      if (this.untaggedOnly && item.tags.length > 0)
+    }
+    if (this.untaggedOnly && item.tags.length > 0)
+      return false;
+    if (this.tagFilter && !item.tags.includes(this.tagFilter))
+      return false;
+    if (query) {
+      const haystack = `${item.name} ${item.description}`.toLowerCase();
+      if (!haystack.includes(query))
         return false;
-      if (this.tagFilter && !item.tags.includes(this.tagFilter))
-        return false;
-      if (query) {
-        const haystack = `${item.name} ${item.description}`.toLowerCase();
-        if (!haystack.includes(query))
-          return false;
-      }
-      return true;
-    });
-    return this.sortItems(filtered);
+    }
+    return true;
+  }
+  scopeKeyOf(item) {
+    var _a;
+    return (_a = item.projectId) != null ? _a : "global";
+  }
+  scopeFilterLabel(key) {
+    var _a, _b;
+    if (key === "global")
+      return "Global";
+    return (_b = (_a = this.getAllProjects().find((p) => p.id === key)) == null ? void 0 : _a.name) != null ? _b : "Workspace";
   }
   sortItems(items) {
     const sorted = [...items];
@@ -4640,7 +4868,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
   }
   itemModifiedMs(item) {
     try {
-      return (0, import_fs15.statSync)(item.sourcePath).mtimeMs;
+      return (0, import_fs16.statSync)(item.sourcePath).mtimeMs;
     } catch (e) {
       return 0;
     }
@@ -4652,7 +4880,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       return (_b = (_a = settings.collections.find((c) => c.id === this.collectionFilter)) == null ? void 0 : _a.name) != null ? _b : "Collection";
     }
     if (this.typeFilter)
-      return TYPE_LABELS[this.typeFilter];
+      return TYPE_CATEGORY_LABELS[this.typeFilter];
     if (this.toolFilter) {
       return (_d = (_c = settings.tools.find((t) => t.id === this.toolFilter)) == null ? void 0 : _c.name) != null ? _d : "Tool";
     }
@@ -4979,7 +5207,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       return;
     for (const type of Object.keys(TYPE_LABELS)) {
       const count = this.items.filter((i) => i.type === type).length;
-      this.renderNavRow(sidebar, TYPE_ICONS[type], TYPE_LABELS[type], count, this.typeFilter === type, () => {
+      this.renderNavRow(sidebar, TYPE_ICONS[type], TYPE_CATEGORY_LABELS[type], count, this.typeFilter === type, () => {
         this.clearScopeFilters();
         this.typeFilter = this.typeFilter === type ? null : type;
         this.render();
@@ -5182,7 +5410,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     if (!plugin.repoUrl)
       return;
     const unitPath = linkableUnit(item.sourcePath).path;
-    const subpath = (0, import_path15.relative)(plugin.path, unitPath).split(import_path15.sep).join("/");
+    const subpath = (0, import_path16.relative)(plugin.path, unitPath).split(import_path16.sep).join("/");
     new InstallFromGitHubModal(
       this.app,
       this.getSettings(),
@@ -5347,6 +5575,19 @@ var LibraryView = class extends import_obsidian15.ItemView {
   isSingleFileRuleTool(toolId) {
     var _a;
     return !!((_a = this.getSettings().tools.find((t) => t.id === toolId)) == null ? void 0 : _a.singleFileRule);
+  }
+  isMemory(item) {
+    return item.type === "rule" && isMemoryItem(item, this.getSettings().tools.find((t) => t.id === item.tool), this.getAllProjects());
+  }
+  ruleKindOf(item) {
+    if (this.isMemory(item))
+      return "memory";
+    return this.isSingleFileRuleTool(item.tool) ? "instructions" : "granular";
+  }
+  /** TYPE_LABEL_SINGULAR, except a memory reads as "Memory" rather than "Rule" wherever one
+   *  item is labeled, so agent-written files stand apart from rules the user wrote. */
+  itemTypeLabel(item) {
+    return this.isMemory(item) ? "Memory" : TYPE_LABEL_SINGULAR[item.type];
   }
   syncStatusFor(item) {
     var _a;
@@ -6545,7 +6786,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
           return;
       } catch (e) {
       }
-      if (!(0, import_fs15.existsSync)(path))
+      if (!(0, import_fs16.existsSync)(path))
         return;
     }
     const shell = this.electronShell();
@@ -6559,15 +6800,15 @@ var LibraryView = class extends import_obsidian15.ItemView {
    *  link anyway), and a symlinked flat file is overwritten in place, same as before. Throws
    *  without touching anything if the trash isn't reachable. */
   async replaceUnit(source, target, isDirectory) {
-    if ((0, import_fs15.existsSync)(target)) {
-      const isLink = (0, import_fs15.lstatSync)(target).isSymbolicLink();
+    if ((0, import_fs16.existsSync)(target)) {
+      const isLink = (0, import_fs16.lstatSync)(target).isSymbolicLink();
       if (isLink && isDirectory) {
-        (0, import_fs15.unlinkSync)(target);
+        (0, import_fs16.unlinkSync)(target);
       } else if (!isLink) {
         await this.trashPath(target);
       }
     }
-    (0, import_fs15.cpSync)(source, target, isDirectory ? { recursive: true } : void 0);
+    (0, import_fs16.cpSync)(source, target, isDirectory ? { recursive: true } : void 0);
   }
   fileManagerLabel() {
     if (process.platform === "darwin")
@@ -6607,7 +6848,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       new import_obsidian15.Notice("Can't open files from this device, try Obsidian's desktop app.");
       return;
     }
-    const folderPath = (0, import_path15.dirname)(filePath);
+    const folderPath = (0, import_path16.dirname)(filePath);
     const errorText = await shell.openPath(folderPath);
     if (errorText)
       new import_obsidian15.Notice(`Couldn't open ${folderPath}: ${errorText}`);
@@ -6776,8 +7017,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
    *  real directory on disk right now — independent of enabled state or item count, since a
    *  correctly-configured tool with zero skills yet is still "detected." */
   toolIsDetected(tool) {
-    var _a;
-    return Object.values(tool.paths).some((p) => p && (0, import_fs15.existsSync)(expandHome2(p))) || (tool.pluginsRegistry ? (0, import_fs15.existsSync)(expandHome2(tool.pluginsRegistry)) : false) || ((_a = tool.pluginsPaths) != null ? _a : []).some((p) => p && (0, import_fs15.existsSync)(expandHome2(p)));
+    var _a, _b, _c;
+    return Object.values(tool.paths).some((p) => p && (0, import_fs16.existsSync)(expandHome2(p))) || ((_a = tool.ruleAdditionalPaths) != null ? _a : []).some((e) => e.path.trim() && (0, import_fs16.existsSync)(expandHome2(e.path.trim()))) || (tool.mcpConfigPath ? (0, import_fs16.existsSync)(expandHome2(tool.mcpConfigPath)) : false) || (tool.pluginsRegistry ? (0, import_fs16.existsSync)(expandHome2(tool.pluginsRegistry)) : false) || ((_b = tool.pluginsPaths) != null ? _b : []).some((p) => p && (0, import_fs16.existsSync)(expandHome2(p))) || (((_c = tool.memoryPath) == null ? void 0 : _c.trim()) ? (0, import_fs16.existsSync)(expandHome2(tool.memoryPath.trim())) : false);
   }
   toolMatchesStatusFilter(tool) {
     switch (this.toolStatusFilter) {
@@ -6912,7 +7153,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
         return;
       }
       const resolved = resolve4(trimmed);
-      const found = resolved !== null && (0, import_fs15.existsSync)(resolved);
+      const found = resolved !== null && (0, import_fs16.existsSync)(resolved);
       status.setText(found ? "found" : "not found");
       status.title = resolved != null ? resolved : "";
       status.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
@@ -6934,7 +7175,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     var _a;
     const entries = (_a = scope === "global" ? tool.ruleAdditionalPaths : tool.ruleAdditionalProjectPaths) != null ? _a : [];
     const vaultPath = this.vaultPath();
-    const resolve4 = (raw) => scope === "global" ? expandHome2(raw) : vaultPath ? (0, import_path15.join)(vaultPath, raw) : null;
+    const resolve4 = (raw) => scope === "global" ? expandHome2(raw) : vaultPath ? (0, import_path16.join)(vaultPath, raw) : null;
     const commit = (next) => {
       const trimmed = next.filter((e) => e.path.trim());
       if (scope === "global") {
@@ -6972,7 +7213,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
           return;
         }
         const resolved = resolve4(trimmedVal);
-        const found = resolved !== null && (0, import_fs15.existsSync)(resolved);
+        const found = resolved !== null && (0, import_fs16.existsSync)(resolved);
         status.setText(found ? "found" : "not found");
         status.title = resolved != null ? resolved : "";
         status.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
@@ -7008,7 +7249,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     return adapter instanceof import_obsidian15.FileSystemAdapter ? adapter.getBasePath() : null;
   }
   renderToolDetailRail(panel, tool) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
     const crumbs = panel.createDiv({ cls: "skillmanager-crumbs" });
     const backBtn = crumbs.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Back" } });
     (0, import_obsidian15.setIcon)(backBtn, "arrow-left");
@@ -7055,6 +7296,21 @@ var LibraryView = class extends import_obsidian15.ItemView {
       if (type === "rule")
         this.renderRuleAdditionalPaths(body, tool, "global");
     }
+    this.renderToolPathField(
+      body,
+      "Memories",
+      (_d = tool.memoryPath) != null ? _d : "",
+      "~/.example/memory",
+      (raw) => expandHome2(raw),
+      (value) => {
+        tool.memoryPath = value.trim();
+        void this.saveSettings().then(() => this.rescan());
+      }
+    );
+    body.createDiv({
+      cls: "setting-item-description",
+      text: "Folder of memory files the agent writes itself. Per-project subfolders (<project>/memory) are matched to your workspaces. Listed under Memories & Rules."
+    });
     body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Project-scoped paths" });
     body.createDiv({
       cls: "setting-item-description",
@@ -7066,9 +7322,9 @@ var LibraryView = class extends import_obsidian15.ItemView {
       this.renderToolPathField(
         body,
         TYPE_LABELS[type],
-        (_e = (_d = tool.projectPaths) == null ? void 0 : _d[type]) != null ? _e : "",
+        (_f = (_e = tool.projectPaths) == null ? void 0 : _e[type]) != null ? _f : "",
         globalPath ? toProjectRelative(globalPath) : "(not scanned globally)",
-        (raw) => vaultPath ? (0, import_path15.join)(vaultPath, raw) : null,
+        (raw) => vaultPath ? (0, import_path16.join)(vaultPath, raw) : null,
         (value) => {
           var _a2;
           if (value.trim()) {
@@ -7085,6 +7341,20 @@ var LibraryView = class extends import_obsidian15.ItemView {
       if (type === "rule")
         this.renderRuleAdditionalPaths(body, tool, "project");
     }
+    this.renderToolPathField(
+      body,
+      "Memories",
+      (_g = tool.projectMemoryPath) != null ? _g : "",
+      ".example/memory",
+      (raw) => vaultPath ? (0, import_path16.join)(vaultPath, raw) : null,
+      (value) => {
+        if (value.trim())
+          tool.projectMemoryPath = value.trim();
+        else
+          delete tool.projectMemoryPath;
+        void this.saveSettings().then(() => this.rescan());
+      }
+    );
     body.createDiv({ cls: "skillmanager-sidebar-heading", text: "MCP servers" });
     body.createDiv({
       cls: "setting-item-description",
@@ -7093,7 +7363,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.renderToolPathField(
       body,
       "Global config",
-      (_f = tool.mcpConfigPath) != null ? _f : "",
+      (_h = tool.mcpConfigPath) != null ? _h : "",
       "~/.example/mcp.json",
       (raw) => expandHome2(raw),
       (value) => {
@@ -7107,9 +7377,9 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.renderToolPathField(
       body,
       "Project config",
-      (_g = tool.projectMcpConfigPath) != null ? _g : "",
+      (_i = tool.projectMcpConfigPath) != null ? _i : "",
       ".example/mcp.json",
-      (raw) => vaultPath ? (0, import_path15.join)(vaultPath, raw) : null,
+      (raw) => vaultPath ? (0, import_path16.join)(vaultPath, raw) : null,
       (value) => {
         if (value.trim())
           tool.projectMcpConfigPath = value.trim();
@@ -7121,7 +7391,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.renderToolTextField(
       body,
       "Server list key (advanced)",
-      (_h = tool.mcpConfigKey) != null ? _h : "",
+      (_j = tool.mcpConfigKey) != null ? _j : "",
       "mcpServers",
       (value) => {
         if (value.trim())
@@ -7140,7 +7410,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       this.renderToolPathField(
         body,
         "Installed registry",
-        (_i = tool.pluginsRegistry) != null ? _i : "",
+        (_k = tool.pluginsRegistry) != null ? _k : "",
         "~/.example/plugins/installed_plugins.json",
         (raw) => expandHome2(raw),
         (value) => {
@@ -7156,7 +7426,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       this.renderToolPathField(
         body,
         "Installed cache",
-        (_k = (_j = tool.pluginsPaths) == null ? void 0 : _j[0]) != null ? _k : "",
+        (_m = (_l = tool.pluginsPaths) == null ? void 0 : _l[0]) != null ? _m : "",
         "~/.example/plugins/cache",
         (raw) => expandHome2(raw),
         (value) => {
@@ -7251,28 +7521,9 @@ var LibraryView = class extends import_obsidian15.ItemView {
       });
     }
     const controls = tagbar.createDiv({ cls: "skillmanager-tagbar-controls" });
-    if (this.typeFilter === "rule")
-      this.renderRuleKindButton(controls);
-    if (this.typeFilter)
-      this.renderToolFilterButton(controls);
-    if (this.toolFilter)
-      this.renderTypeFilterButton(controls);
-    this.renderSourceButton(controls);
+    this.renderFilterButton(controls);
     this.renderSortButton(controls);
     this.renderLayoutToggle(controls);
-    const activeCount = this.activeFilterLabels().length;
-    if (activeCount > 0) {
-      const clearBtn = controls.createEl("button", {
-        cls: "skillmanager-sort-btn skillmanager-clear-filters-btn",
-        attr: { "aria-label": `Clear filters: ${this.activeFilterLabels().join(", ")}` }
-      });
-      clearBtn.createSpan({ text: `Clear filters (${activeCount})`, cls: "skillmanager-sort-btn-label" });
-      (0, import_obsidian15.setIcon)(clearBtn.createSpan({ cls: "skillmanager-clear-filters-x" }), "x");
-      clearBtn.addEventListener("click", () => {
-        this.clearFilters();
-        this.render();
-      });
-    }
   }
   /** Grid/list switch. The choice is saved, so the library reopens in the same layout. */
   renderLayoutToggle(container) {
@@ -7296,119 +7547,131 @@ var LibraryView = class extends import_obsidian15.ItemView {
     option("grid", "layout-grid", "Grid view");
     option("list", "list", "List view");
   }
-  /** A type page can narrow to one tool without changing the type sidebar scope. */
-  renderToolFilterButton(container) {
-    var _a, _b;
-    const settings = this.getSettings();
-    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by tool" } });
-    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
-    (0, import_obsidian15.setIcon)(icon, "filter");
-    const label = this.pageToolFilter ? (_b = (_a = settings.tools.find((t) => t.id === this.pageToolFilter)) == null ? void 0 : _a.name) != null ? _b : "Tool" : "All tools";
-    btn.createSpan({ text: label, cls: "skillmanager-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
-    (0, import_obsidian15.setIcon)(chevron, "chevron-down");
-    btn.addEventListener("click", (evt) => {
-      const menu = new import_obsidian15.Menu();
-      menu.addItem(
-        (menuItem) => menuItem.setTitle("All tools").setChecked(this.pageToolFilter === null).onClick(() => {
-          this.pageToolFilter = null;
-          this.render();
-        })
-      );
-      for (const tool of settings.tools) {
-        const count = this.items.filter((item) => item.type === this.typeFilter && item.tool === tool.id).length;
-        menu.addItem(
-          (menuItem) => menuItem.setTitle(`${tool.name} (${count})`).setChecked(this.pageToolFilter === tool.id).onClick(() => {
-            this.pageToolFilter = tool.id;
-            this.render();
-          })
-        );
-      }
-      menu.showAtMouseEvent(evt);
+  /** One Filter button in place of separate per-dimension dropdowns: a single menu with a
+   *  section per dimension (source, scope, type, rule kind, tool). A section is left out when the
+   *  sidebar scope already fixes that dimension (no Type on a type page, no Scope on a workspace
+   *  page), and an option only appears when picking it would show something; each count is what
+   *  the list would hold with that option picked and every other filter kept. While anything is
+   *  active the button shows the count with an attached x that clears it all in one click; the
+   *  menu ends with the same "Clear all" for anyone already in it. */
+  renderFilterButton(container) {
+    const activeLabels = this.activeFilterLabels();
+    const group = container.createDiv({ cls: "skillmanager-filter-group" });
+    const btn = group.createEl("button", {
+      cls: `skillmanager-sort-btn${activeLabels.length > 0 ? " is-active" : ""}`,
+      attr: { "aria-label": activeLabels.length > 0 ? `Filters: ${activeLabels.join(", ")}` : "Filter" }
     });
-  }
-  /** A tool page can narrow to one type without changing the tool sidebar scope. */
-  renderTypeFilterButton(container) {
-    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by type" } });
-    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
-    (0, import_obsidian15.setIcon)(icon, "filter");
-    btn.createSpan({ text: this.pageTypeFilter ? TYPE_LABELS[this.pageTypeFilter] : "All types", cls: "skillmanager-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
-    (0, import_obsidian15.setIcon)(chevron, "chevron-down");
+    (0, import_obsidian15.setIcon)(btn.createSpan({ cls: "skillmanager-sort-btn-icon" }), "filter");
+    btn.createSpan({ text: activeLabels.length > 0 ? `Filter (${activeLabels.length})` : "Filter", cls: "skillmanager-sort-btn-label" });
+    (0, import_obsidian15.setIcon)(btn.createSpan({ cls: "skillmanager-sort-btn-chevron" }), "chevron-down");
+    if (activeLabels.length > 0) {
+      const clearBtn = group.createEl("button", {
+        cls: "skillmanager-filter-clear",
+        attr: { "aria-label": `Clear filters: ${activeLabels.join(", ")}` }
+      });
+      (0, import_obsidian15.setIcon)(clearBtn, "x");
+      clearBtn.addEventListener("click", () => {
+        this.clearFilters();
+        this.render();
+      });
+    }
     btn.addEventListener("click", (evt) => {
       const menu = new import_obsidian15.Menu();
-      menu.addItem(
-        (menuItem) => menuItem.setTitle("All types").setChecked(this.pageTypeFilter === null).onClick(() => {
-          this.pageTypeFilter = null;
-          this.render();
-        })
-      );
-      for (const type of Object.keys(TYPE_LABELS)) {
-        const count = this.items.filter((item) => item.tool === this.toolFilter && item.type === type).length;
+      const settings = this.getSettings();
+      const countFor = (dim, match) => this.items.filter((item) => this.matchesFilters(item, dim) && match(item)).length;
+      const section = (title, dim, options, current, set) => {
+        const shown = options.map((option) => ({ ...option, count: countFor(dim, option.match) })).filter((option) => option.count > 0 || option.key === current);
+        if (shown.length < 2 && current === null)
+          return;
+        menu.addItem((item) => item.setTitle(title).setIsLabel(true));
         menu.addItem(
-          (menuItem) => menuItem.setTitle(`${TYPE_LABELS[type]} (${count})`).setChecked(this.pageTypeFilter === type).onClick(() => {
-            this.pageTypeFilter = type;
+          (item) => item.setTitle("All").setChecked(current === null).onClick(() => {
+            set(null);
             this.render();
           })
         );
+        for (const option of shown) {
+          menu.addItem(
+            (item) => item.setTitle(`${option.label} (${option.count})`).setChecked(current === option.key).onClick(() => {
+              set(option.key);
+              this.render();
+            })
+          );
+        }
+        menu.addSeparator();
+      };
+      section(
+        "Source",
+        "source",
+        Object.keys(SOURCE_FILTER_LABELS).map((key) => ({
+          key,
+          label: SOURCE_FILTER_LABELS[key],
+          match: (item) => key === "github" ? !!item.sourceRepo : key === "builtin" ? this.isBuiltIn(item) : !item.sourceRepo && !this.isBuiltIn(item)
+        })),
+        this.sourceFilter,
+        (key) => this.sourceFilter = key
+      );
+      if (!this.projectFilter) {
+        section(
+          "Scope",
+          "scope",
+          [
+            { key: "global", label: "Global", match: (item) => item.projectId === null },
+            ...this.getAllProjects().map((project) => ({
+              key: project.id,
+              label: project.name,
+              match: (item) => item.projectId === project.id
+            }))
+          ],
+          this.pageScopeFilter,
+          (key) => this.pageScopeFilter = key
+        );
       }
-      menu.showAtMouseEvent(evt);
-    });
-  }
-  /** Only rendered while typeFilter === "rule" (see renderTagBar) — lets a mixed Rules list (a
-   *  tool's single CLAUDE.md-style instructions file alongside another tool's directory of many
-   *  granular rule files) narrow to just one kind. See ruleKindFilter/isSingleFileRuleTool. */
-  renderRuleKindButton(container) {
-    const labels = RULE_KIND_LABELS;
-    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by rule kind" } });
-    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
-    (0, import_obsidian15.setIcon)(icon, "filter");
-    btn.createSpan({ text: this.ruleKindFilter ? labels[this.ruleKindFilter] : "All rules", cls: "skillmanager-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
-    (0, import_obsidian15.setIcon)(chevron, "chevron-down");
-    btn.addEventListener("click", (evt) => {
-      const menu = new import_obsidian15.Menu();
+      if (!this.typeFilter) {
+        section(
+          "Type",
+          "type",
+          Object.keys(TYPE_LABELS).map((type) => ({
+            key: type,
+            label: TYPE_CATEGORY_LABELS[type],
+            match: (item) => item.type === type
+          })),
+          this.pageTypeFilter,
+          (key) => {
+            this.pageTypeFilter = key;
+            if (key !== "rule")
+              this.ruleKindFilter = null;
+          }
+        );
+      }
+      if (this.typeFilter === "rule" || this.pageTypeFilter === "rule") {
+        section(
+          "Kind",
+          "kind",
+          Object.keys(RULE_KIND_LABELS).map((kind) => ({
+            key: kind,
+            label: RULE_KIND_LABELS[kind],
+            match: (item) => item.type === "rule" && this.ruleKindOf(item) === kind
+          })),
+          this.ruleKindFilter,
+          (key) => this.ruleKindFilter = key
+        );
+      }
+      if (!this.toolFilter) {
+        section(
+          "Tool",
+          "tool",
+          settings.tools.map((tool) => ({ key: tool.id, label: tool.name, match: (item) => item.tool === tool.id })),
+          this.pageToolFilter,
+          (key) => this.pageToolFilter = key
+        );
+      }
       menu.addItem(
-        (menuItem) => menuItem.setTitle("All rules").setChecked(this.ruleKindFilter === null).onClick(() => {
-          this.ruleKindFilter = null;
+        (item) => item.setTitle("Clear all").setIcon("x").setDisabled(activeLabels.length === 0).onClick(() => {
+          this.clearFilters();
           this.render();
         })
       );
-      for (const key of Object.keys(labels)) {
-        menu.addItem(
-          (menuItem) => menuItem.setTitle(labels[key]).setChecked(this.ruleKindFilter === key).onClick(() => {
-            this.ruleKindFilter = key;
-            this.render();
-          })
-        );
-      }
-      menu.showAtMouseEvent(evt);
-    });
-  }
-  renderSourceButton(container) {
-    const labels = SOURCE_FILTER_LABELS;
-    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter by source" } });
-    const icon = btn.createSpan({ cls: "skillmanager-sort-btn-icon" });
-    (0, import_obsidian15.setIcon)(icon, "filter");
-    btn.createSpan({ text: this.sourceFilter ? labels[this.sourceFilter] : "All sources", cls: "skillmanager-sort-btn-label" });
-    const chevron = btn.createSpan({ cls: "skillmanager-sort-btn-chevron" });
-    (0, import_obsidian15.setIcon)(chevron, "chevron-down");
-    btn.addEventListener("click", (evt) => {
-      const menu = new import_obsidian15.Menu();
-      menu.addItem(
-        (menuItem) => menuItem.setTitle("All sources").setChecked(this.sourceFilter === null).onClick(() => {
-          this.sourceFilter = null;
-          this.render();
-        })
-      );
-      for (const key of Object.keys(labels)) {
-        menu.addItem(
-          (menuItem) => menuItem.setTitle(labels[key]).setChecked(this.sourceFilter === key).onClick(() => {
-            this.sourceFilter = key;
-            this.render();
-          })
-        );
-      }
       menu.showAtMouseEvent(evt);
     });
   }
@@ -7616,7 +7879,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.renderIcon(toolCell.createSpan({ cls: "skillmanager-list-icon" }), tool.icon, tool.svgIcon);
     toolCell.createSpan({ text: tool.text, cls: "skillmanager-list-ellipsis", attr: { title: tool.text } });
     row.createDiv({ cls: "skillmanager-list-cell col-type is-wide" }).createSpan({
-      text: TYPE_LABEL_SINGULAR[item.type],
+      text: this.itemTypeLabel(item),
       cls: "skillmanager-card-type skillmanager-card-type-sm"
     });
     const scopeCell = row.createDiv({ cls: "skillmanager-list-cell col-scope is-wide" });
@@ -7686,7 +7949,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       attr: { "aria-label": dotLabel }
     });
     head.createSpan({ text: item.name, cls: "skillmanager-card-name" });
-    head.createSpan({ text: TYPE_LABEL_SINGULAR[item.type], cls: "skillmanager-card-type skillmanager-card-type-sm" });
+    head.createSpan({ text: this.itemTypeLabel(item), cls: "skillmanager-card-type skillmanager-card-type-sm" });
     const isBroken = this.isBrokenSymlink(item);
     const isLinked = item.projectId !== null && this.isSymlinkedItem(item);
     if (item.sourceRepo) {
@@ -7894,6 +8157,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
       async () => {
         try {
           await deleteItem(item, (path) => this.trashPath(path));
+          if (this.isMemory(item))
+            forgetMemoryIndexEntry(item);
           await this.rescan();
         } catch (e) {
           new import_obsidian15.Notice(`Couldn't delete "${item.name}": ` + errorMessage(e));
@@ -7916,7 +8181,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
   isBrokenSymlink(item) {
     if (item.projectId === null)
       return false;
-    return this.brokenSymlinks.some((link) => link.path === item.sourcePath || link.path === (0, import_path15.dirname)(item.sourcePath));
+    return this.brokenSymlinks.some((link) => link.path === item.sourcePath || link.path === (0, import_path16.dirname)(item.sourcePath));
   }
   /** A small inline "link" icon for a dashboard row's name, only rendered when the item is a
    *  symlink — lets Prune/Overlap rows (and the overlap Compare modal) tell two identically-named
@@ -7968,11 +8233,13 @@ var LibraryView = class extends import_obsidian15.ItemView {
           continue;
         let raw;
         try {
-          raw = (0, import_fs15.readFileSync)(item.sourcePath, "utf-8");
+          raw = (0, import_fs16.readFileSync)(item.sourcePath, "utf-8");
         } catch (e) {
           continue;
         }
         const issues = checkIntegrity(item, raw, import_obsidian15.parseYaml);
+        if (this.isMemory(item))
+          issues.push(...checkMemoryIndexed(item));
         if (issues.length > 0)
           issuesById.set(item.entryId, issues);
       }
@@ -8020,7 +8287,9 @@ var LibraryView = class extends import_obsidian15.ItemView {
    *  project one are meant to coexist, not compete, so instructions files never enter this
    *  comparison at all. */
   overlapPairsFor(items) {
-    const eligible = items.filter((item) => !(item.type === "rule" && this.isSingleFileRuleTool(item.tool)));
+    const eligible = items.filter(
+      (item) => !(item.type === "rule" && (this.isSingleFileRuleTool(item.tool) || this.isMemory(item) && isMemoryIndex(item)))
+    );
     const disregarded = this.getSettings().dashboardDisregarded;
     return findOverlapPairs(eligible).filter((p) => !disregarded[this.overlapPairKey(p.a, p.b)]);
   }
@@ -8152,7 +8421,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       allPill.addClass("is-active");
     allPill.addEventListener("click", () => setType(null));
     for (const type of Object.keys(DASHBOARD_TYPE_COLORS)) {
-      const pill = filter.createSpan({ text: TYPE_LABELS[type], cls: "skillmanager-dash-type-pill" });
+      const pill = filter.createSpan({ text: TYPE_CATEGORY_LABELS[type], cls: "skillmanager-dash-type-pill" });
       if (this.dashboardTypeFilter === type)
         pill.addClass("is-active");
       pill.addEventListener("click", () => setType(type));
@@ -8380,7 +8649,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
       identity.createDiv({ text: item.name, cls: "skillmanager-dash-row-name" });
       const managed = this.managedBy(item);
       identity.createDiv({
-        text: `${this.toolLabel(item).text} \xB7 ${TYPE_LABEL_SINGULAR[item.type]}${managed.label === "You" ? "" : ` \xB7 ${managed.label}`}`,
+        text: `${this.toolLabel(item).text} \xB7 ${this.itemTypeLabel(item)}${managed.label === "You" ? "" : ` \xB7 ${managed.label}`}`,
         cls: "skillmanager-dash-row-meta"
       });
       const issueList = row.createDiv({ cls: "skillmanager-detail-issues" });
@@ -8459,6 +8728,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.untaggedOnly = false;
     this.sourceFilter = null;
     this.ruleKindFilter = null;
+    this.pageScopeFilter = null;
     this.wasDocked = false;
     this.selectItem(item, openManifest);
   }
@@ -8748,7 +9018,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.selectedItem = item;
     this.detailEditing = false;
     this.addingTagFor = null;
-    this.moreFieldsExpanded = false;
     this.collapsedTreeFolders = /* @__PURE__ */ new Set();
     this.selectedFilePath = hasTree && !openManifest ? null : item.sourcePath;
     this.pendingDetailAnimation = "forward";
@@ -8759,7 +9028,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.selectedFilePath = filePath;
     this.detailEditing = false;
     this.addingTagFor = null;
-    this.moreFieldsExpanded = false;
     this.pendingDetailAnimation = "forward";
     this.render();
   }
@@ -8771,7 +9039,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.selectedFilePath = null;
     this.detailLoadedFor = null;
     this.addingTagFor = null;
-    this.moreFieldsExpanded = false;
     this.pendingDetailAnimation = "back";
     if (returnToDashboard)
       this.dashboardMode = true;
@@ -8782,7 +9049,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
     this.selectedFilePath = null;
     this.detailLoadedFor = null;
     this.addingTagFor = null;
-    this.moreFieldsExpanded = false;
     this.pendingDetailAnimation = "back";
     this.render();
   }
@@ -8799,10 +9065,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
     const filePath = tree && !this.selectedFilePath ? null : this.selectedFilePath;
     if (filePath)
       this.loadFileContent(item, filePath);
-    this.renderIdentityBand(panel, item, filePath);
     const review = ((_a = this.review) == null ? void 0 : _a.entryId) === item.entryId ? this.review : null;
-    if (!review && (!filePath || filePath === item.sourcePath))
-      this.renderUsageHeatmap(panel, item);
+    this.renderDetailHeader(panel, item, filePath, review);
     if ((review == null ? void 0 : review.status) === "ready") {
       this.renderDiffReview(panel, review);
     } else if (tree && !this.selectedFilePath) {
@@ -8832,74 +9096,176 @@ var LibraryView = class extends import_obsidian15.ItemView {
         btn.addEventListener("click", onClick);
       return btn;
     };
-    const sep4 = () => row.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+    const sep5 = () => row.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
     crumb(this.detailReturnsToDashboard ? "Dashboard" : "Library", false, () => this.backToLibrary());
-    sep4();
+    sep5();
     crumb(item.name, !fileOpenFromTree, fileOpenFromTree ? () => this.backToTree() : void 0);
     if (fileOpenFromTree && this.selectedFilePath) {
-      sep4();
-      crumb((0, import_path15.basename)(this.selectedFilePath), true);
+      sep5();
+      crumb((0, import_path16.basename)(this.selectedFilePath), true);
     }
   }
-  /** Title + tool pill + edit action, then a two-column strip: tags/description/path/extra
-   *  frontmatter on the left (only meaningful once a file is open, and tags/description/
-   *  frontmatter only for the manifest — they're the skill's own metadata, not a sibling file's),
-   *  file stats + source status on the right. Source status is the one thing in the right column
-   *  that doesn't need a file open — it describes the item, not a specific file — so it's still
-   *  visible while just browsing a multi-file skill's tree. Favourite/add-to-collection/
-   *  project-link all live on the card now (see renderCard/openCardMenu) — Edit is the only
-   *  action left here, since it's file-scoped rather than skill-scoped and stays available for
-   *  any file in the tree, not just the manifest. */
-  renderIdentityBand(panel, item, filePath) {
-    var _a, _b;
+  /** Title + type pill + edit action, the tool line under it, then (once a file is open) the
+   *  description, a row of callout stats, weekly usage bars and a tinted properties panel whose
+   *  footer carries the source repo's actions. Browsing a multi-file skill's tree with nothing
+   *  open shows just the header plus the source row, since everything else is file-scoped.
+   *  Favourite/add-to-collection/project-link all live on the card (see renderCard/openCardMenu);
+   *  Edit is the only action here, since it's file-scoped and works for any file in the tree. */
+  renderDetailHeader(panel, item, filePath, review) {
     const isManifest = !!filePath && filePath === item.sourcePath;
-    const isReviewing = ((_a = this.review) == null ? void 0 : _a.status) === "ready" && this.review.entryId === item.entryId;
-    const header = panel.createDiv({ cls: "skillmanager-detail-header" });
+    const isReviewing = (review == null ? void 0 : review.status) === "ready";
+    const section = panel.createDiv({ cls: "skillmanager-detail-head" });
+    const header = section.createDiv({ cls: "skillmanager-detail-header" });
     header.createEl("h3", {
-      text: isReviewing ? `${((_b = this.review) == null ? void 0 : _b.mode) === "restore" ? "Restore" : "Update"} "${item.name}"` : filePath && !isManifest ? (0, import_path15.basename)(filePath) : item.name,
+      text: isReviewing ? `${(review == null ? void 0 : review.mode) === "restore" ? "Restore" : "Update"} "${item.name}"` : filePath && !isManifest ? (0, import_path16.basename)(filePath) : item.name,
       cls: "skillmanager-detail-title"
     });
-    header.createSpan({ text: this.sourceLabel(item), cls: "skillmanager-detail-tool-pill" });
-    if (filePath && !isReviewing) {
-      const actions = header.createDiv({ cls: "skillmanager-detail-actions" });
-      this.renderDetailActions(actions);
+    header.createSpan({ text: this.itemTypeLabel(item), cls: "skillmanager-detail-type-pill" });
+    if (filePath && !isReviewing)
+      this.renderDetailActions(header.createDiv({ cls: "skillmanager-detail-actions" }));
+    const toolInfo = this.toolLabel(item);
+    const toolLine = section.createDiv({ cls: "skillmanager-detail-tool" });
+    this.renderIcon(toolLine.createSpan({ cls: "skillmanager-detail-tool-icon" }), toolInfo.icon, toolInfo.svgIcon);
+    toolLine.createSpan({ text: this.sourceLabel(item) });
+    if (!filePath || isReviewing) {
+      if (item.sourceRepo)
+        this.renderSourceStatusInline(section, item);
+      return;
     }
-    if (filePath && !isReviewing) {
-      const fields = isManifest ? parseFrontmatter(this.detailContent).filter((f) => f.value) : [];
-      const band = panel.createDiv({ cls: "skillmanager-detail-band" });
-      const left = band.createDiv({ cls: "skillmanager-detail-band-left" });
-      if (isManifest)
-        this.renderTagChips(left, item);
+    const fields = isManifest ? parseFrontmatter(this.detailContent).filter((f) => f.value) : [];
+    if (!this.detailEditing) {
+      const description = fields.find((f) => f.key === "description");
+      if (description)
+        section.createDiv({ cls: "skillmanager-detail-desc", text: description.value });
+    }
+    const issues = isManifest ? checkIntegrity(item, this.detailContent, import_obsidian15.parseYaml) : [];
+    if (issues.length > 0) {
+      const list = section.createDiv({ cls: "skillmanager-detail-issues" });
+      (0, import_obsidian15.setTooltip)(list, "Checks frontmatter, name, description, symlink and links to bundled files. Rechecked every time this opens.", { placement: "top" });
+      for (const issue of issues) {
+        const row = list.createDiv({ cls: "skillmanager-detail-issue" });
+        (0, import_obsidian15.setIcon)(row.createSpan({ cls: "skillmanager-detail-issue-icon" }), "alert-triangle");
+        row.createSpan({ text: issue });
+      }
+    }
+    this.renderDetailCallouts(section, item, filePath, isManifest);
+    this.renderDetailProperties(section, item, filePath, isManifest, fields);
+  }
+  /** The big-number row: context cost for the open file, plus sessions/last used for a manifest
+   *  whose tool logs usage, followed by weekly bars once there's any use to chart. */
+  renderDetailCallouts(container, item, filePath, isManifest) {
+    var _a, _b, _c;
+    const row = container.createDiv({ cls: "skillmanager-detail-callouts" });
+    const callout = (value, label, tooltip) => {
+      const c = row.createDiv({ cls: "skillmanager-detail-callout" });
+      c.createDiv({ text: value, cls: "skillmanager-detail-callout-value" });
+      const labelEl = c.createDiv({ cls: "skillmanager-detail-callout-label" });
+      labelEl.createSpan({ text: label });
+      if (tooltip) {
+        (0, import_obsidian15.setIcon)(labelEl.createSpan({ cls: "skillmanager-detail-info" }), "info");
+        (0, import_obsidian15.setTooltip)(labelEl, tooltip, { placement: "top" });
+      }
+    };
+    if (isManifest && (item.type === "skill" || item.type === "agent")) {
+      callout(
+        formatTokens(`${item.name}
+${item.description}`.length),
+        "Available",
+        "Estimated name-and-description metadata exposed while this skill or agent is available. For tools that preload it, this can add to the model's context on every turn even when never invoked. Actual behavior varies by tool."
+      );
+      callout(formatTokens(stripFrontmatter(this.detailContent).length), "On invoke", "Estimated instruction-body tokens loaded when this skill or agent is invoked.");
+    } else if (isManifest) {
+      callout("Tool-dependent", "Context", "Commands and rules have tool-specific loading behavior. Their context cost is not estimated yet.");
+    } else {
+      callout(formatTokens(this.detailContent.length), "File tokens", "Estimated tokens in this file. This is a source-size estimate, not necessarily per-turn context.");
+    }
+    const key = isManifest ? this.usageHistoryKey(item) : null;
+    if (!key)
+      return;
+    const usage = item.tool === "codex" ? this.getCodexUsage() : this.getClaudeUsage();
+    if (!usage) {
+      callout("\u2026", "Reading usage");
+      return;
+    }
+    const { columns, total } = buildHeatmap((_b = (_a = this.getSettings().usageHistory) == null ? void 0 : _a[key]) != null ? _b : {});
+    callout(
+      String(total),
+      `Sessions (${HEATMAP_WEEKS}w)`,
+      item.tool === "codex" ? "Codex doesn't log skill calls by name, so these are matched from file paths in its sessions and may be approximate." : void 0
+    );
+    callout(formatRelativeDay((_c = this.lastUsedMs(item)) != null ? _c : 0), "Last used");
+    if (total === 0)
+      return;
+    const weeks = columns.map((column) => column.reduce((sum, cell) => sum + cell.count, 0));
+    const max = Math.max(...weeks);
+    const bars = container.createDiv({ cls: "skillmanager-detail-usage-bars" });
+    columns.forEach((column, i) => {
+      const bar = bars.createDiv({ cls: `skillmanager-detail-usage-bar${weeks[i] > 0 ? " is-used" : ""}` });
+      bar.style.height = `${Math.max(8, weeks[i] / max * 100)}%`;
+      const week = new Date(column[0].ms).toLocaleDateString(void 0, { month: "short", day: "numeric" });
+      (0, import_obsidian15.setTooltip)(bar, `Week of ${week}: ${weeks[i]} session${weeks[i] === 1 ? "" : "s"}`, { placement: "top" });
+    });
+  }
+  /** One aligned key/value table on a tinted panel: the skill's own metadata (manifest only),
+   *  then file facts, then the source repo and its actions as a footer with real button chrome. */
+  renderDetailProperties(container, item, filePath, isManifest, fields) {
+    var _a;
+    const panel = container.createDiv({ cls: "skillmanager-detail-props-panel" });
+    const props = panel.createDiv({ cls: "skillmanager-detail-props" });
+    const prop = (label, fill, tooltip, valueCls = "") => {
+      const key = props.createDiv({ cls: "skillmanager-detail-prop-key" });
+      key.createSpan({ text: label });
+      if (tooltip) {
+        (0, import_obsidian15.setIcon)(key.createSpan({ cls: "skillmanager-detail-info" }), "info");
+        (0, import_obsidian15.setTooltip)(key, tooltip, { placement: "top" });
+      }
+      fill(props.createDiv({ cls: `skillmanager-detail-prop-value${valueCls ? ` ${valueCls}` : ""}` }));
+    };
+    const text = (value) => (el) => el.setText(value);
+    let modified = Date.now();
+    let fileSize = 0;
+    try {
+      const stat = (0, import_fs16.statSync)(filePath);
+      fileSize = stat.size;
+      modified = stat.mtimeMs;
+    } catch (e) {
+    }
+    if (isManifest) {
+      const field = (key) => {
+        var _a2, _b;
+        return (_b = (_a2 = fields.find((f) => f.key === key)) == null ? void 0 : _a2.value.trim()) != null ? _b : "";
+      };
+      prop("Tags", (el) => this.renderTagChips(el, item));
+      if (item.type === "skill") {
+        const manualOnly = field("disable-model-invocation") === "true";
+        prop(
+          "Invocation",
+          text(manualOnly ? "Manual only" : "Auto"),
+          manualOnly ? "Runs only when you call it by name." : "The model can pick this up on its own when the description matches."
+        );
+      }
+      const managed = this.managedBy(item);
+      prop("Managed by", text(managed.label), managed.tooltip);
+      const version = field("version") || (item.pluginId ? (_a = this.discoveredPlugins.find((p) => p.id === item.pluginId)) == null ? void 0 : _a.version : "");
+      if (version)
+        prop("Version", text(version));
       if (!this.detailEditing) {
-        const description = fields.find((f) => f.key === "description");
-        if (description)
-          left.createDiv({ cls: "skillmanager-detail-desc", text: description.value });
-      }
-      const pathBlock = left.createDiv({ cls: "skillmanager-detail-path", attr: { title: filePath } });
-      pathBlock.createDiv({ text: filePath });
-      if (isManifest && item.realPath !== item.sourcePath) {
-        pathBlock.createDiv({ text: `\u2192 symlinked from ${item.realPath}`, cls: "skillmanager-detail-path-target" });
-      }
-      const issues = isManifest ? checkIntegrity(item, this.detailContent, import_obsidian15.parseYaml) : [];
-      if (issues.length > 0) {
-        const list = left.createDiv({ cls: "skillmanager-detail-issues" });
-        for (const issue of issues) {
-          const row = list.createDiv({ cls: "skillmanager-detail-issue" });
-          (0, import_obsidian15.setIcon)(row.createSpan({ cls: "skillmanager-detail-issue-icon" }), "alert-triangle");
-          row.createSpan({ text: issue });
+        for (const f of fields) {
+          if (f.key !== "name" && f.key !== "description" && f.key !== "version")
+            prop(f.key, text(f.value));
         }
       }
-      if (!this.detailEditing) {
-        const moreFields = fields.filter((f) => f.key !== "description");
-        if (moreFields.length > 0)
-          this.renderMoreFields(left, moreFields);
-      }
-      const right = band.createDiv({ cls: "skillmanager-detail-band-right" });
-      this.renderFileStats(right, item, filePath, issues);
-      if (item.sourceRepo)
-        this.renderSourceStatus(right, item);
-    } else if (item.sourceRepo) {
-      this.renderSourceStatusInline(panel, item);
+    }
+    prop("File", text(`${formatBytes(fileSize)} \xB7 ${this.detailContent.length.toLocaleString()} chars \xB7 modified ${formatDate(modified)}`));
+    prop("Path", text(filePath), void 0, "is-mono");
+    if (isManifest && item.realPath !== item.sourcePath)
+      prop("Symlinked from", text(item.realPath), void 0, "is-mono");
+    if (item.sourceRepo) {
+      const footer = panel.createDiv({ cls: "skillmanager-detail-props-source" });
+      const left = footer.createDiv({ cls: "skillmanager-detail-props-source-repo" });
+      left.createSpan({ text: "Source", cls: "skillmanager-detail-prop-key" });
+      this.renderSourceRepoLine(left, item);
+      this.renderSourceButtons(footer.createDiv({ cls: "skillmanager-detail-source-actions" }), item);
     }
   }
   renderDetailActions(actions) {
@@ -8912,69 +9278,6 @@ var LibraryView = class extends import_obsidian15.ItemView {
       this.detailEditing = !this.detailEditing;
       this.render();
     });
-  }
-  renderFileStats(container, item, filePath, issues) {
-    var _a;
-    let fileSize = 0;
-    let modified = Date.now();
-    try {
-      const stat = (0, import_fs15.statSync)(filePath);
-      fileSize = stat.size;
-      modified = stat.mtimeMs;
-    } catch (e) {
-    }
-    const stats = container.createDiv({ cls: "skillmanager-detail-stats" });
-    const row = (label, value, tooltip, valueCls = "") => {
-      const r = stats.createDiv({ cls: "skillmanager-detail-stat-row" });
-      const labelEl = r.createSpan({ cls: "skillmanager-detail-stat-label" });
-      labelEl.createSpan({ text: label });
-      if (tooltip) {
-        const infoIcon = labelEl.createSpan({ cls: "skillmanager-detail-stat-info" });
-        (0, import_obsidian15.setIcon)(infoIcon, "info");
-        (0, import_obsidian15.setTooltip)(labelEl, tooltip, { placement: "top" });
-      }
-      r.createSpan({ text: value, cls: `skillmanager-detail-stat-value${valueCls ? ` ${valueCls}` : ""}` });
-    };
-    row("Size", formatBytes(fileSize));
-    row("Length", `${this.detailContent.length.toLocaleString()} chars`);
-    row("File tokens", formatTokens(this.detailContent.length), "Estimated tokens in this file. This is a source-size estimate, not necessarily per-turn context.");
-    if (filePath === item.sourcePath && (item.type === "skill" || item.type === "agent")) {
-      const availableChars = `${item.name}
-${item.description}`.length;
-      const invocationChars = stripFrontmatter(this.detailContent).length;
-      row("Available", formatTokens(availableChars), "Estimated name-and-description metadata exposed while this skill or agent is available. For tools that preload it, this can add to the model's context on every turn even when never invoked. Actual behavior varies by tool.");
-      row("On invoke", formatTokens(invocationChars), "Estimated instruction-body tokens loaded when this skill or agent is invoked.");
-    } else if (filePath === item.sourcePath) {
-      row("Context", "Tool-dependent", "Commands and rules have tool-specific loading behavior. Their context cost is not estimated yet.");
-    }
-    row("Modified", formatDate(modified));
-    row("Type", TYPE_LABEL_SINGULAR[item.type]);
-    if (filePath !== item.sourcePath)
-      return;
-    const fields = parseFrontmatter(this.detailContent);
-    const field = (key) => {
-      var _a2, _b;
-      return (_b = (_a2 = fields.find((f) => f.key === key)) == null ? void 0 : _a2.value.trim()) != null ? _b : "";
-    };
-    const version = field("version") || (item.pluginId ? (_a = this.discoveredPlugins.find((p) => p.id === item.pluginId)) == null ? void 0 : _a.version : "");
-    if (version)
-      row("Version", version);
-    if (item.type === "skill") {
-      const manualOnly = field("disable-model-invocation") === "true";
-      row(
-        "Invocation",
-        manualOnly ? "Manual only" : "Auto",
-        manualOnly ? "Runs only when you call it by name." : "The model can pick this up on its own when the description matches."
-      );
-    }
-    const managed = this.managedBy(item);
-    row("Managed by", managed.label, managed.tooltip);
-    row(
-      "Integrity",
-      issues.length === 0 ? "OK" : `${issues.length} issue${issues.length === 1 ? "" : "s"}`,
-      "Checks frontmatter, name, description, symlink and links to bundled files. Rechecked every time this opens.",
-      issues.length === 0 ? "" : "skillmanager-detail-stat-warn"
-    );
   }
   /** Who owns this item's files and how it gets updated: a plugin or the tool itself (both
    *  replace local edits on their own schedule), a tracked GitHub install (updated only through
@@ -9016,73 +9319,10 @@ ${item.description}`.length;
       return historyKey(item.tool, usageKey(item.type, item.name));
     return null;
   }
-  /** Sessions per day over the last HEATMAP_WEEKS weeks, read from the saved history (see
-   *  usage-history.ts) once this tool's transcripts have been scanned and merged into it. */
-  renderUsageHeatmap(panel, item) {
-    var _a, _b;
-    const key = this.usageHistoryKey(item);
-    if (!key)
-      return;
-    const section = panel.createDiv({ cls: "skillmanager-heatmap" });
-    const usage = item.tool === "codex" ? this.getCodexUsage() : this.getClaudeUsage();
-    const summary = section.createDiv({ cls: "skillmanager-heatmap-summary" });
-    if (!usage) {
-      summary.setText("Reading usage history\u2026");
-      return;
-    }
-    const { columns, total } = buildHeatmap((_b = (_a = this.getSettings().usageHistory) == null ? void 0 : _a[key]) != null ? _b : {});
-    summary.createSpan({ text: `${total} session${total === 1 ? "" : "s"} in the last ${HEATMAP_WEEKS} weeks` });
-    if (item.tool === "codex") {
-      const info = summary.createSpan({ cls: "skillmanager-detail-stat-info" });
-      (0, import_obsidian15.setIcon)(info, "info");
-      (0, import_obsidian15.setTooltip)(info, "Codex doesn't log skill calls by name, so these are matched from file paths in its sessions and may be approximate.", { placement: "top" });
-    }
-    const max = Math.max(0, ...columns.flat().map((c) => c.count));
-    const grid = section.createDiv({ cls: "skillmanager-heatmap-grid" });
-    grid.createDiv({ cls: "skillmanager-heatmap-corner" });
-    let lastMonth = -1;
-    for (const column of columns) {
-      const month = new Date(column[0].ms).getMonth();
-      const label = grid.createDiv({ cls: "skillmanager-heatmap-month" });
-      if (month !== lastMonth) {
-        label.setText(new Date(column[0].ms).toLocaleDateString(void 0, { month: "short" }));
-        lastMonth = month;
-      }
-    }
-    const weekdays = ["Mon", "", "Wed", "", "Fri", "", ""];
-    for (let d = 0; d < 7; d++) {
-      grid.createDiv({ cls: "skillmanager-heatmap-weekday", text: weekdays[d] });
-      for (const column of columns) {
-        const cell = column[d];
-        const el = grid.createDiv({
-          cls: `skillmanager-heatmap-cell${cell.future ? " is-future" : ` is-level-${heatLevel(cell.count, max)}`}`
-        });
-        if (!cell.future) {
-          const date = new Date(cell.ms).toLocaleDateString(void 0, { month: "short", day: "numeric", year: "numeric" });
-          el.setAttr("aria-label", `${cell.count} session${cell.count === 1 ? "" : "s"} on ${date}`);
-        }
-      }
-    }
-    const legend = section.createDiv({ cls: "skillmanager-heatmap-legend" });
-    legend.createSpan({ text: "Less" });
-    for (let level = 0; level <= 4; level++)
-      legend.createDiv({ cls: `skillmanager-heatmap-cell is-level-${level}` });
-    legend.createSpan({ text: "More" });
-  }
-  /** Only shown for an item installed through the "Install from GitHub" flow (see
-   *  InstallFromGitHubModal) — a manually-placed skill has no sourceRepo and gets no update
-   *  tracking. The check itself is on-demand only (a network call), never run automatically
-   *  during a rescan — see the versioning plan's "manual update checks" decision. The repo URL
-   *  truncates (full URL is the aria-label/title) since the right column is narrow. */
-  renderSourceStatus(container, item) {
-    const section = container.createDiv({ cls: "skillmanager-detail-source" });
-    this.renderSourceRepoLine(section, item);
-    this.renderSourceButtons(section.createDiv({ cls: "skillmanager-detail-source-actions" }), item);
-  }
-  /** Same repo status as renderSourceStatus, but as one full-width row instead of a stacked
-   *  right-column card — used whenever there's no open file to pair it with in a two-column band
-   *  (browsing a multi-file skill's tree, or an active review), where the band would otherwise
-   *  float a divider and a right column over an empty left one. */
+  /** Repo line + update actions as one row, for when no file is open (browsing a multi-file
+   *  skill's tree, or an active review). With a file open they sit in the properties panel's
+   *  footer instead (see renderDetailProperties). Only items installed through "Install from
+   *  GitHub" have a sourceRepo; the check itself is on-demand only (a network call). */
   renderSourceStatusInline(panel, item) {
     const row = panel.createDiv({ cls: "skillmanager-detail-source-inline" });
     this.renderSourceRepoLine(row, item);
@@ -9182,17 +9422,17 @@ ${item.description}`.length;
     let clone = null;
     try {
       clone = mode === "restore" ? shallowCloneAtCommit(sourceRepo, item.sourceCommit) : shallowCloneRepo(sourceRepo, item.sourceRef || void 0);
-      (0, import_fs15.rmSync)((0, import_path15.join)(clone.dir, ".git"), { recursive: true, force: true });
+      (0, import_fs16.rmSync)((0, import_path16.join)(clone.dir, ".git"), { recursive: true, force: true });
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
-      const newRoot = subpath ? (0, import_path15.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs15.existsSync)(newRoot)) {
+      const newRoot = subpath ? (0, import_path16.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs16.existsSync)(newRoot)) {
         throw new Error(`"${subpath}" no longer exists in this repo.`);
       }
       const unit = linkableUnit(item.sourcePath);
-      const oldPrimary = unit.isDirectory ? (0, import_path15.join)(unit.path, "SKILL.md") : unit.path;
-      const newPrimary = unit.isDirectory ? (0, import_path15.join)(newRoot, "SKILL.md") : newRoot;
-      const oldText = (0, import_fs15.existsSync)(oldPrimary) ? (0, import_fs15.readFileSync)(oldPrimary, "utf-8") : "";
-      const newText = (0, import_fs15.existsSync)(newPrimary) ? (0, import_fs15.readFileSync)(newPrimary, "utf-8") : "";
+      const oldPrimary = unit.isDirectory ? (0, import_path16.join)(unit.path, "SKILL.md") : unit.path;
+      const newPrimary = unit.isDirectory ? (0, import_path16.join)(newRoot, "SKILL.md") : newRoot;
+      const oldText = (0, import_fs16.existsSync)(oldPrimary) ? (0, import_fs16.readFileSync)(oldPrimary, "utf-8") : "";
+      const newText = (0, import_fs16.existsSync)(newPrimary) ? (0, import_fs16.readFileSync)(newPrimary, "utf-8") : "";
       const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
       if (oldText === newText && companions.length === 0) {
         const newCommit = clone.commit;
@@ -9293,16 +9533,16 @@ ${item.description}`.length;
     let clone = null;
     try {
       clone = shallowCloneRepo(sourceRepo, item.sourceRef || void 0);
-      (0, import_fs15.rmSync)((0, import_path15.join)(clone.dir, ".git"), { recursive: true, force: true });
+      (0, import_fs16.rmSync)((0, import_path16.join)(clone.dir, ".git"), { recursive: true, force: true });
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
-      const newRoot = subpath ? (0, import_path15.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs15.existsSync)(newRoot)) {
+      const newRoot = subpath ? (0, import_path16.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs16.existsSync)(newRoot)) {
         throw new Error(`"${subpath}" no longer exists in this repo.`);
       }
       const unit = linkableUnit(item.sourcePath);
-      const oldPrimary = unit.isDirectory ? (0, import_path15.join)(unit.path, "SKILL.md") : unit.path;
-      const newPrimary = unit.isDirectory ? (0, import_path15.join)(newRoot, "SKILL.md") : newRoot;
-      const primaryChanged = !(0, import_fs15.existsSync)(oldPrimary) || !(0, import_fs15.existsSync)(newPrimary) ? (0, import_fs15.existsSync)(oldPrimary) !== (0, import_fs15.existsSync)(newPrimary) : !(0, import_fs15.readFileSync)(oldPrimary).equals((0, import_fs15.readFileSync)(newPrimary));
+      const oldPrimary = unit.isDirectory ? (0, import_path16.join)(unit.path, "SKILL.md") : unit.path;
+      const newPrimary = unit.isDirectory ? (0, import_path16.join)(newRoot, "SKILL.md") : newRoot;
+      const primaryChanged = !(0, import_fs16.existsSync)(oldPrimary) || !(0, import_fs16.existsSync)(newPrimary) ? (0, import_fs16.existsSync)(oldPrimary) !== (0, import_fs16.existsSync)(newPrimary) : !(0, import_fs16.readFileSync)(oldPrimary).equals((0, import_fs16.readFileSync)(newPrimary));
       const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
       const changed = primaryChanged || companions.length > 0;
       if (changed)
@@ -9438,7 +9678,7 @@ ${item.description}`.length;
     }
   }
   // ---------- file content (rendered inside the detail rail, below the identity band) ----------
-  /** Reads (and caches) the open file's content — shared by renderIdentityBand (stats, parsed
+  /** Reads (and caches) the open file's content — shared by renderDetailHeader (stats, parsed
    *  frontmatter) and renderFileBody (the textarea/reading view), so both see the same content
    *  without reading the file twice per render. */
   loadFileContent(item, filePath) {
@@ -9446,7 +9686,7 @@ ${item.description}`.length;
     if (this.detailLoadedFor === loadKey)
       return;
     try {
-      this.detailContent = (0, import_fs15.readFileSync)(filePath, "utf-8");
+      this.detailContent = (0, import_fs16.readFileSync)(filePath, "utf-8");
     } catch (e) {
       this.detailContent = "";
       new import_obsidian15.Notice("Could not read file: " + errorMessage(e));
@@ -9473,7 +9713,7 @@ ${item.description}`.length;
       const save = () => {
         void (async () => {
           try {
-            (0, import_fs15.writeFileSync)(filePath, textarea.value, "utf-8");
+            (0, import_fs16.writeFileSync)(filePath, textarea.value, "utf-8");
             this.detailContent = textarea.value;
             if (isManifest) {
               const meta = parseSourceMeta(textarea.value);
@@ -9550,26 +9790,8 @@ ${item.description}`.length;
     label.createSpan({ text: ":", cls: "skillmanager-fm-colon" });
     row.createSpan({ text: value, cls: "skillmanager-fm-value" });
   }
-  /** A collapsed-by-default view of every frontmatter field except description (which the band
-   *  already shows as prose) — license, argument-hint, allowed-tools, whatever else a tool
-   *  declares. Kept out of the way by default since most of it is rarely needed at a glance. */
-  renderMoreFields(container, fields) {
-    const toggle = container.createEl("button", {
-      cls: "skillmanager-fm-toggle",
-      text: `${this.moreFieldsExpanded ? "\u25BE" : "\u25B8"} ${fields.length} more field${fields.length === 1 ? "" : "s"}`
-    });
-    toggle.addEventListener("click", () => {
-      this.moreFieldsExpanded = !this.moreFieldsExpanded;
-      this.render();
-    });
-    if (this.moreFieldsExpanded) {
-      const box = container.createDiv({ cls: "skillmanager-detail-frontmatter" });
-      for (const field of fields)
-        this.renderFrontmatterRow(box, field.key, field.value);
-    }
-  }
   /** Tag chips, each with its own remove button, plus a "+ tag" affordance that swaps itself for
-   *  an inline input. Shown at the top of the band (see renderIdentityBand) rather than the old
+   *  an inline input. Shown in the properties panel (see renderDetailProperties) rather than the old
    *  comma-separated text field at the very bottom of the panel. */
   renderTagChips(container, item) {
     const row = container.createDiv({ cls: "skillmanager-detail-tags-row" });
@@ -10235,27 +10457,29 @@ var SkillManagerPlugin = class extends import_obsidian18.Plugin {
     var _a, _b;
     const loaded = await this.loadData();
     const mergedTools = DEFAULT_TOOLS.map((defaultTool) => {
-      var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j;
+      var _a2, _b2, _c, _d, _e, _f, _g, _h, _i, _j, _k;
       const saved = (_a2 = loaded == null ? void 0 : loaded.tools) == null ? void 0 : _a2.find((t) => t.id === defaultTool.id);
       if (!saved)
         return defaultTool;
       return {
         ...defaultTool,
         paths: saved.paths,
-        projectPaths: (_b2 = saved.projectPaths) != null ? _b2 : defaultTool.projectPaths,
+        projectPaths: saved.projectPaths ? { ...defaultTool.projectPaths, ...saved.projectPaths } : defaultTool.projectPaths,
         disabled: saved.disabled,
-        pluginsRegistry: (_c = saved.pluginsRegistry) != null ? _c : defaultTool.pluginsRegistry,
-        pluginsPaths: (_d = saved.pluginsPaths) != null ? _d : defaultTool.pluginsPaths,
-        pluginsSettingsPath: (_e = saved.pluginsSettingsPath) != null ? _e : defaultTool.pluginsSettingsPath,
+        pluginsRegistry: (_b2 = saved.pluginsRegistry) != null ? _b2 : defaultTool.pluginsRegistry,
+        pluginsPaths: (_c = saved.pluginsPaths) != null ? _c : defaultTool.pluginsPaths,
+        pluginsSettingsPath: (_d = saved.pluginsSettingsPath) != null ? _d : defaultTool.pluginsSettingsPath,
         // Same "user-edited, carry over" treatment as paths/projectPaths above — these are the
         // fields the "All tools" detail rail's MCP servers section lets a user fill in for a
         // built-in tool with no confirmed default (see LibraryView.renderToolDetailRail).
-        mcpConfigPath: (_f = saved.mcpConfigPath) != null ? _f : defaultTool.mcpConfigPath,
-        projectMcpConfigPath: (_g = saved.projectMcpConfigPath) != null ? _g : defaultTool.projectMcpConfigPath,
-        mcpConfigKey: (_h = saved.mcpConfigKey) != null ? _h : defaultTool.mcpConfigKey,
+        mcpConfigPath: (_e = saved.mcpConfigPath) != null ? _e : defaultTool.mcpConfigPath,
+        projectMcpConfigPath: (_f = saved.projectMcpConfigPath) != null ? _f : defaultTool.projectMcpConfigPath,
+        mcpConfigKey: (_g = saved.mcpConfigKey) != null ? _g : defaultTool.mcpConfigKey,
         // Same treatment — user-edited via LibraryView's renderRuleAdditionalPaths.
-        ruleAdditionalPaths: (_i = saved.ruleAdditionalPaths) != null ? _i : defaultTool.ruleAdditionalPaths,
-        ruleAdditionalProjectPaths: (_j = saved.ruleAdditionalProjectPaths) != null ? _j : defaultTool.ruleAdditionalProjectPaths
+        ruleAdditionalPaths: (_h = saved.ruleAdditionalPaths) != null ? _h : defaultTool.ruleAdditionalPaths,
+        ruleAdditionalProjectPaths: (_i = saved.ruleAdditionalProjectPaths) != null ? _i : defaultTool.ruleAdditionalProjectPaths,
+        memoryPath: (_j = saved.memoryPath) != null ? _j : defaultTool.memoryPath,
+        projectMemoryPath: (_k = saved.projectMemoryPath) != null ? _k : defaultTool.projectMemoryPath
       };
     });
     const customTools = ((_a = loaded == null ? void 0 : loaded.tools) != null ? _a : []).filter(

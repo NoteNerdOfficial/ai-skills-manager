@@ -3,6 +3,7 @@ import { dirname } from "path";
 import { BrokenSymlink, ItemMetadata, McpServerEntry, PluginSource, ProjectWorkspace, SkillManagerPluginSettings } from "./types";
 import { scanAllPlugins, scanAllProjects, scanAllTools, scanBrokenSymlinks, stableEntryPath } from "./scanners";
 import { scanMcpServers } from "./mcpScanners";
+import { scanAllMemories } from "./memories";
 import { ShadowNoteStore } from "./store";
 import { upgradeLegacyDisabledFile } from "./itemToggle";
 
@@ -59,6 +60,7 @@ export async function performRescan(
   const discovered = [
     ...scanAllTools(settings.tools),
     ...scanAllProjects(settings.tools, projects),
+    ...scanAllMemories(settings.tools, projects),
     ...pluginScan.items,
   ];
   const brokenSymlinks = scanBrokenSymlinks(settings.tools, projects);
