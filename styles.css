@@ -2576,20 +2576,8 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-body {
   flex-direction: column;
   overflow-y: auto;
-  gap: 20px;
+  gap: 36px;
   padding: 4px 24px 24px;
-}
-
-.skillmanager-dash-section {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  padding: 16px;
-}
-
-.skillmanager-dash-flat-section {
-  border: 0;
-  border-radius: 0;
-  padding: 0;
 }
 
 .skillmanager-dash-section-head {
@@ -2597,7 +2585,26 @@ input.skillmanager-tag-add-input {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 8px;
+}
+
+/* One spacing rhythm for every Insights section: title, 4px, description line(s) 2px apart,
+   16px, then the section's content. Sections themselves sit 36px apart (.skillmanager-dash-body). */
+.skillmanager-insights-block {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.skillmanager-insights-block > .skillmanager-subtitle {
+  margin: 4px 0 0;
+}
+
+.skillmanager-insights-block > .skillmanager-subtitle + .skillmanager-subtitle {
+  margin-top: 2px;
+}
+
+.skillmanager-insights-block > :not(.skillmanager-subtitle):not(.skillmanager-dash-section-head):not(.skillmanager-dash-toggle):not(.skillmanager-dash-disregarded) {
+  margin-top: 16px;
 }
 
 .skillmanager-dash-section-title {
@@ -2656,27 +2663,6 @@ input.skillmanager-tag-add-input {
   color: var(--text-faint);
 }
 
-.skillmanager-dash-flag-row .skillmanager-dash-row-info {
-  width: auto;
-  flex: 1 1 auto;
-}
-
-.skillmanager-dash-flag-row .skillmanager-dash-row-meta {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Distinguishes a mixed-method list's rows (real Claude Code usage vs. file edit history) —
-   see the Dashboard's Claude Code-contextual Prune candidates section. */
-.skillmanager-dash-method-tag {
-  margin-left: 6px;
-  padding: 0 6px;
-  font-size: 10px;
-  line-height: 1.6;
-  text-transform: none;
-}
-
 .skillmanager-dash-bar-track {
   flex: 1;
   height: 6px;
@@ -2699,28 +2685,6 @@ input.skillmanager-tag-add-input {
   color: var(--text-muted);
 }
 
-.skillmanager-dash-flag-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 4px;
-  border-top: 1px solid var(--background-modifier-border);
-}
-
-.skillmanager-dash-flag-row:first-of-type {
-  border-top: none;
-}
-
-.skillmanager-dash-flag-row.is-clickable {
-  cursor: pointer;
-  border-radius: 6px;
-}
-
-.skillmanager-dash-flag-row.is-clickable:hover {
-  background: var(--background-modifier-hover);
-}
-
 .skillmanager-dash-action-btn {
   background: transparent;
   border: 1px solid var(--background-modifier-border);
@@ -2731,34 +2695,6 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-action-btn:hover {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
-}
-
-/* Pairs a row's "Disregard" button with its primary action (Disable/Compare) — see
- * renderDashboardDisregardableActions. */
-.skillmanager-dash-row-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.skillmanager-dash-overlap-row {
-  padding: 10px 0;
-  border-top: 1px solid var(--background-modifier-border);
-}
-
-.skillmanager-dash-overlap-row:first-of-type {
-  border-top: none;
-  padding-top: 4px;
-}
-
-.skillmanager-dash-overlap-name {
-  cursor: pointer;
-}
-
-.skillmanager-dash-overlap-name:hover {
-  color: var(--interactive-accent);
-  text-decoration: underline;
 }
 
 /* ---- Dashboard header: title + description on the left, stat cluster on the right ---- */
@@ -2855,18 +2791,6 @@ input.skillmanager-tag-add-input {
   font-weight: 600;
 }
 
-/* Extra room below the Ranked section's own head — the type-filter row sits right above the
-   list and reads as cramped at the default section-head margin. */
-.skillmanager-dash-ranked > .skillmanager-dash-section-head {
-  margin-bottom: 20px;
-}
-
-/* Top Skills & Agents' subtitle (unlike Ranked by cost, which has none) otherwise butts straight
-   into the list below it — .skillmanager-subtitle itself carries no margin. */
-.skillmanager-dash-ranked .skillmanager-subtitle {
-  margin-bottom: 16px;
-}
-
 .skillmanager-dash-legend-entry {
   display: flex;
   align-items: center;
@@ -2887,7 +2811,6 @@ input.skillmanager-tag-add-input {
   gap: 10px;
   overflow-x: auto;
   padding-bottom: 6px;
-  margin-bottom: 20px;
   /* Without this, a flex item with non-visible overflow gets an automatic min-height of 0
      instead of its content size, so the parent column's default shrinking collapses this row
      down to almost nothing instead of scrolling the page. Keeps its full content height and lets
@@ -2979,14 +2902,326 @@ input.skillmanager-tag-add-input {
   padding: 10px 12px;
 }
 
-.skillmanager-dash-ranked-list .skillmanager-dash-broken-row:hover {
+/* Bar-chart lists (Ranked by cost, Top Skills & Agents): one divided list instead of separate
+   cards, so every bar starts on the same baseline and lengths compare at a glance. */
+.skillmanager-dash-bar-list {
+  gap: 0;
+}
+
+.skillmanager-dash-ranked-list.skillmanager-dash-bar-list .skillmanager-dash-row {
+  border: none;
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  padding: 9px 8px;
+}
+
+.skillmanager-dash-bar-list .skillmanager-dash-row:last-child {
+  border-bottom: none;
+}
+
+.skillmanager-dash-bar-list .skillmanager-dash-bar-track {
+  height: 10px;
+  border-radius: 2px;
   background: transparent;
+}
+
+.skillmanager-dash-bar-list .skillmanager-dash-bar-fill {
+  border-radius: 2px;
+}
+
+.skillmanager-dash-bar-list .skillmanager-dash-row-cost {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 96px;
+  font-variant-numeric: tabular-nums;
+}
+
+.skillmanager-dash-row-pct {
+  width: 32px;
+  color: var(--text-faint);
+}
+
+.skillmanager-insight-summary {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.skillmanager-insight-section .skillmanager-dash-section-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.skillmanager-insight-box {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-primary);
+  overflow: hidden;
+}
+
+.skillmanager-insight-row + .skillmanager-insight-row {
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.skillmanager-insight-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+.skillmanager-insight-line:hover {
+  background: var(--background-modifier-hover);
+}
+
+.skillmanager-insight-row.is-static .skillmanager-insight-line {
   cursor: default;
 }
 
-.skillmanager-dash-ranked-list .skillmanager-dash-static-row:hover {
+.skillmanager-insight-row.is-static .skillmanager-insight-line:hover {
   background: transparent;
-  cursor: default;
+}
+
+.skillmanager-insight-row.is-dimmed .skillmanager-insight-info {
+  opacity: 0.6;
+}
+
+.skillmanager-insight-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skillmanager-insight-name {
+  min-width: 0;
+  font-weight: 500;
+}
+
+.skillmanager-insight-name > span:not(.skillmanager-insight-pill):not(.skillmanager-dash-row-icon) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillmanager-insight-pill {
+  flex-shrink: 0;
+  margin-left: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--background-modifier-border);
+}
+
+.skillmanager-insight-pill.is-danger {
+  color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 14%, transparent);
+}
+
+.skillmanager-insight-pill.is-warn {
+  color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 14%, transparent);
+}
+
+.skillmanager-insight-problem {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillmanager-insight-row.is-open .skillmanager-insight-problem {
+  white-space: normal;
+}
+
+.skillmanager-insight-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.skillmanager-insight-figure {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+}
+
+.skillmanager-insight-chevron {
+  display: inline-flex;
+  color: var(--text-faint);
+}
+
+.skillmanager-insight-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Same tint as the detail page's properties panel and code blocks. */
+.skillmanager-insight-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.theme-dark .skillmanager-insight-panel {
+  background: color-mix(in srgb, var(--background-primary) 55%, black);
+}
+
+.skillmanager-insight-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 16px;
+  row-gap: 4px;
+  font-size: var(--font-ui-smaller);
+}
+
+.skillmanager-insight-label {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.skillmanager-insight-value {
+  min-width: 0;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillmanager-insight-value.is-multiline {
+  white-space: pre-line;
+}
+
+.skillmanager-insight-value.is-clamped {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Paths ellipsize from the start (rtl box, ltr text) so the distinctive tail stays visible. */
+.skillmanager-insight-value.is-path {
+  direction: rtl;
+  text-align: left;
+  font-family: var(--font-monospace);
+}
+
+.skillmanager-insight-value.is-path > span {
+  direction: ltr;
+  unicode-bidi: bidi-override;
+}
+
+.skillmanager-insight-value.is-missing {
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.skillmanager-insight-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.skillmanager-insight-side {
+  min-width: 0;
+}
+
+.skillmanager-insight-side + .skillmanager-insight-side {
+  padding-left: 20px;
+  border-left: 1px solid var(--background-modifier-border);
+}
+
+.skillmanager-insight-side-name {
+  display: block;
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.skillmanager-insight-side-name:hover {
+  color: var(--text-accent);
+  text-decoration: underline;
+}
+
+.skillmanager-insight-side-desc {
+  margin: 6px 0 10px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.skillmanager-insight-side-path {
+  margin-top: 2px;
+  font-size: var(--font-ui-smaller);
+}
+
+.skillmanager-insight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.skillmanager-insight-actions > button {
+  height: auto;
+  padding: 4px 12px;
+  font-size: var(--font-ui-smaller);
+}
+
+.skillmanager-insight-text-btn {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: var(--text-muted);
+}
+
+.skillmanager-insight-text-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+/* "Show disregarded (N)" in a section head, and the dimmed list it reveals at the section's end. */
+.skillmanager-dash-disregarded-toggle {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 2px 4px;
+  height: auto;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.skillmanager-dash-disregarded-toggle:hover {
+  color: var(--text-normal);
+  background: transparent;
+}
+
+.skillmanager-dash-disregarded {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--background-modifier-border);
+}
+
+.skillmanager-dash-disregarded-label {
+  margin-bottom: 8px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  font-weight: 500;
 }
 
 .skillmanager-dash-toggle {
@@ -3007,99 +3242,6 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-toggle:hover {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
-}
-
-/* ---- Prune candidates / Possible overlaps, side by side, always matched in height ---- */
-
-.skillmanager-dash-columns {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: stretch;
-  gap: 16px;
-  margin-top: 28px;
-}
-
-.skillmanager-dash-columns > .skillmanager-dash-section {
-  flex: 1 1 280px;
-  min-width: 280px;
-  min-height: 320px;
-  display: flex;
-  flex-direction: column;
-}
-
-.skillmanager-dash-callout .skillmanager-subtitle {
-  margin-bottom: 8px;
-}
-
-.skillmanager-dash-callout-rows {
-  margin-top: 4px;
-  max-height: 280px;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.skillmanager-dash-path,
-.skillmanager-dash-path-target {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-monospace);
-  font-size: var(--font-ui-smaller);
-}
-
-.skillmanager-dash-broken-row {
-  align-items: center;
-}
-
-.skillmanager-dash-broken-identity {
-  flex: 0 1 220px;
-  min-width: 170px;
-}
-
-.skillmanager-dash-integrity-row {
-  align-items: center;
-}
-
-.skillmanager-dash-integrity-identity {
-  flex: 0 1 220px;
-  min-width: 170px;
-}
-
-.skillmanager-dash-integrity-row .skillmanager-detail-issues {
-  flex: 1 1 auto;
-  min-width: 0;
-  margin: 0;
-}
-
-.skillmanager-dash-broken-paths {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.skillmanager-dash-broken-status {
-  display: inline-block;
-  width: fit-content;
-  margin-bottom: 3px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 1.2;
-}
-
-.skillmanager-dash-broken-status.is-disabled {
-  color: var(--color-orange);
-  background: color-mix(in srgb, var(--color-orange) 14%, transparent);
-}
-
-.skillmanager-dash-broken-status.is-missing {
-  color: var(--color-red);
-  background: color-mix(in srgb, var(--color-red) 14%, transparent);
-}
-
-.skillmanager-dash-path-target {
-  flex: 0 1 45%;
-  color: var(--text-faint);
 }
 
 /* ---------- grid/list layout toggle (tag bar, next to sort) ---------- */
@@ -3312,9 +3454,11 @@ input.skillmanager-tag-add-input {
 
 /* ---------- Insights: Usage switcher and activity chart ---------- */
 
+/* A page control, not a section: sits closer to the section it switches. */
 .skillmanager-insights-switcher {
   align-self: flex-start;
   flex-shrink: 0;
+  margin-bottom: -16px;
 }
 
 /* Page-sized version of the detail rail's weekly bars. */
@@ -3329,6 +3473,4 @@ input.skillmanager-tag-add-input {
   border-radius: 3px;
 }
 
-.skillmanager-dash-body > .skillmanager-dash-columns:first-child {
-  margin-top: 0;
-}
+.skillmanager-dash-body > 

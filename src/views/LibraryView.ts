@@ -2,6 +2,7 @@ import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice,
 import { execFile, execFileSync } from "child_process";
 import { cpSync, existsSync, lstatSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, relative, sep } from "path";
+import { homedir } from "os";
 import {
   Collection,
   BrokenSymlink,
@@ -41,7 +42,6 @@ import { InstallFromGitHubModal } from "../modals/InstallFromGitHubModal";
 import { AddDiscoverSourceModal } from "../modals/AddDiscoverSourceModal";
 import { ConfirmModal } from "../modals/ConfirmModal";
 import { AddToolModal } from "../modals/AddToolModal";
-import { ItemOverlapModal } from "../modals/ItemOverlapModal";
 import {
   computeDashboardMetrics,
   findOverlapPairs,
@@ -156,6 +156,57 @@ const DASHBOARD_TYPE_COLORS: Record<ItemType, string> = {
 };
 
 const DASHBOARD_RANKED_COLLAPSED_COUNT = 5;
+
+type InsightTone = "danger" | "warn" | "muted";
+
+interface InsightAction {
+  label: string;
+  run: () => void;
+  warning?: boolean;
+}
+
+interface InsightFact {
+  label: string;
+  value: string;
+  path?: boolean;
+  missing?: boolean;
+  multiline?: boolean;
+  /** Clamped to two lines (descriptions). */
+  clamp?: boolean;
+  tooltip?: string;
+}
+
+/** One Health/Cleanup row (see renderInsightRow). */
+interface InsightRow {
+  /** Unique across sections; tracks the row's open state. */
+  key: string;
+  renderName: (el: HTMLElement) => void;
+  /** One plain sentence under the name saying what's wrong. */
+  problem: string;
+  tone: InsightTone;
+  /** Lower-case bucket for the section summary ("source missing") and the pill by the name. */
+  group: string;
+  figure?: string;
+  facts: InsightFact[];
+  /** Overlaps: both items side by side in the open panel, each with its own actions. */
+  pair?: [ItemMetadata, ItemMetadata];
+  /** The row's fix. Absent for overlaps, whose fixes live on each side of the pair. */
+  primary?: InsightAction;
+  open?: () => void;
+  extra?: InsightAction[];
+  disregardKey: string;
+}
+
+/** Shortens an absolute path under the home folder to "~/…" for display. */
+function tildePath(path: string): string {
+  const home = homedir();
+  return path === home || path.startsWith(home + sep) ? "~" + path.slice(home.length) : path;
+}
+/** Ranked by cost shows more before collapsing: it's a bar chart, and the head of a long-tailed
+ *  cost distribution is where the comparison is worth reading. */
+const DASHBOARD_COST_COLLAPSED_COUNT = 10;
+/** How many of the costliest items the Ranked by cost summary line sums up ("Top 5 = 62%"). */
+const DASHBOARD_COST_SUMMARY_COUNT = 5;
 
 /** The sidebar's Insights section: one page per question the old single Dashboard answered. */
 type InsightsPage = "context" | "usage" | "health" | "cleanup";
@@ -329,6 +380,13 @@ export class LibraryView extends ItemView {
   private dashboardTypeFilter: ItemType | null = null;
   private dashboardBrokenSymlinksExpanded = false;
   private dashboardIntegrityExpanded = false;
+  private dashboardRankedExpanded = false;
+  /** Section ids ("broken", "integrity", "prune", "overlaps") whose disregarded rows are shown. */
+  private dashboardShowDisregarded = new Set<string>();
+  /** Health/Cleanup rows the user has expanded, keyed by InsightRow.key. */
+  private dashboardOpenRows = new Set<string>();
+  private dashboardPruneExpanded = false;
+  private dashboardOverlapsExpanded = false;
   /** Live-tracked scroll offset of the dashboard's scrollable body, restored on the next render
    *  the same way libraryScrollTop/dockedScrollTop work for the main grid. */
   private dashboardScrollTop = 0;
@@ -4738,7 +4796,7 @@ export class LibraryView extends ItemView {
   }
 
   /** A small inline "link" icon for a dashboard row's name, only rendered when the item is a
-   *  symlink — lets Prune/Overlap rows (and the overlap Compare modal) tell two identically-named
+   *  symlink — lets Prune/Overlap rows (and an overlap's open panel) tell two identically-named
    *  items apart instead of looking like plain duplicates. */
   private renderSymlinkIcon(parent: HTMLElement, item: ItemMetadata) {
     if (!this.isSymlinkedItem(item)) return;
@@ -4778,7 +4836,7 @@ export class LibraryView extends ItemView {
       const { usagePrune, mtimePrune } = this.getDashboardPruneSplit(metrics, false);
       const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
       this.insightsCounts = {
-        health: this.brokenSymlinks.length + this.getIntegrityRows().length,
+        health: this.getBrokenSymlinkRows().length + this.getIntegrityRows().length,
         cleanup: usagePrune.length + mtimePrune.length + overlapPairs.length,
       };
     }
@@ -4807,17 +4865,36 @@ export class LibraryView extends ItemView {
 
   /** Includes the issue text, so disregarding an item's current problems doesn't also hide a
    *  different problem that shows up in it later. */
+  /** Keyed on the target too, so re-pointing a disregarded link at a new missing path flags it again. */
+  private brokenSymlinkDisregardKey(link: BrokenSymlink): string {
+    return `broken:${link.path}->${link.targetPath}`;
+  }
+
+  private getBrokenSymlinkRows(wantDisregarded = false): BrokenSymlink[] {
+    const disregarded = this.getSettings().dashboardDisregarded;
+    return this.brokenSymlinks.filter((link) => !!disregarded[this.brokenSymlinkDisregardKey(link)] === wantDisregarded);
+  }
+
+  /** The library item a broken link row opens: the disabled source it points at, else the
+   *  project card retained for the dangling link itself (see rescan's retainedBrokenIds). */
+  private itemForBrokenLink(link: BrokenSymlink, disabledSource: ItemMetadata | null): ItemMetadata | null {
+    return disabledSource
+      ?? this.items.find((item) => item.sourcePath === link.path || dirname(item.sourcePath) === link.path)
+      ?? null;
+  }
+
   private integrityDisregardKey(item: ItemMetadata, issues: string[]): string {
     return `integrity:${item.entryId}:${issues.join("|")}`;
   }
 
-  private getIntegrityRows(): { item: ItemMetadata; issues: string[] }[] {
+  /** `wantDisregarded` flips the filter to return only the rows the user has disregarded. */
+  private getIntegrityRows(wantDisregarded = false): { item: ItemMetadata; issues: string[] }[] {
     const issuesById = this.getIntegrityIssues();
     const disregarded = this.getSettings().dashboardDisregarded;
     return this.items
       .filter((item) => issuesById.has(item.entryId))
       .map((item) => ({ item, issues: issuesById.get(item.entryId) as string[] }))
-      .filter(({ item, issues }) => !disregarded[this.integrityDisregardKey(item, issues)])
+      .filter(({ item, issues }) => !!disregarded[this.integrityDisregardKey(item, issues)] === wantDisregarded)
       .sort((a, b) => a.item.name.localeCompare(b.item.name));
   }
 
@@ -4835,21 +4912,27 @@ export class LibraryView extends ItemView {
   ): {
     usagePrune: { item: ItemMetadata; stats: ClaudeUsageStats }[];
     mtimePrune: DashboardMetric[];
+    /** Items that would be flagged by either method but the user disregarded. */
+    disregardedPrune: ItemMetadata[];
   } {
     const disregarded = this.getSettings().dashboardDisregarded;
     // A plugin-bundled item can't be disabled individually from here any more than from its own
     // card (see renderCard) — Prune candidates only lists things its own "Disable" button can
     // actually act on.
-    const pruneCandidates = findPruneCandidates(metrics)
-      .filter((m) => !disregarded[m.item.entryId])
-      .filter((m) => m.item.pluginId === null);
+    const allCandidates = findPruneCandidates(metrics).filter((m) => m.item.pluginId === null);
+    const pruneCandidates = allCandidates.filter((m) => !disregarded[m.item.entryId]);
     const usage = triggerUsageLoad ? this.getClaudeUsage() : this.claudeUsage;
     const isClaudeSkillOrAgent = (m: DashboardMetric) =>
       m.item.tool === "claude-code" && (m.item.type === "skill" || m.item.type === "agent");
     const claudeSkillAgentItems = metrics.filter(isClaudeSkillOrAgent).filter((m) => m.item.pluginId === null).map((m) => m.item);
-    const usagePrune = usage ? findUsagePruneCandidates(claudeSkillAgentItems, usage).filter((u) => !disregarded[u.item.entryId]) : [];
+    const allUsagePrune = usage ? findUsagePruneCandidates(claudeSkillAgentItems, usage) : [];
+    const usagePrune = allUsagePrune.filter((u) => !disregarded[u.item.entryId]);
     const mtimePrune = pruneCandidates.filter((m) => !usage || !isClaudeSkillOrAgent(m));
-    return { usagePrune, mtimePrune };
+    const disregardedPrune = [
+      ...allUsagePrune.map((u) => u.item),
+      ...allCandidates.filter((m) => !usage || !isClaudeSkillOrAgent(m)).map((m) => m.item),
+    ].filter((item) => disregarded[item.entryId]);
+    return { usagePrune, mtimePrune, disregardedPrune };
   }
 
   /** Stable, order-independent key for an overlap pair, used as its dashboardDisregarded entry —
@@ -4864,13 +4947,13 @@ export class LibraryView extends ItemView {
    *  "overlap" against its own project-scoped copies — but a global instructions file and a
    *  project one are meant to coexist, not compete, so instructions files never enter this
    *  comparison at all. */
-  private overlapPairsFor(items: ItemMetadata[]): OverlapPair[] {
+  private overlapPairsFor(items: ItemMetadata[], wantDisregarded = false): OverlapPair[] {
     // Memory index files are excluded for the same reason: every project's MEMORY.md shares a name.
     const eligible = items.filter(
       (item) => !(item.type === "rule" && (this.isSingleFileRuleTool(item.tool) || (this.isMemory(item) && isMemoryIndex(item))))
     );
     const disregarded = this.getSettings().dashboardDisregarded;
-    return findOverlapPairs(eligible).filter((p) => !disregarded[this.overlapPairKey(p.a, p.b)]);
+    return findOverlapPairs(eligible).filter((p) => !!disregarded[this.overlapPairKey(p.a, p.b)] === wantDisregarded);
   }
 
   /** Marks a specific Prune candidate (entryId) or Possible overlap (overlapPairKey) as "not
@@ -4882,6 +4965,55 @@ export class LibraryView extends ItemView {
     await this.saveSettings();
     this.insightsCounts = null;
     this.render();
+  }
+
+  private async undisregardDashboardRecommendation(key: string) {
+    const settings = this.getSettings();
+    const { [key]: _removed, ...rest } = settings.dashboardDisregarded;
+    settings.dashboardDisregarded = rest;
+    await this.saveSettings();
+    this.insightsCounts = null;
+    this.render();
+  }
+
+  /** Adds a "Show disregarded (N)" toggle to a section's head and, while it's on, lists those
+   *  rows dimmed at the bottom of the section, each with a "Show again" button that undoes the
+   *  disregard. Nothing renders when the section has none. */
+  private renderDashboardDisregarded(
+    section: HTMLElement,
+    sectionId: string,
+    entries: { key: string; renderName: (nameRow: HTMLElement) => void; meta: string }[]
+  ) {
+    if (entries.length === 0) return;
+    const head = section.querySelector<HTMLElement>(".skillmanager-dash-section-head");
+    if (!head) return;
+    const right = head.querySelector<HTMLElement>(".skillmanager-dash-section-right") ?? head.createDiv({ cls: "skillmanager-dash-section-right" });
+    const shown = this.dashboardShowDisregarded.has(sectionId);
+    const toggle = right.createEl("button", {
+      text: shown ? "Hide disregarded" : `Show disregarded (${entries.length})`,
+      cls: "skillmanager-dash-disregarded-toggle",
+    });
+    toggle.addEventListener("click", () => {
+      if (shown) this.dashboardShowDisregarded.delete(sectionId);
+      else this.dashboardShowDisregarded.add(sectionId);
+      this.render();
+    });
+    if (!shown) return;
+
+    const disregarded = this.getSettings().dashboardDisregarded;
+    const now = Date.now();
+    const block = section.createDiv({ cls: "skillmanager-dash-disregarded" });
+    block.createDiv({ text: "Disregarded", cls: "skillmanager-dash-disregarded-label" });
+    const box = block.createDiv({ cls: "skillmanager-insight-box" });
+    for (const entry of entries) {
+      const at = disregarded[entry.key];
+      this.renderInsightStaticRow(box, {
+        renderName: entry.renderName,
+        problem: at ? `${entry.meta} · disregarded ${dashboardRelativeAge(now - at)} ago` : entry.meta,
+        action: { label: "Show again", run: () => void this.undisregardDashboardRecommendation(entry.key) },
+        dimmed: true,
+      });
+    }
   }
 
   private renderInsightsContent(content: HTMLElement) {
@@ -5035,7 +5167,7 @@ export class LibraryView extends ItemView {
   /** Weekly sessions across every skill and agent of one tool, from the saved history — same
    *  source and window as an item's own Activity bars in the detail rail, just summed. */
   private renderInsightsActivity(body: HTMLElement, toolId: string, toolName: string, loading: boolean) {
-    const section = body.createDiv({ cls: "skillmanager-dash-ranked" });
+    const section = body.createDiv({ cls: "skillmanager-insights-block" });
     this.renderDashboardSectionHead(section, "Activity");
     const history = this.getSettings().usageHistory ?? {};
     const merged: DayCounts = {};
@@ -5068,17 +5200,42 @@ export class LibraryView extends ItemView {
 
   private renderInsightsHealth(content: HTMLElement): HTMLElement {
     const integrityRows = this.getIntegrityRows();
+    const brokenRows = this.getBrokenSymlinkRows();
     const body = this.renderInsightsShell(
       content,
       "Health",
       "Problems that stop a tool from seeing or loading an item. These are worth fixing.",
       (stats) => {
-        this.renderDashboardStat(stats, "Broken links", String(this.brokenSymlinks.length), this.brokenSymlinks.length ? "skillmanager-dash-stat-danger" : "");
+        this.renderDashboardStat(stats, "Broken links", String(brokenRows.length), brokenRows.length ? "skillmanager-dash-stat-danger" : "");
         this.renderDashboardStat(stats, "Issues", String(integrityRows.length), integrityRows.length ? "skillmanager-dash-stat-danger" : "");
       }
     );
-    this.renderDashboardBrokenSymlinks(body, this.brokenSymlinks);
-    this.renderDashboardIntegrity(body, integrityRows);
+    const brokenSection = this.renderDashboardBrokenSymlinks(body, brokenRows);
+    this.renderDashboardDisregarded(
+      brokenSection,
+      "broken",
+      this.getBrokenSymlinkRows(true).map((link) => ({
+        key: this.brokenSymlinkDisregardKey(link),
+        renderName: (nameRow) => {
+          setIcon(nameRow.createSpan({ cls: "skillmanager-dash-row-icon" }), TYPE_ICONS[link.type]);
+          nameRow.createSpan({ text: basename(link.path).replace(/\.md$/i, "") });
+        },
+        meta: `→ ${tildePath(link.targetPath)}`,
+      }))
+    );
+    const integritySection = this.renderDashboardIntegrity(body, integrityRows);
+    this.renderDashboardDisregarded(
+      integritySection,
+      "integrity",
+      this.getIntegrityRows(true).map(({ item, issues }) => ({
+        key: this.integrityDisregardKey(item, issues),
+        renderName: (nameRow) => {
+          setIcon(nameRow.createSpan({ cls: "skillmanager-dash-row-icon" }), TYPE_ICONS[item.type]);
+          nameRow.createSpan({ text: item.name });
+        },
+        meta: issues.length === 1 ? issues[0] : `${issues.length} issues`,
+      }))
+    );
     return body;
   }
 
@@ -5087,9 +5244,9 @@ export class LibraryView extends ItemView {
     // Claude Code's skills and agents get judged by real invocation history (the only tool this
     // plugin can read one for, see claude-usage.ts) instead of the mtime heuristic everything
     // else uses, with each row tagged "Usage" or "File age" so the mixed methodology is never
-    // ambiguous (see renderDashboardPruneRow). getDashboardPruneSplit is the single source of
+    // ambiguous (see renderDashboardPruneCandidates). getDashboardPruneSplit is the single source of
     // truth for this count so the header stat can't drift from what the section renders.
-    const { usagePrune, mtimePrune } = this.getDashboardPruneSplit(metrics);
+    const { usagePrune, mtimePrune, disregardedPrune } = this.getDashboardPruneSplit(metrics);
     const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
     const pruneCount = usagePrune.length + mtimePrune.length;
     const restoreCount = this.getDashboardRestoreRows().length;
@@ -5107,9 +5264,29 @@ export class LibraryView extends ItemView {
       body.createDiv({ text: "No enabled items yet.", cls: "skillmanager-empty" });
       return body;
     }
-    const columns = body.createDiv({ cls: "skillmanager-dash-columns" });
-    this.renderDashboardPruneCandidates(columns, usagePrune, mtimePrune);
-    this.renderDashboardOverlaps(columns, overlapPairs, metrics.map((m) => m.item));
+    const pruneSection = this.renderDashboardPruneCandidates(body, usagePrune, mtimePrune, metrics);
+    this.renderDashboardDisregarded(
+      pruneSection,
+      "prune",
+      disregardedPrune.map((item) => ({
+        key: item.entryId,
+        renderName: (nameRow) => {
+          this.renderSymlinkIcon(nameRow, item);
+          nameRow.createSpan({ text: item.name });
+        },
+        meta: `${this.toolLabel(item).text} · ${TYPE_LABELS[item.type]}`,
+      }))
+    );
+    const overlapSection = this.renderDashboardOverlaps(body, overlapPairs, metrics.map((m) => m.item));
+    this.renderDashboardDisregarded(
+      overlapSection,
+      "overlaps",
+      this.overlapPairsFor(metrics.map((m) => m.item), true).map((pair) => ({
+        key: this.overlapPairKey(pair.a, pair.b),
+        renderName: (nameRow) => this.renderOverlapPairName(nameRow, pair.a, pair.b),
+        meta: pair.sameName ? "Same name" : `${Math.round(pair.score * 100)}% description overlap`,
+      }))
+    );
     return body;
   }
 
@@ -5206,8 +5383,9 @@ export class LibraryView extends ItemView {
    *  since the ranking alone doesn't make each item's tool obvious. Grows to fill the row when
    *  there's room; falls back to horizontal scroll once there are too many tools to fit. */
   private renderDashboardToolCards(body: HTMLElement, metrics: DashboardMetric[]) {
-    this.renderDashboardSectionHead(body, "Source size by tool", (right) => this.renderDashboardTypeLegend(right));
-    const tileGrid = body.createDiv({ cls: "skillmanager-dash-tiles" });
+    const section = body.createDiv({ cls: "skillmanager-insights-block" });
+    this.renderDashboardSectionHead(section, "Source size by tool", (right) => this.renderDashboardTypeLegend(right));
+    const tileGrid = section.createDiv({ cls: "skillmanager-dash-tiles" });
 
     const byType = (list: DashboardMetric[]) => [...list].sort((a, b) => a.item.type.localeCompare(b.item.type));
     const groups = new Map<string, DashboardMetric[]>();
@@ -5265,7 +5443,7 @@ export class LibraryView extends ItemView {
    *  AND together — e.g. "Claude Code" + "Command"). Last thing on the Context page, so there's
    *  nothing below it worth collapsing for. */
   private renderDashboardRanked(body: HTMLElement, metrics: DashboardMetric[]) {
-    const section = body.createDiv({ cls: "skillmanager-dash-ranked" });
+    const section = body.createDiv({ cls: "skillmanager-insights-block" });
     this.renderDashboardSectionHead(section, "Ranked by cost", (right) => this.renderDashboardTypeFilter(right));
 
     const filtered = metrics.filter(
@@ -5274,16 +5452,37 @@ export class LibraryView extends ItemView {
         (!this.dashboardTypeFilter || m.item.type === this.dashboardTypeFilter)
     );
     const sorted = [...filtered].sort((a, b) => b.charCount - a.charCount);
-    const maxCharCount = Math.max(...metrics.map((m) => m.charCount), 1);
+    // Scaled to the filtered set, so filtering to e.g. Rules doesn't leave every bar a sliver.
+    const maxCharCount = Math.max(...sorted.map((m) => m.charCount), 1);
+    const total = sorted.reduce((sum, m) => sum + m.charCount, 0);
 
-    const list = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
+    if (sorted.length > DASHBOARD_COST_SUMMARY_COUNT && total > 0) {
+      const topSum = sorted.slice(0, DASHBOARD_COST_SUMMARY_COUNT).reduce((sum, m) => sum + m.charCount, 0);
+      section.createDiv({
+        text: `Top ${DASHBOARD_COST_SUMMARY_COUNT} account for ${Math.round((topSum / total) * 100)}% of ${formatTokens(total)} across ${sorted.length} items.`,
+        cls: "skillmanager-subtitle",
+      });
+    }
+
+    const list = section.createDiv({ cls: "skillmanager-dash-ranked-list skillmanager-dash-bar-list" });
     if (sorted.length === 0) {
       list.createDiv({ text: "Nothing matches this filter.", cls: "skillmanager-empty" });
     }
-    for (const metric of sorted) this.renderDashboardRow(list, metric, maxCharCount);
+    const shown = this.dashboardRankedExpanded ? sorted : sorted.slice(0, DASHBOARD_COST_COLLAPSED_COUNT);
+    for (const metric of shown) this.renderDashboardRow(list, metric, maxCharCount, total);
+    if (sorted.length > DASHBOARD_COST_COLLAPSED_COUNT) {
+      const toggleBtn = section.createEl("button", {
+        text: this.dashboardRankedExpanded ? "Show fewer" : `Show all (${sorted.length})`,
+        cls: "skillmanager-dash-toggle",
+      });
+      toggleBtn.addEventListener("click", () => {
+        this.dashboardRankedExpanded = !this.dashboardRankedExpanded;
+        this.render();
+      });
+    }
   }
 
-  private renderDashboardRow(container: HTMLElement, metric: DashboardMetric, maxCharCount: number) {
+  private renderDashboardRow(container: HTMLElement, metric: DashboardMetric, maxCharCount: number, total: number) {
     const { item, charCount } = metric;
     const row = container.createDiv({ cls: "skillmanager-dash-row" });
     row.addEventListener("click", () => this.openItemFromDashboard(item));
@@ -5300,105 +5499,97 @@ export class LibraryView extends ItemView {
     barFill.style.width = `${Math.max(2, (charCount / maxCharCount) * 100)}%`;
     barFill.style.background = DASHBOARD_TYPE_COLORS[item.type];
 
-    row.createDiv({ text: formatTokens(charCount), cls: "skillmanager-dash-row-cost" });
+    const cost = row.createDiv({ cls: "skillmanager-dash-row-cost" });
+    cost.createSpan({ text: formatTokens(charCount) });
+    const pct = total > 0 ? (charCount / total) * 100 : 0;
+    cost.createSpan({ text: pct > 0 && pct < 1 ? "<1%" : `${Math.round(pct)}%`, cls: "skillmanager-dash-row-pct" });
   }
 
-  private renderDashboardBrokenSymlinks(body: HTMLElement, links: BrokenSymlink[]) {
-    const section = body.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-ranked skillmanager-dash-flat-section" });
-    this.renderDashboardSectionHead(section, "Broken symlinks");
+  private renderDashboardBrokenSymlinks(body: HTMLElement, links: BrokenSymlink[]): HTMLElement {
+    const section = body.createDiv({ cls: "skillmanager-insights-block skillmanager-insight-section" });
+    const rows: InsightRow[] = links.map((link) => {
+      const disabledSource = this.disabledSourceForBrokenLink(link);
+      const linkedItem = this.itemForBrokenLink(link, disabledSource);
+      const reveal: InsightAction = { label: this.fileManagerLabel(), run: () => void this.openContainingFolder(link.path) };
+      return {
+        key: `broken:${this.brokenSymlinkDisregardKey(link)}`,
+        renderName: (el) => {
+          setIcon(el.createSpan({ cls: "skillmanager-dash-row-icon" }), TYPE_ICONS[link.type]);
+          el.createSpan({ text: basename(link.path).replace(/\.md$/i, "") });
+        },
+        problem: disabledSource
+          ? "Points to an item you disabled. Enable it and the link works again."
+          : "Points to a file or folder that no longer exists.",
+        tone: disabledSource ? "warn" : "danger",
+        group: disabledSource ? "source disabled" : "source missing",
+        facts: [
+          { label: "Tool", value: this.getSettings().tools.find((tool) => tool.id === link.tool)?.name ?? link.tool },
+          { label: "Type", value: TYPE_LABEL_SINGULAR[link.type] },
+          { label: "Link", value: tildePath(link.path), path: true, tooltip: link.path },
+          { label: "Target", value: tildePath(link.targetPath), path: true, missing: true, tooltip: link.targetPath },
+        ],
+        primary: disabledSource
+          ? { label: "Enable source", run: () => this.confirmToggle(disabledSource, () => this.toggleEnabled(disabledSource)) }
+          : reveal,
+        open: linkedItem ? () => this.openItemFromDashboard(linkedItem) : undefined,
+        extra: disabledSource ? [reveal] : [],
+        disregardKey: this.brokenSymlinkDisregardKey(link),
+      };
+    });
+    this.renderInsightSectionHead(section, "Broken symlinks", rows);
     section.createDiv({
-      text: "These links point to files or folders that are missing or currently disabled. Enable the source when available, or reveal the link to inspect or remove it.",
+      text: "Links a tool can't follow, so the item behind them never loads. Enable the source when it's disabled, or reveal the link to inspect or remove it.",
       cls: "skillmanager-subtitle",
     });
-    const rows = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
-    if (links.length === 0) {
-      rows.createDiv({ text: "No broken symlinks found.", cls: "skillmanager-empty" });
-      return;
-    }
-    const shown = this.dashboardBrokenSymlinksExpanded ? links : links.slice(0, DASHBOARD_RANKED_COLLAPSED_COUNT);
-    for (const link of shown) {
-      const disabledSource = this.disabledSourceForBrokenLink(link);
-      const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-broken-row" });
-      const identity = row.createDiv({ cls: "skillmanager-dash-broken-identity" });
-      identity.createSpan({
-        text: disabledSource ? "Source disabled" : "Source missing",
-        cls: `skillmanager-dash-broken-status${disabledSource ? " is-disabled" : " is-missing"}`,
-      });
-      identity.createDiv({
-        text: `${this.getSettings().tools.find((tool) => tool.id === link.tool)?.name ?? link.tool} · ${TYPE_LABELS[link.type]}`,
-        cls: "skillmanager-dash-row-meta",
-      });
-      const paths = row.createDiv({ cls: "skillmanager-dash-broken-paths" });
-      paths.createDiv({ text: link.path, cls: "skillmanager-dash-path" });
-      paths.createDiv({ text: `→ ${link.targetPath}`, cls: "skillmanager-dash-path-target" });
-      const actions = row.createDiv({ cls: "skillmanager-dash-row-actions" });
-      if (disabledSource) {
-        const enableBtn = actions.createEl("button", { text: "Enable source", cls: "skillmanager-dash-action-btn" });
-        enableBtn.addEventListener("click", (evt) => {
-          evt.stopPropagation();
-          this.confirmToggle(disabledSource, () => this.toggleEnabled(disabledSource));
-        });
-      }
-      const revealBtn = actions.createEl("button", { text: this.fileManagerLabel(), cls: "skillmanager-dash-action-btn" });
-      revealBtn.addEventListener("click", (evt) => {
-        evt.stopPropagation();
-        void this.openContainingFolder(link.path);
-      });
-    }
-    if (links.length > DASHBOARD_RANKED_COLLAPSED_COUNT) {
-      const toggleBtn = section.createEl("button", {
-        text: this.dashboardBrokenSymlinksExpanded ? "Show fewer" : `Show all (${links.length})`,
-        cls: "skillmanager-dash-toggle",
-      });
-      toggleBtn.addEventListener("click", () => {
-        this.dashboardBrokenSymlinksExpanded = !this.dashboardBrokenSymlinksExpanded;
-        this.render();
-      });
-    }
+    this.renderInsightRows(section, rows, "No broken symlinks found.", this.dashboardBrokenSymlinksExpanded, () => {
+      this.dashboardBrokenSymlinksExpanded = !this.dashboardBrokenSymlinksExpanded;
+    });
+    return section;
   }
 
   /** Items whose manifest would make the tool skip them or never pick them up (see
    *  integrity.ts). "Open" lands on the manifest itself, where the same issues are listed and
    *  Edit is one click away; a plugin or built-in item says who to fix it upstream instead. */
-  private renderDashboardIntegrity(body: HTMLElement, rows: { item: ItemMetadata; issues: string[] }[]) {
-    const section = body.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-ranked skillmanager-dash-flat-section" });
-    this.renderDashboardSectionHead(section, "Integrity issues");
+  private renderDashboardIntegrity(body: HTMLElement, list: { item: ItemMetadata; issues: string[] }[]): HTMLElement {
+    const section = body.createDiv({ cls: "skillmanager-insights-block skillmanager-insight-section" });
+    const metricById = new Map(this.getDashboardMetrics().map((m) => [m.item.entryId, m]));
+    const rows: InsightRow[] = list.map(({ item, issues }) => {
+      const managed = this.managedBy(item);
+      return {
+        key: `integrity:${this.integrityDisregardKey(item, issues)}`,
+        renderName: (el) => {
+          setIcon(el.createSpan({ cls: "skillmanager-dash-row-icon" }), TYPE_ICONS[item.type]);
+          el.createSpan({ text: item.name });
+        },
+        problem: issues.length > 1 ? `${issues[0]} (+${issues.length - 1} more)` : issues[0],
+        tone: "warn",
+        group: this.toolLabel(item).text,
+        facts: (() => {
+          const extra = this.insightItemFacts(item, metricById.get(item.entryId));
+          return [
+            { label: "Tool", value: this.toolLabel(item).text },
+            { label: "Type", value: this.itemTypeLabel(item) },
+            { label: "Managed by", value: managed.label },
+            { label: "Status", value: item.enabled ? "Enabled" : "Disabled" },
+            ...(issues.length > 1 ? [{ label: "Issues", value: issues.join("\n"), multiline: true }] : []),
+            extra.description,
+            extra.edited,
+            extra.path,
+          ];
+        })(),
+        primary: { label: "Open", run: () => this.openItemFromDashboard(item, true) },
+        disregardKey: this.integrityDisregardKey(item, issues),
+      };
+    });
+    this.renderInsightSectionHead(section, "Integrity issues", rows, false);
     section.createDiv({
-      text: "These items have problems that can make a tool skip them or never pick them up. Open one to see and fix its file.",
+      text: "Items a tool may skip or never pick up because of a problem in their file. Open one to see and fix it.",
       cls: "skillmanager-subtitle",
     });
-    const list = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
-    if (rows.length === 0) {
-      list.createDiv({ text: "No integrity issues found.", cls: "skillmanager-empty" });
-      return;
-    }
-    const shown = this.dashboardIntegrityExpanded ? rows : rows.slice(0, DASHBOARD_RANKED_COLLAPSED_COUNT);
-    for (const { item, issues } of shown) {
-      const row = list.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-integrity-row" });
-      row.addEventListener("click", () => this.openItemFromDashboard(item, true));
-      const identity = row.createDiv({ cls: "skillmanager-dash-integrity-identity" });
-      identity.createDiv({ text: item.name, cls: "skillmanager-dash-row-name" });
-      const managed = this.managedBy(item);
-      identity.createDiv({
-        text: `${this.toolLabel(item).text} · ${this.itemTypeLabel(item)}${managed.label === "You" ? "" : ` · ${managed.label}`}`,
-        cls: "skillmanager-dash-row-meta",
-      });
-      const issueList = row.createDiv({ cls: "skillmanager-detail-issues" });
-      for (const issue of issues) issueList.createDiv({ text: issue });
-      this.renderDashboardDisregardableActions(row, this.integrityDisregardKey(item, issues), "Open", () =>
-        this.openItemFromDashboard(item, true)
-      );
-    }
-    if (rows.length > DASHBOARD_RANKED_COLLAPSED_COUNT) {
-      const toggleBtn = section.createEl("button", {
-        text: this.dashboardIntegrityExpanded ? "Show fewer" : `Show all (${rows.length})`,
-        cls: "skillmanager-dash-toggle",
-      });
-      toggleBtn.addEventListener("click", () => {
-        this.dashboardIntegrityExpanded = !this.dashboardIntegrityExpanded;
-        this.render();
-      });
-    }
+    this.renderInsightRows(section, rows, "No integrity issues found.", this.dashboardIntegrityExpanded, () => {
+      this.dashboardIntegrityExpanded = !this.dashboardIntegrityExpanded;
+    });
+    return section;
   }
 
   private disabledSourceForBrokenLink(link: BrokenSymlink): ItemMetadata | null {
@@ -5475,44 +5666,158 @@ export class LibraryView extends ItemView {
     this.selectItem(item, openManifest);
   }
 
-  /** Shared "Disregard" + one primary action button pair, used by every dismissible Dashboard
-   *  recommendation row (Prune candidates, usage-based Prune candidates, Possible overlaps).
-   *  Disregard only records the key in dashboardDisregarded; the primary action is whatever that
-   *  section's row actually does (Disable, Compare, …). */
-  private renderDashboardDisregardableActions(row: HTMLElement, disregardKey: string, primaryLabel: string, onPrimary: () => void) {
-    const actions = row.createDiv({ cls: "skillmanager-dash-row-actions" });
-    const disregardBtn = actions.createEl("button", { text: "Disregard", cls: "skillmanager-dash-action-btn" });
-    disregardBtn.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      void this.disregardDashboardRecommendation(disregardKey);
-    });
-    const primaryBtn = actions.createEl("button", { text: primaryLabel, cls: primaryLabel === "Disable" ? "mod-warning" : "skillmanager-dash-action-btn" });
-    primaryBtn.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      onPrimary();
+  /** Description, last edit and location for an item's open panel. The metric is passed when
+   *  the caller has one; otherwise the file is stat'd directly (integrity rows can be disabled
+   *  items, which getDashboardMetrics leaves out). */
+  private insightItemFacts(item: ItemMetadata, metric?: DashboardMetric): { description: InsightFact; edited: InsightFact; path: InsightFact } {
+    let mtimeMs = metric?.mtimeMs ?? 0;
+    if (!metric) {
+      try {
+        mtimeMs = statSync(item.sourcePath).mtimeMs;
+      } catch {
+        mtimeMs = 0;
+      }
+    }
+    return {
+      description: { label: "Description", value: item.description || "None", clamp: true, tooltip: item.description || undefined },
+      edited: { label: "Last edited", value: mtimeMs ? `${formatDate(mtimeMs)} (${dashboardRelativeAge(Date.now() - mtimeMs)} ago)` : "Unknown" },
+      path: { label: "Location", value: tildePath(item.sourcePath), path: true, tooltip: item.sourcePath },
+    };
+  }
+
+  /** Section title with a per-group count summary ("2 source missing · 1 source disabled") on
+   *  the right, where renderDashboardDisregarded later adds its toggle. */
+  private renderInsightSectionHead(section: HTMLElement, title: string, rows: InsightRow[], summarize = true) {
+    this.renderDashboardSectionHead(section, title, (right) => {
+      if (!summarize || rows.length === 0) return;
+      const counts = new Map<string, number>();
+      for (const row of rows) counts.set(row.group, (counts.get(row.group) ?? 0) + 1);
+      right.createSpan({
+        text: [...counts].map(([group, n]) => `${n} ${group}`).join(" · "),
+        cls: "skillmanager-insight-summary",
+      });
     });
   }
 
-  /** Shared by renderDashboardPruneCandidates and renderDashboardOverlaps — both flag
-   *  a list of "still flagged" rows above a "was flagged, disabled from here recently" list, and
-   *  the restore-row shape (name, "Disabled Xd ago," a Restore button) is identical either way. */
-  private renderDashboardRestoreRows(rows: HTMLElement, now: number, restoreRows: { item: ItemMetadata; disabledAt: number }[]) {
-    for (const { item, disabledAt } of restoreRows) {
-      const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
-      const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
-      const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
-      this.renderSymlinkIcon(nameRow, item);
-      nameRow.createSpan({ text: item.name });
-      info.createDiv({
-        text: `Disabled ${dashboardRelativeAge(now - disabledAt)} ago`,
-        cls: "skillmanager-dash-row-meta",
+  /** One bordered box of expandable rows, collapsed to DASHBOARD_RANKED_COLLAPSED_COUNT with a
+   *  Show all toggle when `onToggleAll` is given. Returns the box so callers can append restore
+   *  rows to it. */
+  private renderInsightRows(
+    section: HTMLElement,
+    rows: InsightRow[],
+    emptyText: string,
+    showAll = true,
+    onToggleAll?: () => void,
+    hasTrailingRows = false
+  ): HTMLElement | null {
+    if (rows.length === 0 && !hasTrailingRows) {
+      section.createDiv({ text: emptyText, cls: "skillmanager-empty" });
+      return null;
+    }
+    const box = section.createDiv({ cls: "skillmanager-insight-box" });
+    const shown = onToggleAll && !showAll ? rows.slice(0, DASHBOARD_RANKED_COLLAPSED_COUNT) : rows;
+    for (const row of shown) this.renderInsightRow(box, row);
+    if (onToggleAll && rows.length > DASHBOARD_RANKED_COLLAPSED_COUNT) {
+      const toggleBtn = section.createEl("button", {
+        text: showAll ? "Show fewer" : `Show all (${rows.length})`,
+        cls: "skillmanager-dash-toggle",
       });
-      const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
-      restoreBtn.addEventListener("click", (evt) => {
-        evt.stopPropagation();
-        this.confirmToggle(item, () => this.restoreFromDashboard(item));
+      toggleBtn.addEventListener("click", () => {
+        onToggleAll();
+        this.render();
       });
     }
+    return box;
+  }
+
+  /** Name with the problem under it; figure, severity dot and chevron on the right. Clicking
+   *  opens a tinted panel with the facts and the actions, always in the same order: the fix,
+   *  Open, any extras, Disregard last. */
+  private renderInsightRow(box: HTMLElement, row: InsightRow) {
+    const isOpen = this.dashboardOpenRows.has(row.key);
+    const item = box.createDiv({ cls: `skillmanager-insight-row${isOpen ? " is-open" : ""}` });
+    const line = item.createDiv({ cls: "skillmanager-insight-line" });
+    line.addEventListener("click", () => {
+      if (isOpen) this.dashboardOpenRows.delete(row.key);
+      else this.dashboardOpenRows.add(row.key);
+      this.render();
+    });
+    const info = line.createDiv({ cls: "skillmanager-insight-info" });
+    const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name skillmanager-insight-name" });
+    row.renderName(nameRow);
+    nameRow.createSpan({
+      text: row.group.charAt(0).toUpperCase() + row.group.slice(1),
+      cls: `skillmanager-insight-pill is-${row.tone}`,
+    });
+    info.createDiv({ text: row.problem, cls: "skillmanager-insight-problem" });
+    const control = line.createDiv({ cls: "skillmanager-insight-control" });
+    if (row.figure) control.createSpan({ text: row.figure, cls: "skillmanager-insight-figure" });
+    setIcon(control.createSpan({ cls: "skillmanager-insight-chevron" }), isOpen ? "chevron-down" : "chevron-right");
+    if (!isOpen) return;
+
+    const panel = item.createDiv({ cls: "skillmanager-insight-panel" });
+    if (row.pair) {
+      const pair = panel.createDiv({ cls: "skillmanager-insight-pair" });
+      for (const side of row.pair) {
+        const col = pair.createDiv({ cls: "skillmanager-insight-side" });
+        const name = col.createEl("a", { text: side.name, cls: "skillmanager-insight-side-name" });
+        name.addEventListener("click", (evt) => {
+          evt.preventDefault();
+          this.openItemFromDashboard(side);
+        });
+        col.createDiv({ text: `${this.toolLabel(side).text} · ${TYPE_LABEL_SINGULAR[side.type]}`, cls: "skillmanager-insight-label" });
+        if (this.isSymlinkedItem(side)) {
+          const linked = col.createDiv({ cls: "skillmanager-insight-value is-path skillmanager-insight-side-path" });
+          linked.createSpan({ text: `Symlinked from ${tildePath(side.realPath)}` });
+          setTooltip(linked, side.realPath, { placement: "top" });
+        }
+        col.createDiv({ text: side.description || "No description", cls: "skillmanager-insight-side-desc" });
+        const sideActions = col.createDiv({ cls: "skillmanager-insight-actions" });
+        const disable = sideActions.createEl("button", { text: "Disable", cls: "mod-warning" });
+        disable.addEventListener("click", () => this.confirmToggle(side, () => this.disableFromDashboard(side)));
+        const del = sideActions.createEl("button", { text: "Delete", cls: "skillmanager-insight-text-btn" });
+        del.addEventListener("click", () => this.confirmDelete(side));
+      }
+    }
+    if (row.facts.length > 0) {
+      const facts = panel.createDiv({ cls: "skillmanager-insight-facts" });
+      for (const fact of row.facts) {
+        facts.createDiv({ text: fact.label, cls: "skillmanager-insight-label" });
+        const value = facts.createDiv({
+          cls: `skillmanager-insight-value${fact.path ? " is-path" : ""}${fact.missing ? " is-missing" : ""}${fact.multiline ? " is-multiline" : ""}${fact.clamp ? " is-clamped" : ""}`,
+        });
+        value.createSpan({ text: fact.value });
+        if (fact.tooltip) setTooltip(value, fact.tooltip, { placement: "top" });
+      }
+    }
+    const actions = panel.createDiv({ cls: "skillmanager-insight-actions" });
+    if (row.primary) {
+      const { label, warning, run } = row.primary;
+      const primary = actions.createEl("button", { text: label, cls: warning ? "mod-warning" : "mod-cta" });
+      primary.addEventListener("click", () => run());
+    }
+    const quiet = (action: InsightAction) => {
+      const btn = actions.createEl("button", { text: action.label, cls: "skillmanager-insight-text-btn" });
+      btn.addEventListener("click", () => action.run());
+    };
+    if (row.open) quiet({ label: "Open", run: row.open });
+    for (const action of row.extra ?? []) quiet(action);
+    quiet({ label: "Disregard", run: () => void this.disregardDashboardRecommendation(row.disregardKey) });
+  }
+
+  /** A non-expanding row in the same box: recently disabled items (Restore) and disregarded
+   *  ones (Show again). */
+  private renderInsightStaticRow(
+    box: HTMLElement,
+    row: { renderName: (el: HTMLElement) => void; problem: string; action: InsightAction; dimmed?: boolean }
+  ) {
+    const item = box.createDiv({ cls: `skillmanager-insight-row is-static${row.dimmed ? " is-dimmed" : ""}` });
+    const line = item.createDiv({ cls: "skillmanager-insight-line" });
+    const info = line.createDiv({ cls: "skillmanager-insight-info" });
+    row.renderName(info.createDiv({ cls: "skillmanager-dash-row-name skillmanager-insight-name" }));
+    info.createDiv({ text: row.problem, cls: "skillmanager-insight-problem" });
+    const btn = line.createEl("button", { text: row.action.label, cls: "skillmanager-dash-action-btn" });
+    btn.addEventListener("click", () => row.action.run());
   }
 
   /** For a recently-disabled item, finds the still-enabled item it used to overlap with (that
@@ -5539,9 +5844,9 @@ export class LibraryView extends ItemView {
     return best;
   }
 
-  private renderDashboardOverlaps(columns: HTMLElement, pairs: OverlapPair[], enabledItems: ItemMetadata[]) {
-    const section = columns.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-callout skillmanager-dash-flat-section" });
-    this.renderDashboardSectionHead(section, "Possible overlaps");
+  private renderDashboardOverlaps(body: HTMLElement, pairs: OverlapPair[], enabledItems: ItemMetadata[]): HTMLElement {
+    const section = body.createDiv({ cls: "skillmanager-insights-block skillmanager-insight-section" });
+    const headSlot = section.createDiv();
     section.createDiv({
       text: "Not usage-based: enabled items that share an identical name, or have near-duplicate descriptions, likely fighting over the same trigger conditions.",
       cls: "skillmanager-subtitle",
@@ -5554,7 +5859,7 @@ export class LibraryView extends ItemView {
       new InfoModal(
         this.app,
         "Why this matters",
-        "A tool decides which skill or agent to use by matching your request against each one's name and description. When two enabled items share a name or describe the same job, the tool has no reliable way to tell them apart. It may pick the older or less complete version, switch between them from one session to the next, or load both and spend context twice. Keeping one clear owner per job makes results more predictable. Compare the pair to decide which to keep, or disregard it if they really do different things."
+        "A tool decides which skill or agent to use by matching your request against each one's name and description. When two enabled items share a name or describe the same job, the tool has no reliable way to tell them apart. It may pick the older or less complete version, switch between them from one session to the next, or load both and spend context twice. Keeping one clear owner per job makes results more predictable. Open the pair to compare them and decide which to keep, or disregard it if they really do different things."
       ).open();
     });
 
@@ -5563,45 +5868,37 @@ export class LibraryView extends ItemView {
       .map((r) => ({ ...r, match: this.findDashboardOverlapRestoreMatch(r.item, enabledItems) }))
       .filter((r): r is { item: ItemMetadata; disabledAt: number; match: ItemMetadata } => !!r.match);
 
-    const rows = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
-    if (pairs.length === 0 && restoreRows.length === 0) {
-      rows.createDiv({ text: "No overlapping descriptions found.", cls: "skillmanager-empty" });
-      return;
+    const rows: InsightRow[] = pairs.map((pair) => {
+      const pct = Math.round(pair.score * 100);
+      return {
+        key: `overlap:${this.overlapPairKey(pair.a, pair.b)}`,
+        renderName: (el) => this.renderOverlapPairName(el, pair.a, pair.b),
+        problem: pair.sameName
+          ? "Both are enabled under the same name, so a tool may pick either one."
+          : "Their descriptions nearly match, so both may answer the same requests.",
+        tone: pair.sameName ? "warn" : "muted",
+        group: pair.sameName ? "same name" : "similar",
+        figure: pair.sameName ? undefined : `${pct}%`,
+        facts: [],
+        pair: [pair.a, pair.b],
+        disregardKey: this.overlapPairKey(pair.a, pair.b),
+      };
+    });
+    this.renderInsightSectionHead(headSlot, "Possible overlaps", rows);
+    headSlot.replaceWith(...Array.from(headSlot.childNodes));
+    const box = this.renderInsightRows(section, rows, "No overlapping descriptions found.", this.dashboardOverlapsExpanded, () => {
+      this.dashboardOverlapsExpanded = !this.dashboardOverlapsExpanded;
+    }, restoreRows.length > 0);
+    if (box) {
+      for (const { item, disabledAt, match } of restoreRows) {
+        this.renderInsightStaticRow(box, {
+          renderName: (el) => this.renderOverlapPairName(el, item, match),
+          problem: `"${item.name}" disabled ${dashboardRelativeAge(now - disabledAt)} ago`,
+          action: { label: "Restore", run: () => this.confirmToggle(item, () => this.restoreFromDashboard(item)) },
+        });
+      }
     }
-    for (const pair of pairs) {
-      const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
-      const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
-      const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
-      this.renderOverlapPairName(nameRow, pair.a, pair.b);
-      info.createDiv({
-        text: pair.sameName ? "Same name" : `${Math.round(pair.score * 100)}% description overlap`,
-        cls: "skillmanager-dash-row-meta",
-      });
-      this.renderDashboardDisregardableActions(row, this.overlapPairKey(pair.a, pair.b), "Compare", () => {
-        new ItemOverlapModal(
-          this.app,
-          pair.a,
-          pair.b,
-          pair.score,
-          pair.sameName,
-          (item) => this.confirmToggle(item, () => this.disableFromDashboard(item)),
-          (item) => this.confirmDelete(item),
-          (item) => this.openItemFromDashboard(item)
-        ).open();
-      });
-    }
-    for (const { item, disabledAt, match } of restoreRows) {
-      const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
-      const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
-      const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
-      this.renderOverlapPairName(nameRow, item, match);
-      info.createDiv({
-        text: `"${item.name}" disabled ${dashboardRelativeAge(now - disabledAt)} ago`,
-        cls: "skillmanager-dash-row-meta",
-      });
-      const restoreBtn = row.createEl("button", { text: "Restore", cls: "skillmanager-dash-action-btn" });
-      restoreBtn.addEventListener("click", () => this.confirmToggle(item, () => this.restoreFromDashboard(item)));
-    }
+    return section;
   }
 
   /** Ranked-by-activity sibling to renderDashboardRanked — rendered for tools with usage data.
@@ -5612,14 +5909,14 @@ export class LibraryView extends ItemView {
     loading: boolean,
     toolName: string
   ) {
-    const section = body.createDiv({ cls: "skillmanager-dash-ranked" });
+    const section = body.createDiv({ cls: "skillmanager-insights-block" });
     this.renderDashboardSectionHead(section, "Top Skills & Agents");
     section.createDiv({
       text: `Based on recorded ${toolName} activity, last ${TOP_USED_WINDOW_DAYS} days.`,
       cls: "skillmanager-subtitle",
     });
 
-    const list = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
+    const list = section.createDiv({ cls: "skillmanager-dash-ranked-list skillmanager-dash-bar-list" });
     if (loading) {
       list.createDiv({ text: `Scanning ${toolName} history…`, cls: "skillmanager-empty" });
       return;
@@ -5669,10 +5966,11 @@ export class LibraryView extends ItemView {
   private renderDashboardPruneCandidates(
     body: HTMLElement,
     usageCandidates: { item: ItemMetadata; stats: ClaudeUsageStats }[],
-    mtimeCandidates: DashboardMetric[]
-  ) {
-    const section = body.createDiv({ cls: "skillmanager-dash-section skillmanager-dash-callout skillmanager-dash-flat-section" });
-    this.renderDashboardSectionHead(section, "Prune candidates");
+    mtimeCandidates: DashboardMetric[],
+    metrics: DashboardMetric[]
+  ): HTMLElement {
+    const section = body.createDiv({ cls: "skillmanager-insights-block skillmanager-insight-section" });
+    const headSlot = section.createDiv();
     section.createDiv({
       text: `Claude Code skills and agents flagged by real usage (never invoked, or idle ${USAGE_STALE_DAYS}+ days). Everything else flagged by file edit history, since there's no usage signal for those.`,
       cls: "skillmanager-subtitle",
@@ -5690,37 +5988,79 @@ export class LibraryView extends ItemView {
     });
 
     const now = Date.now();
+    const metricById = new Map(metrics.map((m) => [m.item.entryId, m]));
+    const pruneRow = (item: ItemMetadata, problem: string, group: string, method: string, stats?: ClaudeUsageStats): InsightRow => {
+      const metric = metricById.get(item.entryId);
+      const cost = metric?.charCount;
+      const extra = this.insightItemFacts(item, metric);
+      return {
+        key: `prune:${item.entryId}`,
+        renderName: (el) => {
+          setIcon(el.createSpan({ cls: "skillmanager-dash-row-icon" }), TYPE_ICONS[item.type]);
+          this.renderSymlinkIcon(el, item);
+          el.createSpan({ text: item.name });
+        },
+        problem,
+        tone: "muted",
+        group,
+        figure: cost !== undefined ? formatTokens(cost) : undefined,
+        facts: [
+          { label: "Tool", value: this.toolLabel(item).text },
+          { label: "Type", value: TYPE_LABEL_SINGULAR[item.type] },
+          extra.description,
+          { label: "Flagged by", value: method },
+          ...(stats
+            ? [
+                {
+                  label: "Last invoked",
+                  value: stats.lastUsedMs ? `${formatDate(stats.lastUsedMs)} (${dashboardRelativeAge(now - stats.lastUsedMs)} ago)` : "Never",
+                },
+                { label: `Runs (${TOP_USED_WINDOW_DAYS} days)`, value: String(stats.count) },
+              ]
+            : []),
+          extra.edited,
+          ...(metric?.alwaysAvailableCharCount != null
+            ? [{ label: "Every turn", value: formatTokens(metric.alwaysAvailableCharCount) }]
+            : []),
+          ...(metric?.invocationCharCount != null ? [{ label: "On invoke", value: formatTokens(metric.invocationCharCount) }] : []),
+          extra.path,
+        ],
+        primary: { label: "Disable", warning: true, run: () => this.confirmToggle(item, () => this.disableFromDashboard(item)) },
+        open: () => this.openItemFromDashboard(item),
+        disregardKey: item.entryId,
+      };
+    };
+    const rows: InsightRow[] = [
+      ...usageCandidates.map(({ item, stats }) =>
+        stats.lastUsedMs === 0
+          ? pruneRow(item, "Never invoked, but its description is still offered to the model every turn.", "never invoked", "Usage", stats)
+          : pruneRow(item, `Last invoked ${dashboardRelativeAge(now - stats.lastUsedMs)} ago.`, "idle", "Usage", stats)
+      ),
+      ...mtimeCandidates.map(({ item, mtimeMs }) =>
+        pruneRow(item, `Not edited since ${mtimeMs ? formatDate(mtimeMs) : "an unknown date"}. No usage data for this tool.`, "old files", "File age")
+      ),
+    ];
+    this.renderInsightSectionHead(headSlot, "Prune candidates", rows);
+    headSlot.replaceWith(...Array.from(headSlot.childNodes));
+
     const restoreRows = this.getDashboardRestoreRows();
-
-    const rows = section.createDiv({ cls: "skillmanager-dash-ranked-list" });
-    const totalCount = usageCandidates.length + mtimeCandidates.length + restoreRows.length;
-    if (totalCount === 0) {
-      rows.createDiv({ text: "Nothing flagged. Nice.", cls: "skillmanager-empty" });
-      return;
+    const box = this.renderInsightRows(section, rows, "Nothing flagged. Nice.", this.dashboardPruneExpanded, () => {
+      this.dashboardPruneExpanded = !this.dashboardPruneExpanded;
+    }, restoreRows.length > 0);
+    if (box) {
+      for (const { item, disabledAt } of restoreRows) {
+        this.renderInsightStaticRow(box, {
+          renderName: (el) => {
+            setIcon(el.createSpan({ cls: "skillmanager-dash-row-icon" }), TYPE_ICONS[item.type]);
+            this.renderSymlinkIcon(el, item);
+            el.createSpan({ text: item.name });
+          },
+          problem: `Disabled ${dashboardRelativeAge(now - disabledAt)} ago`,
+          action: { label: "Restore", run: () => this.confirmToggle(item, () => this.restoreFromDashboard(item)) },
+        });
+      }
     }
-    for (const { item, stats } of usageCandidates) {
-      const metaText = stats.lastUsedMs === 0 ? "Never invoked" : `Not invoked in ${dashboardRelativeAge(now - stats.lastUsedMs)}`;
-      this.renderDashboardPruneRow(rows, item, metaText, "Usage");
-    }
-    for (const { item, charCount, mtimeMs } of mtimeCandidates) {
-      const metaText = `${formatTokens(charCount)} · last touched ${mtimeMs ? formatDate(mtimeMs) : "unknown"}`;
-      this.renderDashboardPruneRow(rows, item, metaText, "File age");
-    }
-    this.renderDashboardRestoreRows(rows, now, restoreRows);
-  }
-
-  private renderDashboardPruneRow(rows: HTMLElement, item: ItemMetadata, metaText: string, methodLabel: string) {
-    const row = rows.createDiv({ cls: "skillmanager-dash-row skillmanager-dash-flag-row skillmanager-dash-static-row" });
-    const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
-    const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
-    this.renderSymlinkIcon(nameRow, item);
-    nameRow.createSpan({ text: item.name });
-    const metaRow = info.createDiv({ cls: "skillmanager-dash-row-meta" });
-    metaRow.createSpan({ text: metaText });
-    metaRow.createSpan({ text: methodLabel, cls: "skillmanager-card-type skillmanager-dash-method-tag" });
-    this.renderDashboardDisregardableActions(row, item.entryId, "Disable", () =>
-      this.confirmToggle(item, () => this.disableFromDashboard(item))
-    );
+    return section;
   }
 
   // ---------- selection: one detail rail, breadcrumbed between the file list and a file ----------
