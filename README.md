@@ -68,12 +68,16 @@ Installed bundles are browsable from **Library → Plugin bundles**, with search
 **Insights**
 A collapsible sidebar section with four pages, each answering one question:
 
-- **Context**: what's taking up context? Separates representative source-file size from estimated context exposure, by tool and ranked per item. For skills and agents, metadata available before invocation is shown separately from instruction tokens loaded on invocation; commands and rules are marked tool-dependent until their per-tool loading policies are modeled.
+- **Context**: what's taking up context? Separates representative source-file size from estimated context exposure, by tool and ranked per item. For skills and agents, metadata available before invocation is shown separately from instruction tokens loaded on invocation; commands and rules are marked tool-dependent until their per-tool loading policies are modeled. The ranked list shows each item's share of the total, sums up how much the top five account for, and rescales when you filter by tool or type.
 - **Usage**: what do you actually use? Reads Claude Code and Codex session history (`~/.claude/projects` and `~/.codex/sessions`) for a weekly activity chart and a ranked list of your most-used skills and agents.
-- **Health**: what's broken? Broken symlinks and integrity issues, with a one-click jump to the file that needs fixing. Its sidebar badge counts open problems.
-- **Cleanup**: what could go? Prune candidates (Claude Code skills and agents that never fired or have gone stale, and a file-age heuristic everywhere else) and possible overlaps (enabled items sharing an exact name or near-duplicate descriptions), with a side-by-side compare before you disable one and a restore window afterwards.
+- **Health**: what's broken? Broken symlinks and integrity issues. Its sidebar badge counts open problems.
+- **Cleanup**: what could go? Prune candidates (Claude Code skills and agents that never fired or have gone stale, and a file-age heuristic everywhere else) and possible overlaps (enabled items sharing an exact name or near-duplicate descriptions), with a restore window after you disable something.
 
-Any prune, overlap, or integrity suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself.
+![Insights Context page showing source size by tool and items ranked by cost](images/insights-context.png)
+
+On Health and Cleanup, each problem is one row: the item's name, a colored status pill, and a one-line explanation of what's wrong. Expand a row for the details (tool, type, description, location, last edit, and for prune candidates the last invocation and context cost) and the actions that fix it, always in the same order: the fix, Open, then Disregard. Broken symlinks can enable a disabled source or reveal the link in your file manager. An expanded overlap shows both items side by side with their full descriptions, so you can disable, open, or delete either one in place.
+
+Any suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself. "Show disregarded" on each section lists what you've dismissed and brings any of it back.
 
 **MCP servers, read-only**
 A dedicated page lists every MCP server configured across your tools, global and per-project, read straight from each tool's own config file (`~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, `.vscode/mcp.json`, and more). It's visibility only, nothing here can enable, disable, or edit a server, but you can jump straight to its config file to do that by hand.
