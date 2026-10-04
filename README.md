@@ -1,6 +1,19 @@
-# AI Skills Manager
+<h1 align="center">AI Skills Manager</h1>
 
-Browse, tag, and organize AI skills, agents, commands, rules, and agent memories from inside Obsidian, across every coding tool you use: Claude Code, Cursor, Codex, Gemini CLI, and more.
+<p align="center">
+  Browse, tag, and organize AI skills, agents, commands, rules, and agent memories from inside Obsidian, across every coding tool you use: Claude Code, Cursor, Codex, Gemini CLI, and more.
+</p>
+
+<p align="center">
+  <a href="https://github.com/NoteNerdOfficial/ai-skills-manager/stargazers"><img src="https://img.shields.io/github/stars/NoteNerdOfficial/ai-skills-manager?style=flat-square&logo=github" alt="stars"></a>
+  <a href="https://github.com/NoteNerdOfficial/ai-skills-manager/graphs/contributors"><img src="https://img.shields.io/github/contributors/NoteNerdOfficial/ai-skills-manager?style=flat-square" alt="contributors"></a>
+  <a href="https://github.com/NoteNerdOfficial/ai-skills-manager/commits/main"><img src="https://img.shields.io/github/last-commit/NoteNerdOfficial/ai-skills-manager?style=flat-square" alt="last commit"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/NoteNerdOfficial/ai-skills-manager/releases/latest"><img src="https://img.shields.io/github/v/release/NoteNerdOfficial/ai-skills-manager?style=flat-square&label=release" alt="release"></a>
+  <a href="https://obsidian.md/plugins?id=ai-skills-manager"><img src="https://img.shields.io/badge/dynamic/json?style=flat-square&logo=obsidian&color=7C3AED&label=downloads&query=%24%5B%22ai-skills-manager%22%5D.downloads&url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsidianmd%2Fobsidian-releases%2Fmaster%2Fcommunity-plugin-stats.json" alt="Obsidian downloads"></a>
+</p>
 
 If you've written a good skill for one tool and then can't find it again, or you keep hand-copying the same prompt into every project and every agent, this plugin turns your scattered `~/.claude/skills`, `~/.cursor/rules`, `.github/prompts`, and similar folders into one searchable, taggable library, without moving your files out of the places those tools actually read from.
 
@@ -14,6 +27,17 @@ If you've written a good skill for one tool and then can't find it again, or you
 - **Updating an installed skill is a leap of faith.** Pull from GitHub again and you overwrite your local copy blind, with no idea what actually changed.
 
 AI Skills Manager works directly on the real folders each tool reads. It doesn't import your skills into a separate managed copy: enabling, disabling, tagging, and organizing all act on the files in place.
+
+## Contents
+
+- [Features](#features)
+- [Supported tools](#supported-tools)
+- [Installation](#installation)
+- [Getting started](#getting-started)
+- [Settings](#settings)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Features
 
