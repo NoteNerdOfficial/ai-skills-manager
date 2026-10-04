@@ -5940,7 +5940,11 @@ var LibraryView = class extends import_obsidian14.ItemView {
         if (this.wasDiscoverDocked) {
           grid.scrollTop = this.dockedDiscoverScrollTop;
         } else {
-          (_a = grid.querySelector(".skillmanager-card.is-selected")) == null ? void 0 : _a.scrollIntoView({ block: "start" });
+          const selected = grid.querySelector(".skillmanager-card.is-selected");
+          selected == null ? void 0 : selected.scrollIntoView({ block: "start" });
+          const groupHeader = (_a = selected == null ? void 0 : selected.closest(".skillmanager-discover-source-group")) == null ? void 0 : _a.querySelector(".skillmanager-discover-source-group-header");
+          if (groupHeader)
+            grid.scrollTop -= groupHeader.offsetHeight + parseFloat(getComputedStyle(groupHeader).marginBottom || "0");
         }
       }
     };

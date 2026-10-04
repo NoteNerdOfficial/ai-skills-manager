@@ -2326,7 +2326,15 @@ export class LibraryView extends ItemView {
           // scrollIntoView on every render caused a visible jump.
           grid.scrollTop = this.dockedDiscoverScrollTop;
         } else {
-          grid.querySelector(".skillmanager-card.is-selected")?.scrollIntoView({ block: "start" });
+          const selected = grid.querySelector<HTMLElement>(".skillmanager-card.is-selected");
+          selected?.scrollIntoView({ block: "start" });
+          // Grouped sort: the section's sticky header covers the top of the scroll area, so
+          // "start" would tuck the card underneath it. Back off by the header's height plus its
+          // bottom margin so the card settles just below the header.
+          const groupHeader = selected
+            ?.closest(".skillmanager-discover-source-group")
+            ?.querySelector<HTMLElement>(".skillmanager-discover-source-group-header");
+          if (groupHeader) grid.scrollTop -= groupHeader.offsetHeight + parseFloat(getComputedStyle(groupHeader).marginBottom || "0");
         }
       }
     };
