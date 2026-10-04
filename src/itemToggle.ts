@@ -68,7 +68,7 @@ function moveEntry(fromPath: string, toPath: string, isDirectory: boolean): void
  *  leaving the plugin's own install directory in a dirty, inconsistent state. */
 export function toggleItemEnabled(item: ItemMetadata): void {
   if (item.pluginId !== null) {
-    throw new Error(`"${item.name}" is part of an installed plugin — disable the whole plugin from the sidebar instead.`);
+    throw new Error(`"${item.name}" is part of an installed plugin. Disable the whole plugin from the sidebar instead.`);
   }
   const { willDisable, fromPath, toPath } = previewToggle(item);
   if (existsSync(toPath)) {
@@ -198,7 +198,7 @@ export type TrashFn = (path: string) => Promise<void>;
  *  has its own supported way to do that — this app has no business doing it via rm (or trash). */
 export async function deleteItem(item: ItemMetadata, trash: TrashFn): Promise<void> {
   if (item.pluginId !== null) {
-    throw new Error(`"${item.name}" is part of an installed plugin — remove the whole plugin from where it was installed instead.`);
+    throw new Error(`"${item.name}" is part of an installed plugin. Remove the whole plugin from where it was installed instead.`);
   }
   const unit = linkableUnit(item.sourcePath);
   if (lstatSync(unit.path).isSymbolicLink()) {

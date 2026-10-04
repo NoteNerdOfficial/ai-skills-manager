@@ -15,7 +15,7 @@ export class InfoModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: this.title });
+    this.setTitle(this.title);
     contentEl.createEl("p", { text: this.message, cls: "skillmanager-modal-meta" });
 
     const actions = contentEl.createDiv({ cls: "skillmanager-modal-actions" });

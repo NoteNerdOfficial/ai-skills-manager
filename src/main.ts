@@ -9,7 +9,7 @@ import {
   SkillManagerPluginSettings,
 } from "./types";
 import { SkillManagerSettingTab } from "./settings";
-import { LIBRARY_VIEW_TYPE, LibraryView } from "./views/LibraryView";
+import { INSIGHTS_PAGES, LIBRARY_VIEW_TYPE, LibraryView } from "./views/LibraryView";
 import { performRescan, RescanResult } from "./rescan";
 import { ShadowNoteStore } from "./store";
 import { remoteHeadCommit } from "./git";
@@ -65,6 +65,20 @@ export default class SkillManagerPlugin extends Plugin {
       name: "Open library",
       callback: () => this.activateLibrary(),
     });
+
+    this.addCommand({
+      id: "rescan-tools",
+      name: "Rescan tools",
+      callback: async () => (await this.activateLibrary())?.runManualRescan(),
+    });
+
+    for (const { page, label } of INSIGHTS_PAGES) {
+      this.addCommand({
+        id: `open-insights-${page}`,
+        name: `Open insights: ${label}`,
+        callback: async () => (await this.activateLibrary())?.showInsightsPage(page),
+      });
+    }
 
     this.addSettingTab(new SkillManagerSettingTab(this.app, this));
     this.applyAutoRescanInterval();
@@ -223,15 +237,14 @@ export default class SkillManagerPlugin extends Plugin {
     this.store?.setFolder(this.settings.storageFolder);
   }
 
-  async activateLibrary() {
+  async activateLibrary(): Promise<LibraryView | null> {
     const { workspace } = this.app;
-    const existing = workspace.getLeavesOfType(LIBRARY_VIEW_TYPE)[0];
-    if (existing) {
-      await workspace.revealLeaf(existing);
-      return;
+    let leaf = workspace.getLeavesOfType(LIBRARY_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = workspace.getLeaf("tab");
+      await leaf.setViewState({ type: LIBRARY_VIEW_TYPE, active: true });
     }
-    const leaf = workspace.getLeaf("tab");
-    await leaf.setViewState({ type: LIBRARY_VIEW_TYPE, active: true });
     await workspace.revealLeaf(leaf);
+    return leaf.view instanceof LibraryView ? leaf.view : null;
   }
 }

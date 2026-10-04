@@ -18,7 +18,7 @@ export class ProjectEditModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: this.existing ? "Edit workspace" : "New workspace" });
+    this.setTitle(this.existing ? "Edit workspace" : "New workspace");
     contentEl.createEl("p", {
       text: "A project folder to scan for project-local skills (e.g. <project>/.claude/skills), in addition to the current vault, which is always included automatically.",
       cls: "setting-item-description",

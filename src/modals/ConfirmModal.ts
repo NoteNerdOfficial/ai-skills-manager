@@ -8,7 +8,9 @@ export class ConfirmModal extends Modal {
     private title: string,
     private message: string,
     private confirmLabel: string,
-    private onConfirm: () => void | Promise<void>
+    private onConfirm: () => void | Promise<void>,
+    /** "cta" for a constructive confirm (e.g. Enable), so red stays reserved for real risk. */
+    private variant: "warning" | "cta" = "warning"
   ) {
     super(app);
   }
@@ -16,13 +18,13 @@ export class ConfirmModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: this.title });
+    this.setTitle(this.title);
     contentEl.createEl("p", { text: this.message, cls: "skillmanager-modal-meta" });
 
     const actions = contentEl.createDiv({ cls: "skillmanager-modal-actions" });
     actions.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
     actions
-      .createEl("button", { text: this.confirmLabel, cls: "mod-warning" })
+      .createEl("button", { text: this.confirmLabel, cls: this.variant === "cta" ? "mod-cta" : "mod-warning" })
       .addEventListener("click", () => {
         void (async () => {
           await this.onConfirm();

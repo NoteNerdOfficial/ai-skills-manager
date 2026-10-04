@@ -21,7 +21,7 @@ export class CollectionEditModal extends Modal {
     const { contentEl } = this;
     this.rows = [];
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: this.existing ? "Edit collection" : "New collection" });
+    this.setTitle(this.existing ? "Edit collection" : "New collection");
 
     new Setting(contentEl).setName("Name").addText((text) =>
       text.setValue(this.name).onChange((value) => {

@@ -26,6 +26,22 @@
   overflow: hidden;
 }
 
+/* ---------- keyboard focus ---------- */
+
+/* One ring for everything keyboard-reachable in the view: buttons, switches, and the rows and
+   cards made activatable in a11y.ts. Mouse clicks never show it (focus-visible only). */
+.skillmanager-view :is(button, [role="button"], [role="switch"], input, select):focus-visible,
+.skillmanager-modal :is(button, [role="button"], [role="switch"]):focus-visible {
+  outline: 2px solid var(--interactive-accent) !important;
+  outline-offset: 1px;
+  box-shadow: none !important;
+}
+
+.skillmanager-view .skillmanager-icon-btn:focus-visible,
+.skillmanager-view .skillmanager-crumb:focus-visible {
+  color: var(--text-normal);
+}
+
 /* ---------- sidebar ---------- */
 
 .skillmanager-brand {
@@ -58,13 +74,13 @@
 .skillmanager-icon-btn.skillmanager-install-btn {
   width: 24px;
   height: 24px;
-  border-radius: 6px;
+  border-radius: var(--radius-m);
   background: var(--interactive-accent) !important;
   color: var(--text-on-accent);
 }
 
 .skillmanager-icon-btn.skillmanager-install-btn:hover,
-.skillmanager-icon-btn.skillmanager-install-btn:focus {
+.skillmanager-icon-btn.skillmanager-install-btn:focus-visible {
   background: var(--interactive-accent-hover) !important;
   color: var(--text-on-accent);
 }
@@ -76,7 +92,7 @@
 .skillmanager-discover-rail-install-btn {
   height: 30px;
   padding: 0 14px;
-  border-radius: 6px;
+  border-radius: var(--radius-m);
   font-size: var(--font-ui-small);
 }
 
@@ -111,7 +127,7 @@
 .skillmanager-sidebar-heading-collapsible.is-drop-target {
   outline: 2px dashed var(--interactive-accent);
   outline-offset: -2px;
-  border-radius: 4px;
+  border-radius: var(--radius-s);
 }
 
 .skillmanager-chevron {
@@ -146,7 +162,7 @@
   align-items: center;
   gap: 8px;
   padding: 7px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-m);
   cursor: pointer;
   color: var(--text-muted);
   font-size: var(--font-ui-small);
@@ -173,6 +189,19 @@
 }
 
 .skillmanager-nav-item-accent .skillmanager-nav-icon {
+  color: var(--interactive-accent);
+}
+
+.skillmanager-nav-item-accent:hover {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.skillmanager-nav-item-accent:hover .skillmanager-nav-icon {
+  color: var(--text-on-accent);
+}
+
+.skillmanager-nav-icon {
   color: var(--interactive-accent);
 }
 
@@ -214,7 +243,7 @@
  * counts, just colored red so it reads as "needs a look" without standing out structurally. */
 .skillmanager-nav-count-danger {
   font-size: var(--font-ui-smaller);
-  color: #e0654f;
+  color: var(--text-error);
 }
 
 /* Replaces the old numeric attention badge on the Dashboard row — a simple "needs a look"
@@ -225,7 +254,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #e0654f;
+  background: var(--text-error);
 }
 
 .skillmanager-nav-actions {
@@ -289,7 +318,7 @@
   margin-top: 14px;
   padding: 14px 16px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 10px;
+  border-radius: var(--radius-l);
   background: var(--background-primary);
   width: 100%;
   box-sizing: border-box;
@@ -321,7 +350,7 @@
 
 .skillmanager-workspace-banner-add {
   padding: 5px 12px;
-  font-size: 12.5px;
+  font-size: var(--font-ui-small);
 }
 
 .skillmanager-workspace-banner-close {
@@ -368,7 +397,7 @@
   border-radius: 999px;
   background: var(--background-modifier-hover);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: calc(var(--font-ui-smaller) - 1px);
   text-transform: none;
   letter-spacing: normal;
   font-weight: 600;
@@ -445,7 +474,7 @@ input.skillmanager-search {
   padding-left: 32px;
   padding-right: 28px;
   background: var(--code-background, var(--background-secondary));
-  border-radius: 4px;
+  border-radius: var(--radius-s);
 }
 
 .skillmanager-search-clear {
@@ -460,7 +489,7 @@ input.skillmanager-search {
   align-items: center;
   gap: 2px;
   padding: 3px;
-  border-radius: 10px;
+  border-radius: var(--radius-l);
   background: var(--background-modifier-hover);
 }
 
@@ -472,7 +501,7 @@ input.skillmanager-search {
   padding: 0 14px;
   border: none;
   box-shadow: none;
-  border-radius: 7px;
+  border-radius: var(--radius-m);
   background: transparent;
   color: var(--text-muted);
   font-size: var(--font-ui-small);
@@ -511,7 +540,6 @@ input.skillmanager-search {
 }
 
 .skillmanager-icon-btn:hover,
-.skillmanager-icon-btn:focus,
 .skillmanager-icon-btn:active {
   color: var(--text-normal);
   background: transparent !important;
@@ -586,7 +614,7 @@ input.skillmanager-search {
   padding: 3px 10px;
   border: none;
   box-shadow: none;
-  border-radius: 7px;
+  border-radius: var(--radius-m);
   background: var(--background-primary);
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
@@ -627,7 +655,7 @@ input.skillmanager-search {
   display: flex;
   align-items: stretch;
   flex-shrink: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-m);
   overflow: hidden;
 }
 
@@ -883,7 +911,7 @@ input.skillmanager-search {
   cursor: pointer;
   padding: 4px;
   margin: -4px;
-  border-radius: 4px;
+  border-radius: var(--radius-s);
 }
 
 .skillmanager-discover-source-group-header .skillmanager-chevron:hover {
@@ -1023,7 +1051,7 @@ input.skillmanager-search {
   width: 100%;
   padding: 14px 16px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 12px;
+  border-radius: var(--radius-l);
   background: var(--background-primary);
   box-shadow: none;
   cursor: pointer;
@@ -1088,7 +1116,7 @@ input.skillmanager-search {
   min-width: 0;
   padding: 14px 16px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 12px;
+  border-radius: var(--radius-l);
   background: var(--background-primary);
   cursor: pointer;
   transition: border-color 120ms ease, box-shadow 120ms ease;
@@ -1199,6 +1227,12 @@ input.skillmanager-search {
   animation: skillmanager-spin 0.8s linear infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .is-syncing .svg-icon {
+    animation-duration: 2.4s;
+  }
+}
+
 @keyframes skillmanager-spin {
   from {
     transform: rotate(0deg);
@@ -1209,7 +1243,7 @@ input.skillmanager-search {
 }
 
 .skillmanager-icon-btn.skillmanager-card-link-btn:hover,
-.skillmanager-icon-btn.skillmanager-card-link-btn:focus {
+.skillmanager-icon-btn.skillmanager-card-link-btn:focus-visible {
   color: var(--color-red);
 }
 
@@ -1244,7 +1278,7 @@ input.skillmanager-search {
 .skillmanager-card-tags .skillmanager-chip {
   cursor: default;
   padding: 1px 7px;
-  font-size: 10.5px;
+  font-size: calc(var(--font-ui-smaller) - 1px);
   line-height: 1.5;
 }
 
@@ -1303,7 +1337,7 @@ input.skillmanager-search {
    its own UI element. */
 .skillmanager-card-type-sm {
   padding: 0 6px;
-  font-size: 10px;
+  font-size: calc(var(--font-ui-smaller) - 1px);
   line-height: 1.6;
 }
 
@@ -1383,7 +1417,7 @@ input.skillmanager-search {
 .skillmanager-card-discover-repo img {
   width: 16px;
   height: 16px;
-  border-radius: 4px;
+  border-radius: var(--radius-s);
   flex-shrink: 0;
 }
 
@@ -1433,53 +1467,30 @@ input.skillmanager-search {
 
 /* ---------- toggle switch ---------- */
 
-.skillmanager-toggle {
-  position: relative;
+/* Obsidian's own .checkbox-container draws the track and thumb, so the switch follows the
+   theme's accent and toggle variables. Only the small sidebar variant resizes it. */
+.skillmanager-switch {
   flex-shrink: 0;
-  width: 38px;
-  height: 21px;
-  padding: 0;
-  border: none;
-  border-radius: 999px;
-  background: var(--background-modifier-border);
-  box-shadow: none;
   cursor: pointer;
-  transition: background 120ms ease;
 }
 
-.skillmanager-toggle::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 17px;
-  height: 17px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  transition: transform 120ms ease;
+.skillmanager-switch-sm {
+  --toggle-width: 28px;
+  --toggle-thumb-width: 12px;
+  --toggle-thumb-height: 12px;
 }
 
-.skillmanager-toggle.is-on {
-  background: var(--color-green);
+/* In the grid every card carries a switch, and most are on. Resting switches recede so names
+   lead; the card's hover, focus or selection brings its switch back to full strength. */
+.skillmanager-card .skillmanager-switch.is-enabled {
+  opacity: 0.55;
+  transition: opacity 120ms ease;
 }
 
-.skillmanager-toggle.is-on::after {
-  transform: translateX(17px);
-}
-
-.skillmanager-toggle-sm {
-  width: 28px;
-  height: 16px;
-}
-
-.skillmanager-toggle-sm::after {
-  width: 12px;
-  height: 12px;
-}
-
-.skillmanager-toggle-sm.is-on::after {
-  transform: translateX(12px);
+.skillmanager-card:hover .skillmanager-switch,
+.skillmanager-card:focus-within .skillmanager-switch,
+.skillmanager-card.is-selected .skillmanager-switch {
+  opacity: 1;
 }
 
 /* ---------- detail panel (inline, docked beside the grid) ---------- */
@@ -1519,7 +1530,6 @@ input.skillmanager-search {
 }
 
 .skillmanager-crumb:hover,
-.skillmanager-crumb:focus,
 .skillmanager-crumb:active {
   color: var(--text-normal);
   text-decoration: underline;
@@ -1619,7 +1629,6 @@ input.skillmanager-search {
   color: var(--text-normal);
   font-size: var(--font-ui-small);
   line-height: 1.5;
-  max-width: 68ch;
   margin: 14px 0 0;
 }
 
@@ -1646,7 +1655,7 @@ input.skillmanager-search {
   column-gap: 8px;
   row-gap: 2px;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-m);
   background: var(--code-background, var(--background-secondary));
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
@@ -1799,7 +1808,7 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-heatmap-cell {
   aspect-ratio: 1;
-  border-radius: 2px;
+  border-radius: var(--radius-s);
   background: var(--background-modifier-border);
 }
 
@@ -1845,7 +1854,7 @@ input.skillmanager-tag-add-input {
 .skillmanager-detail-usage-bar {
   flex: 1;
   max-width: 10px;
-  border-radius: 2px;
+  border-radius: var(--radius-s);
   background: var(--background-modifier-border);
 }
 
@@ -1972,7 +1981,7 @@ input.skillmanager-tag-add-input {
 .skillmanager-detail-source-avatar {
   width: 14px;
   height: 14px;
-  border-radius: 3px;
+  border-radius: var(--radius-s);
   flex-shrink: 0;
 }
 
@@ -2052,7 +2061,7 @@ input.skillmanager-tag-add-input {
   margin-top: 14px;
   padding: 10px 12px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
+  border-radius: var(--radius-m);
   background: var(--background-secondary);
 }
 
@@ -2122,7 +2131,7 @@ input.skillmanager-tag-add-input {
   gap: 6px;
   min-width: 0;
   padding: 5px 8px 5px calc(8px + var(--skillmanager-tree-depth, 0) * 16px);
-  border-radius: 6px;
+  border-radius: var(--radius-m);
   cursor: pointer;
   font-size: var(--font-ui-small);
   color: var(--text-muted);
@@ -2349,7 +2358,7 @@ input.skillmanager-tag-add-input {
   position: absolute;
   left: 0;
   right: 0;
-  border-radius: 2px;
+  border-radius: var(--radius-s);
   background-color: var(--background-modifier-border);
 }
 
@@ -2392,13 +2401,13 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-diff-add {
   background-color: rgba(var(--color-green-rgb), 0.35);
-  border-radius: 2px;
+  border-radius: var(--radius-s);
 }
 
 .skillmanager-diff-remove {
   background-color: rgba(var(--color-red-rgb), 0.45);
   text-decoration: line-through;
-  border-radius: 2px;
+  border-radius: var(--radius-s);
 }
 
 .skillmanager-diff-stat-add {
@@ -2431,7 +2440,7 @@ input.skillmanager-tag-add-input {
   flex: 0 0 auto;
   font-size: var(--font-ui-smaller);
   padding: 1px 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-s);
 }
 
 .skillmanager-diff-companion-badge.is-added {
@@ -2558,7 +2567,7 @@ input.skillmanager-tag-add-input {
   box-shadow: none !important;
   background: transparent !important;
   color: var(--text-muted);
-  border-radius: 6px;
+  border-radius: var(--radius-m);
   padding: 2px 10px;
   font-size: var(--font-ui-smaller);
   cursor: pointer;
@@ -2622,7 +2631,7 @@ input.skillmanager-tag-add-input {
   align-items: center;
   gap: 12px;
   padding: 7px 4px;
-  border-radius: 6px;
+  border-radius: var(--radius-m);
   cursor: pointer;
 }
 
@@ -2666,14 +2675,14 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-bar-track {
   flex: 1;
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-s);
   background: var(--background-modifier-border);
   overflow: hidden;
 }
 
 .skillmanager-dash-bar-fill {
   height: 100%;
-  border-radius: 3px;
+  border-radius: var(--radius-s);
   background: var(--interactive-accent);
 }
 
@@ -2746,7 +2755,7 @@ input.skillmanager-tag-add-input {
 }
 
 .skillmanager-dash-stat-danger {
-  color: #e0654f;
+  color: var(--text-error);
 }
 
 .skillmanager-dash-stat-accent {
@@ -2774,7 +2783,7 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-dash-type-pill {
   padding: 3px 9px;
-  border-radius: 12px;
+  border-radius: var(--radius-l);
   font-size: var(--font-ui-smaller);
   color: var(--text-muted);
   cursor: pointer;
@@ -2803,7 +2812,7 @@ input.skillmanager-tag-add-input {
   display: inline-block;
   width: 9px;
   height: 9px;
-  border-radius: 2px;
+  border-radius: var(--radius-s);
 }
 
 .skillmanager-dash-tiles {
@@ -2824,7 +2833,7 @@ input.skillmanager-tag-add-input {
   flex: 1 1 160px;
   flex-shrink: 0;
   padding: 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-m);
   border: 1px solid var(--background-modifier-border);
   cursor: pointer;
 }
@@ -2877,7 +2886,7 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-tile-bar {
   position: relative;
   height: 8px;
-  border-radius: 3px;
+  border-radius: var(--radius-s);
   background: var(--background-modifier-border);
   overflow: hidden;
 }
@@ -2898,7 +2907,7 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-dash-ranked-list .skillmanager-dash-row {
   border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
+  border-radius: var(--radius-m);
   padding: 10px 12px;
 }
 
@@ -2921,12 +2930,12 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-dash-bar-list .skillmanager-dash-bar-track {
   height: 10px;
-  border-radius: 2px;
+  border-radius: var(--radius-s);
   background: transparent;
 }
 
 .skillmanager-dash-bar-list .skillmanager-dash-bar-fill {
-  border-radius: 2px;
+  border-radius: var(--radius-s);
 }
 
 .skillmanager-dash-bar-list .skillmanager-dash-row-cost {
@@ -2956,7 +2965,7 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-insight-box {
   border: 1px solid var(--background-modifier-border);
-  border-radius: 10px;
+  border-radius: var(--radius-l);
   background: var(--background-primary);
   overflow: hidden;
 }
@@ -3015,7 +3024,7 @@ input.skillmanager-tag-add-input {
   margin-left: 4px;
   padding: 1px 8px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: calc(var(--font-ui-smaller) - 1px);
   font-weight: 500;
   line-height: 1.5;
   color: var(--text-muted);
@@ -3234,7 +3243,7 @@ input.skillmanager-tag-add-input {
   font-size: var(--font-ui-smaller);
   font-weight: 500;
   padding: 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-m);
   text-align: center;
 }
 
@@ -3250,7 +3259,7 @@ input.skillmanager-tag-add-input {
   align-items: center;
   gap: 2px;
   padding: 2px;
-  border-radius: 7px;
+  border-radius: var(--radius-m);
   background: var(--background-primary);
 }
 
@@ -3260,7 +3269,7 @@ input.skillmanager-tag-add-input {
   padding: 3px 6px;
   border: none;
   box-shadow: none;
-  border-radius: 5px;
+  border-radius: var(--radius-s);
   background: transparent;
   color: var(--text-faint);
   cursor: pointer;
@@ -3295,7 +3304,7 @@ input.skillmanager-tag-add-input {
   gap: 12px;
   padding: 10px 12px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
+  border-radius: var(--radius-m);
   cursor: pointer;
   font-size: var(--font-ui-small);
 }
@@ -3469,5 +3478,5 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-insights-activity .skillmanager-detail-usage-bar {
   max-width: none;
-  border-radius: 3px;
+  border-radius: var(--radius-s);
 }

@@ -18,7 +18,7 @@ export class ProjectPresenceModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: "Workspaces" });
+    this.setTitle("Workspaces");
     contentEl.createEl("p", {
       text: `Check a project to symlink "${this.itemName}" into its local skills folder. The original is never copied, so it can't drift out of sync. Uncheck it to remove just that symlink; nothing is deleted.`,
       cls: "setting-item-description",

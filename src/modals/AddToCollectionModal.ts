@@ -17,7 +17,7 @@ export class AddToCollectionModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: "Add to collection" });
+    this.setTitle("Add to collection");
 
     if (this.settings.collections.length === 0) {
       contentEl.createEl("p", { text: "No collections yet.", cls: "setting-item-description" });

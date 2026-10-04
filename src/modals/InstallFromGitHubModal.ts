@@ -119,7 +119,7 @@ export class InstallFromGitHubModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: "Install from GitHub" });
+    this.setTitle("Install from GitHub");
 
     new Setting(contentEl)
       .setName("Repository URL")

@@ -23,19 +23,19 @@ export class PluginItemInfoModal extends Modal {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
     if (this.item) {
-      contentEl.createEl("h3", { text: `"${this.item.name}" can't be toggled on its own` });
+      this.setTitle(`"${this.item.name}" can't be toggled on its own`);
       contentEl.createEl("p", {
         cls: "skillmanager-modal-meta",
         text: this.onTogglePlugin
-          ? `It's bundled in the "${this.plugin.name}" plugin. ${this.tool.name} only supports enabling or disabling a plugin as a whole — there's no way to turn off just one skill inside it.`
+          ? `It's bundled in the "${this.plugin.name}" plugin. ${this.tool.name} only supports enabling or disabling a plugin as a whole. There's no way to turn off just one skill inside it.`
           : `It's bundled in the "${this.plugin.name}" plugin managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable this plugin here.`,
       });
     } else {
-      contentEl.createEl("h3", { text: `Options for "${this.plugin.name}"` });
+      this.setTitle(`Options for "${this.plugin.name}"`);
       contentEl.createEl("p", {
         cls: "skillmanager-modal-meta",
         text: this.onTogglePlugin
-          ? `This is a packaged plugin managed by ${this.tool.name}. You can enable or disable the whole plugin here, but its bundled items move together — they can't be toggled individually.`
+          ? `This is a packaged plugin managed by ${this.tool.name}. You can enable or disable the whole plugin here, but its bundled items move together and can't be toggled individually.`
           : `This plugin is managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable the package here.`,
       });
     }

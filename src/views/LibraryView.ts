@@ -29,6 +29,7 @@ import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, exp
 import { addToProject, removeFromProject } from "../projectLink";
 import { deleteItem, disabledLocation, previewToggle, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
+import { createSwitch, makeActivatable } from "../a11y";
 import { MEMORY_INDEX_FILENAME, checkMemoryIndexed, forgetMemoryIndexEntry, isMemoryIndex, isMemoryItem, toggleMemoryEnabled } from "../memories";
 import { ShadowNoteStore } from "../store";
 import { deleteCollectionAndSync, upsertCollectionAndSync } from "../collections";
@@ -209,8 +210,8 @@ const DASHBOARD_COST_COLLAPSED_COUNT = 10;
 const DASHBOARD_COST_SUMMARY_COUNT = 5;
 
 /** The sidebar's Insights section: one page per question the old single Dashboard answered. */
-type InsightsPage = "context" | "usage" | "health" | "cleanup";
-const INSIGHTS_PAGES: { page: InsightsPage; label: string; icon: string }[] = [
+export type InsightsPage = "context" | "usage" | "health" | "cleanup";
+export const INSIGHTS_PAGES: { page: InsightsPage; label: string; icon: string }[] = [
   { page: "context", label: "Context", icon: "gauge" },
   { page: "usage", label: "Usage", icon: "activity" },
   { page: "health", label: "Health", icon: "heart-pulse" },
@@ -589,6 +590,15 @@ export class LibraryView extends ItemView {
    *  silently after every install/delete/toggle (its own Notice, if any, is specific to that
    *  action), so spinning the icon and popping a summary Notice for every one of those would be
    *  noisy. This is only for the explicit "I clicked rescan, is it doing anything?" moment. */
+  /** Command-palette entry points (see main.ts). */
+  runManualRescan() {
+    void this.manualRescan();
+  }
+
+  showInsightsPage(page: InsightsPage) {
+    this.openInsightsPage(page);
+  }
+
   private async manualRescan() {
     if (this.rescanningManually) return;
     this.rescanningManually = true;
@@ -763,7 +773,8 @@ export class LibraryView extends ItemView {
       preview.willDisable ? "Disable" : "Enable",
       async () => {
         await perform();
-      }
+      },
+      preview.willDisable ? "warning" : "cta"
     ).open();
   }
 
@@ -1608,6 +1619,7 @@ export class LibraryView extends ItemView {
         });
       }
 
+      makeActivatable(row);
       row.addEventListener("click", () => {
         this.clearScopeFilters();
         this.projectFilter = this.projectFilter === project.id ? null : project.id;
@@ -1639,6 +1651,7 @@ export class LibraryView extends ItemView {
       this.renderIcon(iconEl, "package");
       row.createSpan({ text: plugin.name, cls: "skillmanager-nav-label" });
       row.createSpan({ text: String(count), cls: "skillmanager-nav-count" });
+      makeActivatable(row);
       row.addEventListener("click", () => {
         this.clearScopeFilters();
         this.pluginFilter = this.pluginFilter === plugin.id ? null : plugin.id;
@@ -1651,13 +1664,11 @@ export class LibraryView extends ItemView {
       const tool = this.getSettings().tools.find((t) => t.id === plugin.toolId);
       if (tool?.pluginsSettingsPath) {
         const actions = row.createDiv({ cls: "skillmanager-nav-actions" });
-        const toggle = actions.createEl("button", {
-          cls: `skillmanager-toggle skillmanager-toggle-sm${plugin.enabled ? " is-on" : ""}`,
-          attr: { "aria-label": plugin.enabled ? "Disable this plugin" : "Enable this plugin" },
-        });
-        toggle.addEventListener("click", (evt) => {
-          evt.stopPropagation();
-          this.explainPluginBundleToggle(plugin);
+        createSwitch(actions, {
+          on: plugin.enabled,
+          small: true,
+          label: `${plugin.name} plugin enabled`,
+          onClick: () => this.explainPluginBundleToggle(plugin),
         });
       }
     }
@@ -1791,6 +1802,7 @@ export class LibraryView extends ItemView {
         menu.showAtMouseEvent(evt);
       });
 
+      makeActivatable(row);
       row.addEventListener("click", () => {
         const next = this.collectionFilter === collection.id ? null : collection.id;
         this.clearScopeFilters();
@@ -1825,6 +1837,8 @@ export class LibraryView extends ItemView {
         attr: titleBadge.tooltip ? { title: titleBadge.tooltip } : undefined,
       });
     }
+    makeActivatable(left);
+    left.setAttr("aria-expanded", String(!isCollapsed));
     left.addEventListener("click", () => {
       if (isCollapsed) this.collapsedSections.delete(key);
       else this.collapsedSections.add(key);
@@ -1893,8 +1907,10 @@ export class LibraryView extends ItemView {
     } else if (dot) {
       // "Needs a look" indicator that doesn't compete with the label for attention the way a
       // number does — see getInsightsCounts's callers.
-      row.createSpan({ cls: "skillmanager-nav-dot" });
+      row.createSpan({ cls: "skillmanager-nav-dot", attr: { "aria-label": "Needs a look", title: "Needs a look" } });
     }
+    makeActivatable(row);
+    if (active) row.setAttr("aria-current", "page");
     row.addEventListener("click", onClick);
   }
 
@@ -2555,6 +2571,8 @@ export class LibraryView extends ItemView {
       attr: { "aria-label": isCollapsed ? `Expand ${group.repoUrl}` : `Collapse ${group.repoUrl}` },
     });
     setIcon(chevron, isCollapsed ? "chevron-right" : "chevron-down");
+    makeActivatable(chevron);
+    chevron.setAttr("aria-expanded", String(!isCollapsed));
     chevron.addEventListener("click", (evt) => {
       evt.stopPropagation();
       if (isCollapsed) this.collapsedDiscoverSources.delete(groupKey);
@@ -2677,6 +2695,7 @@ export class LibraryView extends ItemView {
       this.openDiscoverCardMenu(evt, entry);
     });
 
+    makeActivatable(card);
     card.addEventListener("click", () => {
       this.selectedDiscoverEntry = entry;
       this.pendingDetailAnimation = "forward";
@@ -3011,13 +3030,10 @@ export class LibraryView extends ItemView {
     const head = card.createDiv({ cls: "skillmanager-card-head" });
     head.createSpan({ text: plugin.name, cls: "skillmanager-card-name" });
     head.createSpan({ text: "Plugin", cls: "skillmanager-card-type skillmanager-card-type-sm" });
-    const toggle = head.createEl("button", {
-      cls: `skillmanager-toggle${plugin.enabled ? " is-on" : ""}`,
-      attr: { "aria-label": plugin.enabled ? `Manage ${plugin.name} plugin` : `Manage disabled ${plugin.name} plugin` },
-    });
-    toggle.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      this.explainPluginBundleToggle(plugin);
+    createSwitch(head, {
+      on: plugin.enabled,
+      label: `${plugin.name} plugin enabled`,
+      onClick: () => this.explainPluginBundleToggle(plugin),
     });
     if (tool) {
       const toolCaption = card.createDiv({ cls: "skillmanager-card-tool" });
@@ -3037,6 +3053,7 @@ export class LibraryView extends ItemView {
     source.createSpan({ text: plugin.group ?? "Installed plugin", cls: "skillmanager-card-source-text" });
     const right = footer.createDiv({ cls: "skillmanager-card-footer-right" });
     if (!plugin.enabled) right.createSpan({ text: "Disabled", cls: "skillmanager-card-meta" });
+    makeActivatable(card);
     card.addEventListener("click", () => {
       this.pluginBundlesMode = false;
       this.pluginFilter = plugin.id;
@@ -3197,6 +3214,7 @@ export class LibraryView extends ItemView {
       this.openMcpServerCardMenu(evt, server);
     });
 
+    makeActivatable(card);
     card.addEventListener("click", () => {
       this.selectedMcpServer = server;
       this.revealedMcpEnvKeys = new Set();
@@ -3613,13 +3631,10 @@ export class LibraryView extends ItemView {
       head.createSpan({ text: "Custom", cls: "skillmanager-card-type skillmanager-card-type-sm" });
     }
 
-    const toggle = head.createEl("button", {
-      cls: `skillmanager-toggle${!tool.disabled ? " is-on" : ""}`,
-      attr: { "aria-label": tool.disabled ? "Enable" : "Disable" },
-    });
-    toggle.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      void this.toggleToolDisabled(tool);
+    createSwitch(head, {
+      on: !tool.disabled,
+      label: `${tool.name} enabled`,
+      onClick: () => void this.toggleToolDisabled(tool),
     });
 
     const count = this.items.filter((i) => i.tool === tool.id).length;
@@ -3628,6 +3643,7 @@ export class LibraryView extends ItemView {
       text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " (disabled)" : ""}`,
     });
 
+    makeActivatable(card);
     card.addEventListener("click", () => {
       this.selectedTool = tool;
       this.pendingDetailAnimation = "forward";
@@ -4388,6 +4404,7 @@ export class LibraryView extends ItemView {
       if (!order) return;
       cell.addClass("is-sortable");
       if (this.sortOrder === order) setIcon(cell.createSpan({ cls: "skillmanager-list-icon" }), "arrow-down");
+      makeActivatable(cell);
       cell.addEventListener("click", () => {
         this.sortOrder = order;
         this.render();
@@ -4462,14 +4479,13 @@ export class LibraryView extends ItemView {
     }
 
     const actions = row.createDiv({ cls: "skillmanager-list-cell col-actions is-wide" });
-    const toggle = actions.createEl("button", {
-      cls: `skillmanager-toggle${item.enabled ? " is-on" : ""}`,
-      attr: { "aria-label": item.enabled ? "Disable" : "Enable" },
-    });
-    toggle.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      if (item.pluginId !== null) this.explainPluginToggle(item);
-      else this.confirmToggle(item, () => this.toggleEnabled(item));
+    createSwitch(actions, {
+      on: item.enabled,
+      label: `${item.name} enabled`,
+      onClick: () => {
+        if (item.pluginId !== null) this.explainPluginToggle(item);
+        else this.confirmToggle(item, () => this.toggleEnabled(item));
+      },
     });
     const menuBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More actions" } });
     setIcon(menuBtn, MORE_HORIZONTAL_ICON_ID);
@@ -4478,6 +4494,7 @@ export class LibraryView extends ItemView {
       this.openCardMenu(evt, item);
     });
 
+    makeActivatable(row);
     row.addEventListener("click", () => this.selectItem(item));
   }
 
@@ -4496,11 +4513,12 @@ export class LibraryView extends ItemView {
           : item.sourceRepo
             ? 'Not checked yet this session: click "Check for updates"'
             : "Not tracked from GitHub: install via Discover to enable update checks";
-    head.createSpan({
+    const dot = head.createSpan({
       cls: `skillmanager-card-dot${syncStatus === "current" ? " is-current" : syncStatus === "stale" ? " is-stale" : ""}`,
       attr: { "aria-label": dotLabel },
     });
-    head.createSpan({ text: item.name, cls: "skillmanager-card-name" });
+    setTooltip(dot, dotLabel, { placement: "top" });
+    head.createSpan({ text: item.name, cls: "skillmanager-card-name", attr: { title: item.name } });
     head.createSpan({ text: this.itemTypeLabel(item), cls: "skillmanager-card-type skillmanager-card-type-sm" });
 
     // Surfaced in the footer-right as the link icon — same slot whether the card is global or a
@@ -4525,19 +4543,15 @@ export class LibraryView extends ItemView {
       });
     }
 
-    const toggle = head.createEl("button", {
-      cls: `skillmanager-toggle${item.enabled ? " is-on" : ""}`,
-      attr: { "aria-label": item.enabled ? "Disable" : "Enable" },
-    });
-    toggle.addEventListener("click", (evt) => {
-      evt.stopPropagation();
+    createSwitch(head, {
+      on: item.enabled,
+      label: `${item.name} enabled`,
       // A plugin-bundled item has no individual on/off — the tool only supports enabling or
       // disabling the whole plugin. Explain that instead of pretending the click did anything.
-      if (item.pluginId !== null) {
-        this.explainPluginToggle(item);
-      } else {
-        this.confirmToggle(item, () => this.toggleEnabled(item));
-      }
+      onClick: () => {
+        if (item.pluginId !== null) this.explainPluginToggle(item);
+        else this.confirmToggle(item, () => this.toggleEnabled(item));
+      },
     });
 
     // What this is for (tool, and the plugin it's bundled with, if any) — lives under the title,
@@ -4618,6 +4632,7 @@ export class LibraryView extends ItemView {
       this.openCardMenu(evt, item);
     });
 
+    makeActivatable(card);
     card.addEventListener("click", () => this.selectItem(item));
   }
 
@@ -5080,21 +5095,21 @@ export class LibraryView extends ItemView {
         this.renderDashboardStat(stats, "Enabled", String(metrics.length));
         this.renderDashboardStat(
           stats,
-          "Source tokens",
+          "File size",
           formatTokens(totalChars).replace("~", ""),
           "",
           "Estimated tokens in each representative source file. This is a file-size estimate, not necessarily per-turn context."
         );
         this.renderDashboardStat(
           stats,
-          "Available",
+          "Every turn",
           formatTokens(availableChars).replace("~", ""),
           "skillmanager-dash-stat-accent",
           "Estimated name-and-description metadata exposed while a skill or agent is available. For tools that preload this metadata, it can add to the model's context on every turn even when never invoked. Actual behavior varies by tool; commands and rules are not included until their loading policies are modeled."
         );
         this.renderDashboardStat(
           stats,
-          "On invoke",
+          "When used",
           formatTokens(invocationChars).replace("~", ""),
           "",
           "Estimated instruction-body tokens loaded when a skill or agent is invoked. Companion files are loaded on demand and are not included here."
@@ -5294,6 +5309,7 @@ export class LibraryView extends ItemView {
    *  answers when poked (displayTooltip would do this inline, but needs Obsidian 1.8.7). */
   private attachInfoTooltip(el: HTMLElement, title: string, tooltip: string) {
     setTooltip(el, tooltip, { placement: "top" });
+    makeActivatable(el);
     el.addEventListener("click", (evt) => {
       evt.stopPropagation();
       new InfoModal(this.app, title, tooltip).open();
@@ -5339,11 +5355,13 @@ export class LibraryView extends ItemView {
     const filter = parent.createDiv({ cls: "skillmanager-dash-type-filter" });
     const allPill = filter.createSpan({ text: "All", cls: "skillmanager-dash-type-pill" });
     if (!this.dashboardTypeFilter) allPill.addClass("is-active");
+    makeActivatable(allPill);
     allPill.addEventListener("click", () => setType(null));
 
     for (const type of Object.keys(DASHBOARD_TYPE_COLORS) as ItemType[]) {
       const pill = filter.createSpan({ text: TYPE_CATEGORY_LABELS[type], cls: "skillmanager-dash-type-pill" });
       if (this.dashboardTypeFilter === type) pill.addClass("is-active");
+      makeActivatable(pill);
       pill.addEventListener("click", () => setType(type));
     }
   }
@@ -5408,6 +5426,7 @@ export class LibraryView extends ItemView {
     allTile.createDiv({ text: formatTokens(grandTotal), cls: "skillmanager-dash-tile-value" });
     this.renderDashboardTileContext(allTile, metrics);
     this.renderDashboardStackedBar(allTile.createDiv({ cls: "skillmanager-dash-tile-bar" }), byType(metrics), grandTotal);
+    makeActivatable(allTile);
     allTile.addEventListener("click", () => selectTool(null));
 
     const toolName = (toolId: string) => this.getSettings().tools.find((t) => t.id === toolId)?.name ?? toolId;
@@ -5421,6 +5440,7 @@ export class LibraryView extends ItemView {
       tile.createDiv({ text: formatTokens(total), cls: "skillmanager-dash-tile-value" });
       this.renderDashboardTileContext(tile, list);
       this.renderDashboardStackedBar(tile.createDiv({ cls: "skillmanager-dash-tile-bar" }), byType(list), grandTotal);
+      makeActivatable(tile);
       tile.addEventListener("click", () => selectTool(tool));
     }
   }
@@ -5436,8 +5456,8 @@ export class LibraryView extends ItemView {
     }
     const available = list.reduce((sum, m) => sum + (m.alwaysAvailableCharCount ?? 0), 0);
     const invocation = list.reduce((sum, m) => sum + (m.invocationCharCount ?? 0), 0);
-    context.createSpan({ text: `Available ${formatTokens(available)}` });
-    context.createSpan({ text: `On invoke ${formatTokens(invocation)}` });
+    context.createSpan({ text: `Every turn ${formatTokens(available)}` });
+    context.createSpan({ text: `When used ${formatTokens(invocation)}` });
   }
 
   /** Every item, filtered by whichever tool card is active and/or type pill is selected (the two
@@ -5486,6 +5506,7 @@ export class LibraryView extends ItemView {
   private renderDashboardRow(container: HTMLElement, metric: DashboardMetric, maxCharCount: number, total: number) {
     const { item, charCount } = metric;
     const row = container.createDiv({ cls: "skillmanager-dash-row" });
+    makeActivatable(row);
     row.addEventListener("click", () => this.openItemFromDashboard(item));
 
     const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
@@ -5738,6 +5759,8 @@ export class LibraryView extends ItemView {
     const isOpen = this.dashboardOpenRows.has(row.key);
     const item = box.createDiv({ cls: `skillmanager-insight-row${isOpen ? " is-open" : ""}` });
     const line = item.createDiv({ cls: "skillmanager-insight-line" });
+    makeActivatable(line);
+    line.setAttr("aria-expanded", String(isOpen));
     line.addEventListener("click", () => {
       if (isOpen) this.dashboardOpenRows.delete(row.key);
       else this.dashboardOpenRows.add(row.key);
@@ -5763,6 +5786,7 @@ export class LibraryView extends ItemView {
         const col = pair.createDiv({ cls: "skillmanager-insight-side" });
         // Open is the button below; the name also opens it for anyone who clicks it by habit.
         const name = col.createDiv({ text: side.name, cls: "skillmanager-insight-side-name" });
+        makeActivatable(name);
         name.addEventListener("click", () => this.openItemFromDashboard(side));
         col.createDiv({ text: `${this.toolLabel(side).text} · ${TYPE_LABEL_SINGULAR[side.type]}`, cls: "skillmanager-insight-label" });
         if (this.isSymlinkedItem(side)) {
@@ -5934,6 +5958,7 @@ export class LibraryView extends ItemView {
    *  every skillmanager-dash-row* class as-is, just driven by invocation count instead of cost. */
   private renderDashboardUsageRow(container: HTMLElement, item: ItemMetadata, stats: ClaudeUsageStats, maxCount: number) {
     const row = container.createDiv({ cls: "skillmanager-dash-row" });
+    makeActivatable(row);
     row.addEventListener("click", () => this.openItemFromDashboard(item));
 
     const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
@@ -6023,7 +6048,7 @@ export class LibraryView extends ItemView {
           ...(metric?.alwaysAvailableCharCount != null
             ? [{ label: "Every turn", value: formatTokens(metric.alwaysAvailableCharCount) }]
             : []),
-          ...(metric?.invocationCharCount != null ? [{ label: "On invoke", value: formatTokens(metric.invocationCharCount) }] : []),
+          ...(metric?.invocationCharCount != null ? [{ label: "When used", value: formatTokens(metric.invocationCharCount) }] : []),
           extra.path,
         ],
         primary: { label: "Disable", warning: true, run: () => this.confirmToggle(item, () => this.disableFromDashboard(item)) },
@@ -6255,10 +6280,10 @@ export class LibraryView extends ItemView {
     if (isManifest && (item.type === "skill" || item.type === "agent")) {
       callout(
         formatTokens(`${item.name}\n${item.description}`.length),
-        "Available",
+        "Every turn",
         "Estimated name-and-description metadata exposed while this skill or agent is available. For tools that preload it, this can add to the model's context on every turn even when never invoked. Actual behavior varies by tool."
       );
-      callout(formatTokens(stripFrontmatter(this.detailContent).length), "On invoke", "Estimated instruction-body tokens loaded when this skill or agent is invoked.");
+      callout(formatTokens(stripFrontmatter(this.detailContent).length), "When used", "Estimated instruction-body tokens loaded when this skill or agent is invoked.");
     } else if (isManifest) {
       callout("Tool-dependent", "Context", "Commands and rules have tool-specific loading behavior. Their context cost is not estimated yet.");
     } else {
@@ -6798,6 +6823,8 @@ export class LibraryView extends ItemView {
       setIcon(icon, node.isDir ? (collapsed ? "folder" : "folder-open") : "file-text");
       row.createSpan({ text: node.name, cls: "skillmanager-tree-label" });
 
+      makeActivatable(row);
+      if (node.isDir) row.setAttr("aria-expanded", String(!collapsed));
       if (node.isDir) {
         row.addEventListener("click", () => {
           if (collapsed) this.collapsedTreeFolders.delete(node.relPath);

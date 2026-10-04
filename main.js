@@ -527,7 +527,7 @@ function moveEntry(fromPath, toPath, isDirectory) {
 }
 function toggleItemEnabled(item) {
   if (item.pluginId !== null) {
-    throw new Error(`"${item.name}" is part of an installed plugin \u2014 disable the whole plugin from the sidebar instead.`);
+    throw new Error(`"${item.name}" is part of an installed plugin. Disable the whole plugin from the sidebar instead.`);
   }
   const { willDisable, fromPath, toPath } = previewToggle(item);
   if ((0, import_fs.existsSync)(toPath)) {
@@ -591,7 +591,7 @@ function togglePluginEnabled(tool, pluginId, currentlyEnabled) {
 }
 async function deleteItem(item, trash) {
   if (item.pluginId !== null) {
-    throw new Error(`"${item.name}" is part of an installed plugin \u2014 remove the whole plugin from where it was installed instead.`);
+    throw new Error(`"${item.name}" is part of an installed plugin. Remove the whole plugin from where it was installed instead.`);
   }
   const unit = linkableUnit(item.sourcePath);
   if ((0, import_fs.lstatSync)(unit.path).isSymbolicLink()) {
@@ -1109,6 +1109,40 @@ function removeFromProject(projectItemSourcePath) {
   (0, import_fs3.unlinkSync)(unit.path);
 }
 
+// src/a11y.ts
+function makeActivatable(el, label) {
+  el.tabIndex = 0;
+  el.setAttr("role", "button");
+  if (label)
+    el.setAttr("aria-label", label);
+  el.addEventListener("keydown", (evt) => {
+    if (evt.target !== el)
+      return;
+    if (evt.key === "Enter" || evt.key === " ") {
+      evt.preventDefault();
+      el.click();
+    }
+  });
+}
+function createSwitch(parent, opts) {
+  const el = parent.createDiv({
+    cls: `checkbox-container skillmanager-switch${opts.small ? " skillmanager-switch-sm" : ""}${opts.on ? " is-enabled" : ""}`,
+    attr: { role: "switch", "aria-checked": String(opts.on), "aria-label": opts.label, tabindex: "0" }
+  });
+  el.addEventListener("click", (evt) => {
+    evt.stopPropagation();
+    opts.onClick(evt);
+  });
+  el.addEventListener("keydown", (evt) => {
+    if (evt.key === "Enter" || evt.key === " ") {
+      evt.preventDefault();
+      evt.stopPropagation();
+      el.click();
+    }
+  });
+  return el;
+}
+
 // src/memories.ts
 var import_fs4 = require("fs");
 var import_path5 = require("path");
@@ -1341,7 +1375,7 @@ var CollectionEditModal = class extends import_obsidian.Modal {
     const { contentEl } = this;
     this.rows = [];
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: this.existing ? "Edit collection" : "New collection" });
+    this.setTitle(this.existing ? "Edit collection" : "New collection");
     new import_obsidian.Setting(contentEl).setName("Name").addText(
       (text) => text.setValue(this.name).onChange((value) => {
         this.name = value;
@@ -1432,7 +1466,7 @@ var AddToCollectionModal = class extends import_obsidian2.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: "Add to collection" });
+    this.setTitle("Add to collection");
     if (this.settings.collections.length === 0) {
       contentEl.createEl("p", { text: "No collections yet.", cls: "setting-item-description" });
     }
@@ -1486,16 +1520,16 @@ var PluginItemInfoModal = class extends import_obsidian3.Modal {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
     if (this.item) {
-      contentEl.createEl("h3", { text: `"${this.item.name}" can't be toggled on its own` });
+      this.setTitle(`"${this.item.name}" can't be toggled on its own`);
       contentEl.createEl("p", {
         cls: "skillmanager-modal-meta",
-        text: this.onTogglePlugin ? `It's bundled in the "${this.plugin.name}" plugin. ${this.tool.name} only supports enabling or disabling a plugin as a whole \u2014 there's no way to turn off just one skill inside it.` : `It's bundled in the "${this.plugin.name}" plugin managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable this plugin here.`
+        text: this.onTogglePlugin ? `It's bundled in the "${this.plugin.name}" plugin. ${this.tool.name} only supports enabling or disabling a plugin as a whole. There's no way to turn off just one skill inside it.` : `It's bundled in the "${this.plugin.name}" plugin managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable this plugin here.`
       });
     } else {
-      contentEl.createEl("h3", { text: `Options for "${this.plugin.name}"` });
+      this.setTitle(`Options for "${this.plugin.name}"`);
       contentEl.createEl("p", {
         cls: "skillmanager-modal-meta",
-        text: this.onTogglePlugin ? `This is a packaged plugin managed by ${this.tool.name}. You can enable or disable the whole plugin here, but its bundled items move together \u2014 they can't be toggled individually.` : `This plugin is managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable the package here.`
+        text: this.onTogglePlugin ? `This is a packaged plugin managed by ${this.tool.name}. You can enable or disable the whole plugin here, but its bundled items move together and can't be toggled individually.` : `This plugin is managed by ${this.tool.name}. AI Skills Manager can show its contents, but cannot enable or disable the package here.`
       });
     }
     if (this.item && this.onInstallStandalone) {
@@ -1563,7 +1597,7 @@ var InfoModal = class extends import_obsidian4.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: this.title });
+    this.setTitle(this.title);
     contentEl.createEl("p", { text: this.message, cls: "skillmanager-modal-meta" });
     const actions = contentEl.createDiv({ cls: "skillmanager-modal-actions" });
     actions.createEl("button", { text: "Close" }).addEventListener("click", () => this.close());
@@ -1785,7 +1819,7 @@ var ProjectPresenceModal = class extends import_obsidian6.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: "Workspaces" });
+    this.setTitle("Workspaces");
     contentEl.createEl("p", {
       text: `Check a project to symlink "${this.itemName}" into its local skills folder. The original is never copied, so it can't drift out of sync. Uncheck it to remove just that symlink; nothing is deleted.`,
       cls: "setting-item-description"
@@ -1836,7 +1870,7 @@ var ProjectEditModal = class extends import_obsidian7.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: this.existing ? "Edit workspace" : "New workspace" });
+    this.setTitle(this.existing ? "Edit workspace" : "New workspace");
     contentEl.createEl("p", {
       text: "A project folder to scan for project-local skills (e.g. <project>/.claude/skills), in addition to the current vault, which is always included automatically.",
       cls: "setting-item-description"
@@ -2001,7 +2035,7 @@ var InstallFromGitHubModal = class extends import_obsidian8.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: "Install from GitHub" });
+    this.setTitle("Install from GitHub");
     new import_obsidian8.Setting(contentEl).setName("Repository URL").setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.").addText((text) => {
       text.setPlaceholder("https://github.com/owner/repo");
       if (this.prefill)
@@ -2387,7 +2421,7 @@ var AddDiscoverSourceModal = class extends import_obsidian10.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: "Add a GitHub source to Discover" });
+    this.setTitle("Add a GitHub source to Discover");
     contentEl.createDiv({
       cls: "skillmanager-modal-meta",
       text: "Finds every skill, agent, command, and rule in the repo (or just the given folder) and adds them to Discover to browse and install later. Nothing is installed yet."
@@ -2469,21 +2503,22 @@ var AddDiscoverSourceModal = class extends import_obsidian10.Modal {
 // src/modals/ConfirmModal.ts
 var import_obsidian11 = require("obsidian");
 var ConfirmModal = class extends import_obsidian11.Modal {
-  constructor(app, title, message, confirmLabel, onConfirm) {
+  constructor(app, title, message, confirmLabel, onConfirm, variant = "warning") {
     super(app);
     this.title = title;
     this.message = message;
     this.confirmLabel = confirmLabel;
     this.onConfirm = onConfirm;
+    this.variant = variant;
   }
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: this.title });
+    this.setTitle(this.title);
     contentEl.createEl("p", { text: this.message, cls: "skillmanager-modal-meta" });
     const actions = contentEl.createDiv({ cls: "skillmanager-modal-actions" });
     actions.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
-    actions.createEl("button", { text: this.confirmLabel, cls: "mod-warning" }).addEventListener("click", () => {
+    actions.createEl("button", { text: this.confirmLabel, cls: this.variant === "cta" ? "mod-cta" : "mod-warning" }).addEventListener("click", () => {
       void (async () => {
         await this.onConfirm();
         this.close();
@@ -2535,7 +2570,7 @@ var AddToolModal = class extends import_obsidian12.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: "Add tool" });
+    this.setTitle("Add tool");
     new import_obsidian12.Setting(contentEl).setName("Name").addText(
       (text) => text.setPlaceholder("My Tool").onChange((value) => {
         this.name = value;
@@ -3912,7 +3947,7 @@ var UnchangedUpdateModal = class extends import_obsidian13.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: `No file changes for \u201C${this.itemName}\u201D` });
+    this.setTitle(`No file changes for \u201C${this.itemName}\u201D`);
     contentEl.createEl("p", {
       text: "The source repository has a newer commit, but this command or skill file is unchanged. The repository update has been accepted and your local file was left as-is.",
       cls: "skillmanager-modal-meta"
@@ -4309,6 +4344,13 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  silently after every install/delete/toggle (its own Notice, if any, is specific to that
    *  action), so spinning the icon and popping a summary Notice for every one of those would be
    *  noisy. This is only for the explicit "I clicked rescan, is it doing anything?" moment. */
+  /** Command-palette entry points (see main.ts). */
+  runManualRescan() {
+    void this.manualRescan();
+  }
+  showInsightsPage(page) {
+    this.openInsightsPage(page);
+  }
   async manualRescan() {
     if (this.rescanningManually)
       return;
@@ -4458,7 +4500,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
       preview.willDisable ? "Disable" : "Enable",
       async () => {
         await perform();
-      }
+      },
+      preview.willDisable ? "warning" : "cta"
     ).open();
   }
   /** Quick unlink for a card the user is looking at directly, rather than routing through the
@@ -5278,6 +5321,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
           menu.showAtMouseEvent(evt);
         });
       }
+      makeActivatable(row);
       row.addEventListener("click", () => {
         this.clearScopeFilters();
         this.projectFilter = this.projectFilter === project.id ? null : project.id;
@@ -5308,6 +5352,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       this.renderIcon(iconEl, "package");
       row.createSpan({ text: plugin.name, cls: "skillmanager-nav-label" });
       row.createSpan({ text: String(count), cls: "skillmanager-nav-count" });
+      makeActivatable(row);
       row.addEventListener("click", () => {
         this.clearScopeFilters();
         this.pluginFilter = this.pluginFilter === plugin.id ? null : plugin.id;
@@ -5316,13 +5361,11 @@ var LibraryView = class extends import_obsidian14.ItemView {
       const tool = this.getSettings().tools.find((t) => t.id === plugin.toolId);
       if (tool == null ? void 0 : tool.pluginsSettingsPath) {
         const actions = row.createDiv({ cls: "skillmanager-nav-actions" });
-        const toggle = actions.createEl("button", {
-          cls: `skillmanager-toggle skillmanager-toggle-sm${plugin.enabled ? " is-on" : ""}`,
-          attr: { "aria-label": plugin.enabled ? "Disable this plugin" : "Enable this plugin" }
-        });
-        toggle.addEventListener("click", (evt) => {
-          evt.stopPropagation();
-          this.explainPluginBundleToggle(plugin);
+        createSwitch(actions, {
+          on: plugin.enabled,
+          small: true,
+          label: `${plugin.name} plugin enabled`,
+          onClick: () => this.explainPluginBundleToggle(plugin)
         });
       }
     }
@@ -5444,6 +5487,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
         );
         menu.showAtMouseEvent(evt);
       });
+      makeActivatable(row);
       row.addEventListener("click", () => {
         const next = this.collectionFilter === collection.id ? null : collection.id;
         this.clearScopeFilters();
@@ -5470,6 +5514,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
         attr: titleBadge.tooltip ? { title: titleBadge.tooltip } : void 0
       });
     }
+    makeActivatable(left);
+    left.setAttr("aria-expanded", String(!isCollapsed));
     left.addEventListener("click", () => {
       if (isCollapsed)
         this.collapsedSections.delete(key);
@@ -5525,8 +5571,11 @@ var LibraryView = class extends import_obsidian14.ItemView {
       const cls = countVariant === "danger" ? "skillmanager-nav-count-danger" : "skillmanager-nav-count";
       row.createSpan({ text: String(count), cls });
     } else if (dot) {
-      row.createSpan({ cls: "skillmanager-nav-dot" });
+      row.createSpan({ cls: "skillmanager-nav-dot", attr: { "aria-label": "Needs a look", title: "Needs a look" } });
     }
+    makeActivatable(row);
+    if (active)
+      row.setAttr("aria-current", "page");
     row.addEventListener("click", onClick);
   }
   /** Obsidian's setIcon only knows its own Lucide set, which has no real brand logos — a tool
@@ -6114,6 +6163,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
       attr: { "aria-label": isCollapsed ? `Expand ${group.repoUrl}` : `Collapse ${group.repoUrl}` }
     });
     (0, import_obsidian14.setIcon)(chevron, isCollapsed ? "chevron-right" : "chevron-down");
+    makeActivatable(chevron);
+    chevron.setAttr("aria-expanded", String(!isCollapsed));
     chevron.addEventListener("click", (evt) => {
       evt.stopPropagation();
       if (isCollapsed)
@@ -6220,6 +6271,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       evt.stopPropagation();
       this.openDiscoverCardMenu(evt, entry);
     });
+    makeActivatable(card);
     card.addEventListener("click", () => {
       this.selectedDiscoverEntry = entry;
       this.pendingDetailAnimation = "forward";
@@ -6549,13 +6601,10 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const head = card.createDiv({ cls: "skillmanager-card-head" });
     head.createSpan({ text: plugin.name, cls: "skillmanager-card-name" });
     head.createSpan({ text: "Plugin", cls: "skillmanager-card-type skillmanager-card-type-sm" });
-    const toggle = head.createEl("button", {
-      cls: `skillmanager-toggle${plugin.enabled ? " is-on" : ""}`,
-      attr: { "aria-label": plugin.enabled ? `Manage ${plugin.name} plugin` : `Manage disabled ${plugin.name} plugin` }
-    });
-    toggle.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      this.explainPluginBundleToggle(plugin);
+    createSwitch(head, {
+      on: plugin.enabled,
+      label: `${plugin.name} plugin enabled`,
+      onClick: () => this.explainPluginBundleToggle(plugin)
     });
     if (tool) {
       const toolCaption = card.createDiv({ cls: "skillmanager-card-tool" });
@@ -6577,6 +6626,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const right = footer.createDiv({ cls: "skillmanager-card-footer-right" });
     if (!plugin.enabled)
       right.createSpan({ text: "Disabled", cls: "skillmanager-card-meta" });
+    makeActivatable(card);
     card.addEventListener("click", () => {
       this.pluginBundlesMode = false;
       this.pluginFilter = plugin.id;
@@ -6720,6 +6770,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       evt.stopPropagation();
       this.openMcpServerCardMenu(evt, server);
     });
+    makeActivatable(card);
     card.addEventListener("click", () => {
       this.selectedMcpServer = server;
       this.revealedMcpEnvKeys = /* @__PURE__ */ new Set();
@@ -7099,19 +7150,17 @@ var LibraryView = class extends import_obsidian14.ItemView {
     if (tool.custom) {
       head.createSpan({ text: "Custom", cls: "skillmanager-card-type skillmanager-card-type-sm" });
     }
-    const toggle = head.createEl("button", {
-      cls: `skillmanager-toggle${!tool.disabled ? " is-on" : ""}`,
-      attr: { "aria-label": tool.disabled ? "Enable" : "Disable" }
-    });
-    toggle.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      void this.toggleToolDisabled(tool);
+    createSwitch(head, {
+      on: !tool.disabled,
+      label: `${tool.name} enabled`,
+      onClick: () => void this.toggleToolDisabled(tool)
     });
     const count = this.items.filter((i) => i.tool === tool.id).length;
     card.createDiv({
       cls: "skillmanager-card-desc",
       text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " (disabled)" : ""}`
     });
+    makeActivatable(card);
     card.addEventListener("click", () => {
       this.selectedTool = tool;
       this.pendingDetailAnimation = "forward";
@@ -7830,6 +7879,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       cell.addClass("is-sortable");
       if (this.sortOrder === order)
         (0, import_obsidian14.setIcon)(cell.createSpan({ cls: "skillmanager-list-icon" }), "arrow-down");
+      makeActivatable(cell);
       cell.addEventListener("click", () => {
         this.sortOrder = order;
         this.render();
@@ -7901,16 +7951,15 @@ var LibraryView = class extends import_obsidian14.ItemView {
       });
     }
     const actions = row.createDiv({ cls: "skillmanager-list-cell col-actions is-wide" });
-    const toggle = actions.createEl("button", {
-      cls: `skillmanager-toggle${item.enabled ? " is-on" : ""}`,
-      attr: { "aria-label": item.enabled ? "Disable" : "Enable" }
-    });
-    toggle.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      if (item.pluginId !== null)
-        this.explainPluginToggle(item);
-      else
-        this.confirmToggle(item, () => this.toggleEnabled(item));
+    createSwitch(actions, {
+      on: item.enabled,
+      label: `${item.name} enabled`,
+      onClick: () => {
+        if (item.pluginId !== null)
+          this.explainPluginToggle(item);
+        else
+          this.confirmToggle(item, () => this.toggleEnabled(item));
+      }
     });
     const menuBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More actions" } });
     (0, import_obsidian14.setIcon)(menuBtn, MORE_HORIZONTAL_ICON_ID);
@@ -7918,6 +7967,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       evt.stopPropagation();
       this.openCardMenu(evt, item);
     });
+    makeActivatable(row);
     row.addEventListener("click", () => this.selectItem(item));
   }
   renderCard(container, item) {
@@ -7930,11 +7980,12 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const head = card.createDiv({ cls: "skillmanager-card-head" });
     const syncStatus = this.syncStatusFor(item);
     const dotLabel = syncStatus === "current" ? `Up to date with ${item.sourceRepo}` : syncStatus === "stale" ? "Update available: click the sync icon to review" : item.sourceRepo ? 'Not checked yet this session: click "Check for updates"' : "Not tracked from GitHub: install via Discover to enable update checks";
-    head.createSpan({
+    const dot = head.createSpan({
       cls: `skillmanager-card-dot${syncStatus === "current" ? " is-current" : syncStatus === "stale" ? " is-stale" : ""}`,
       attr: { "aria-label": dotLabel }
     });
-    head.createSpan({ text: item.name, cls: "skillmanager-card-name" });
+    (0, import_obsidian14.setTooltip)(dot, dotLabel, { placement: "top" });
+    head.createSpan({ text: item.name, cls: "skillmanager-card-name", attr: { title: item.name } });
     head.createSpan({ text: this.itemTypeLabel(item), cls: "skillmanager-card-type skillmanager-card-type-sm" });
     const isBroken = this.isBrokenSymlink(item);
     const isLinked = item.projectId !== null && this.isSymlinkedItem(item);
@@ -7951,16 +8002,16 @@ var LibraryView = class extends import_obsidian14.ItemView {
         void this.quickCheckForUpdate(item, syncBtn);
       });
     }
-    const toggle = head.createEl("button", {
-      cls: `skillmanager-toggle${item.enabled ? " is-on" : ""}`,
-      attr: { "aria-label": item.enabled ? "Disable" : "Enable" }
-    });
-    toggle.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      if (item.pluginId !== null) {
-        this.explainPluginToggle(item);
-      } else {
-        this.confirmToggle(item, () => this.toggleEnabled(item));
+    createSwitch(head, {
+      on: item.enabled,
+      label: `${item.name} enabled`,
+      // A plugin-bundled item has no individual on/off — the tool only supports enabling or
+      // disabling the whole plugin. Explain that instead of pretending the click did anything.
+      onClick: () => {
+        if (item.pluginId !== null)
+          this.explainPluginToggle(item);
+        else
+          this.confirmToggle(item, () => this.toggleEnabled(item));
       }
     });
     const toolInfo = this.toolLabel(item);
@@ -8022,6 +8073,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       evt.stopPropagation();
       this.openCardMenu(evt, item);
     });
+    makeActivatable(card);
     card.addEventListener("click", () => this.selectItem(item));
   }
   /** Fast path for a git-tracked card's sync icon: check inline and, if there's something new,
@@ -8419,21 +8471,21 @@ var LibraryView = class extends import_obsidian14.ItemView {
         this.renderDashboardStat(stats, "Enabled", String(metrics.length));
         this.renderDashboardStat(
           stats,
-          "Source tokens",
+          "File size",
           formatTokens(totalChars).replace("~", ""),
           "",
           "Estimated tokens in each representative source file. This is a file-size estimate, not necessarily per-turn context."
         );
         this.renderDashboardStat(
           stats,
-          "Available",
+          "Every turn",
           formatTokens(availableChars).replace("~", ""),
           "skillmanager-dash-stat-accent",
           "Estimated name-and-description metadata exposed while a skill or agent is available. For tools that preload this metadata, it can add to the model's context on every turn even when never invoked. Actual behavior varies by tool; commands and rules are not included until their loading policies are modeled."
         );
         this.renderDashboardStat(
           stats,
-          "On invoke",
+          "When used",
           formatTokens(invocationChars).replace("~", ""),
           "",
           "Estimated instruction-body tokens loaded when a skill or agent is invoked. Companion files are loaded on demand and are not included here."
@@ -8626,6 +8678,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  answers when poked (displayTooltip would do this inline, but needs Obsidian 1.8.7). */
   attachInfoTooltip(el, title, tooltip) {
     (0, import_obsidian14.setTooltip)(el, tooltip, { placement: "top" });
+    makeActivatable(el);
     el.addEventListener("click", (evt) => {
       evt.stopPropagation();
       new InfoModal(this.app, title, tooltip).open();
@@ -8668,11 +8721,13 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const allPill = filter.createSpan({ text: "All", cls: "skillmanager-dash-type-pill" });
     if (!this.dashboardTypeFilter)
       allPill.addClass("is-active");
+    makeActivatable(allPill);
     allPill.addEventListener("click", () => setType(null));
     for (const type of Object.keys(DASHBOARD_TYPE_COLORS)) {
       const pill = filter.createSpan({ text: TYPE_CATEGORY_LABELS[type], cls: "skillmanager-dash-type-pill" });
       if (this.dashboardTypeFilter === type)
         pill.addClass("is-active");
+      makeActivatable(pill);
       pill.addEventListener("click", () => setType(type));
     }
   }
@@ -8737,6 +8792,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     allTile.createDiv({ text: formatTokens(grandTotal), cls: "skillmanager-dash-tile-value" });
     this.renderDashboardTileContext(allTile, metrics);
     this.renderDashboardStackedBar(allTile.createDiv({ cls: "skillmanager-dash-tile-bar" }), byType(metrics), grandTotal);
+    makeActivatable(allTile);
     allTile.addEventListener("click", () => selectTool(null));
     const toolName = (toolId) => {
       var _a2, _b;
@@ -8753,6 +8809,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       tile.createDiv({ text: formatTokens(total), cls: "skillmanager-dash-tile-value" });
       this.renderDashboardTileContext(tile, list);
       this.renderDashboardStackedBar(tile.createDiv({ cls: "skillmanager-dash-tile-bar" }), byType(list), grandTotal);
+      makeActivatable(tile);
       tile.addEventListener("click", () => selectTool(tool));
     }
   }
@@ -8773,8 +8830,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
       var _a;
       return sum + ((_a = m.invocationCharCount) != null ? _a : 0);
     }, 0);
-    context.createSpan({ text: `Available ${formatTokens(available)}` });
-    context.createSpan({ text: `On invoke ${formatTokens(invocation)}` });
+    context.createSpan({ text: `Every turn ${formatTokens(available)}` });
+    context.createSpan({ text: `When used ${formatTokens(invocation)}` });
   }
   /** Every item, filtered by whichever tool card is active and/or type pill is selected (the two
    *  AND together — e.g. "Claude Code" + "Command"). Last thing on the Context page, so there's
@@ -8816,6 +8873,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
   renderDashboardRow(container, metric, maxCharCount, total) {
     const { item, charCount } = metric;
     const row = container.createDiv({ cls: "skillmanager-dash-row" });
+    makeActivatable(row);
     row.addEventListener("click", () => this.openItemFromDashboard(item));
     const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
     const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
@@ -9040,6 +9098,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const isOpen = this.dashboardOpenRows.has(row.key);
     const item = box.createDiv({ cls: `skillmanager-insight-row${isOpen ? " is-open" : ""}` });
     const line = item.createDiv({ cls: "skillmanager-insight-line" });
+    makeActivatable(line);
+    line.setAttr("aria-expanded", String(isOpen));
     line.addEventListener("click", () => {
       if (isOpen)
         this.dashboardOpenRows.delete(row.key);
@@ -9067,6 +9127,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       for (const side of row.pair) {
         const col = pair.createDiv({ cls: "skillmanager-insight-side" });
         const name = col.createDiv({ text: side.name, cls: "skillmanager-insight-side-name" });
+        makeActivatable(name);
         name.addEventListener("click", () => this.openItemFromDashboard(side));
         col.createDiv({ text: `${this.toolLabel(side).text} \xB7 ${TYPE_LABEL_SINGULAR[side.type]}`, cls: "skillmanager-insight-label" });
         if (this.isSymlinkedItem(side)) {
@@ -9223,6 +9284,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  every skillmanager-dash-row* class as-is, just driven by invocation count instead of cost. */
   renderDashboardUsageRow(container, item, stats, maxCount) {
     const row = container.createDiv({ cls: "skillmanager-dash-row" });
+    makeActivatable(row);
     row.addEventListener("click", () => this.openItemFromDashboard(item));
     const info = row.createDiv({ cls: "skillmanager-dash-row-info" });
     const nameRow = info.createDiv({ cls: "skillmanager-dash-row-name" });
@@ -9298,7 +9360,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
           ] : [],
           extra.edited,
           ...(metric == null ? void 0 : metric.alwaysAvailableCharCount) != null ? [{ label: "Every turn", value: formatTokens(metric.alwaysAvailableCharCount) }] : [],
-          ...(metric == null ? void 0 : metric.invocationCharCount) != null ? [{ label: "On invoke", value: formatTokens(metric.invocationCharCount) }] : [],
+          ...(metric == null ? void 0 : metric.invocationCharCount) != null ? [{ label: "When used", value: formatTokens(metric.invocationCharCount) }] : [],
           extra.path
         ],
         primary: { label: "Disable", warning: true, run: () => this.confirmToggle(item, () => this.disableFromDashboard(item)) },
@@ -9504,10 +9566,10 @@ var LibraryView = class extends import_obsidian14.ItemView {
       callout(
         formatTokens(`${item.name}
 ${item.description}`.length),
-        "Available",
+        "Every turn",
         "Estimated name-and-description metadata exposed while this skill or agent is available. For tools that preload it, this can add to the model's context on every turn even when never invoked. Actual behavior varies by tool."
       );
-      callout(formatTokens(stripFrontmatter(this.detailContent).length), "On invoke", "Estimated instruction-body tokens loaded when this skill or agent is invoked.");
+      callout(formatTokens(stripFrontmatter(this.detailContent).length), "When used", "Estimated instruction-body tokens loaded when this skill or agent is invoked.");
     } else if (isManifest) {
       callout("Tool-dependent", "Context", "Commands and rules have tool-specific loading behavior. Their context cost is not estimated yet.");
     } else {
@@ -10001,6 +10063,9 @@ ${item.description}`.length),
       const icon = row.createSpan({ cls: "skillmanager-tree-icon" });
       (0, import_obsidian14.setIcon)(icon, node.isDir ? collapsed ? "folder" : "folder-open" : "file-text");
       row.createSpan({ text: node.name, cls: "skillmanager-tree-label" });
+      makeActivatable(row);
+      if (node.isDir)
+        row.setAttr("aria-expanded", String(!collapsed));
       if (node.isDir) {
         row.addEventListener("click", () => {
           if (collapsed)
@@ -10714,6 +10779,24 @@ var SkillManagerPlugin = class extends import_obsidian17.Plugin {
       name: "Open library",
       callback: () => this.activateLibrary()
     });
+    this.addCommand({
+      id: "rescan-tools",
+      name: "Rescan tools",
+      callback: async () => {
+        var _a;
+        return (_a = await this.activateLibrary()) == null ? void 0 : _a.runManualRescan();
+      }
+    });
+    for (const { page, label } of INSIGHTS_PAGES) {
+      this.addCommand({
+        id: `open-insights-${page}`,
+        name: `Open insights: ${label}`,
+        callback: async () => {
+          var _a;
+          return (_a = await this.activateLibrary()) == null ? void 0 : _a.showInsightsPage(page);
+        }
+      });
+    }
     this.addSettingTab(new SkillManagerSettingTab(this.app, this));
     this.applyAutoRescanInterval();
     this.applyAutoUpdateCheckInterval();
@@ -10850,13 +10933,12 @@ var SkillManagerPlugin = class extends import_obsidian17.Plugin {
   }
   async activateLibrary() {
     const { workspace } = this.app;
-    const existing = workspace.getLeavesOfType(LIBRARY_VIEW_TYPE)[0];
-    if (existing) {
-      await workspace.revealLeaf(existing);
-      return;
+    let leaf = workspace.getLeavesOfType(LIBRARY_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = workspace.getLeaf("tab");
+      await leaf.setViewState({ type: LIBRARY_VIEW_TYPE, active: true });
     }
-    const leaf = workspace.getLeaf("tab");
-    await leaf.setViewState({ type: LIBRARY_VIEW_TYPE, active: true });
     await workspace.revealLeaf(leaf);
+    return leaf.view instanceof LibraryView ? leaf.view : null;
   }
 };

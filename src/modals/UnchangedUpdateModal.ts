@@ -14,7 +14,7 @@ export class UnchangedUpdateModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: `No file changes for “${this.itemName}”` });
+    this.setTitle(`No file changes for “${this.itemName}”`);
     contentEl.createEl("p", {
       text: "The source repository has a newer commit, but this command or skill file is unchanged. The repository update has been accepted and your local file was left as-is.",
       cls: "skillmanager-modal-meta",

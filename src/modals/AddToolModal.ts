@@ -49,7 +49,7 @@ export class AddToolModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: "Add tool" });
+    this.setTitle("Add tool");
 
     new Setting(contentEl).setName("Name").addText((text) =>
       text.setPlaceholder("My Tool").onChange((value) => {

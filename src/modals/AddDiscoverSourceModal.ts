@@ -34,7 +34,7 @@ export class AddDiscoverSourceModal extends Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
-    contentEl.createEl("h3", { text: "Add a GitHub source to Discover" });
+    this.setTitle("Add a GitHub source to Discover");
     contentEl.createDiv({
       cls: "skillmanager-modal-meta",
       text: "Finds every skill, agent, command, and rule in the repo (or just the given folder) and adds them to Discover to browse and install later. Nothing is installed yet.",
