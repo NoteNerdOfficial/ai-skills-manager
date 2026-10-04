@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import {
   computeClaudeUsage,
   findUsagePruneCandidates,
   listTranscriptFiles,
+  MAX_TRANSCRIPT_FILE_BYTES,
   rankTopUsedItems,
   scanTranscriptFile,
   usageKey,
@@ -132,7 +133,8 @@ describe("scanTranscriptFile", () => {
   });
 
   it("skips a file over MAX_TRANSCRIPT_FILE_BYTES", () => {
-    writeFileSync(file, "x".repeat(6 * 1024 * 1024));
+    writeFileSync(file, "");
+    truncateSync(file, MAX_TRANSCRIPT_FILE_BYTES + 1);
     const usage = new Map<string, ClaudeUsageStats>();
     scanTranscriptFile(file, usage);
     expect(usage.size).toBe(0);

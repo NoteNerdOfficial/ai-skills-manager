@@ -26,10 +26,10 @@ export const USAGE_STALE_DAYS = 30;
  *  recency for prune detection) regardless of this window. */
 export const TOP_USED_WINDOW_DAYS = 90;
 
-/** Per-file skip-guard so one abnormally large transcript can't blow out a single readFileSync
- *  call. The *global* budget across every file (see LibraryView's loadClaudeUsage) is the one
- *  that actually bounds worst-case cost at realistic transcript volumes. */
-export const MAX_TRANSCRIPT_FILE_BYTES = 5 * 1024 * 1024;
+/** Per-file skip-guard so one pathological transcript can't blow out a single readFileSync call.
+ *  Kept well above real session sizes: an earlier 5MB cap silently dropped the longest (and most
+ *  skill-heavy) sessions, so a skill used only in one of them showed as never invoked. */
+export const MAX_TRANSCRIPT_FILE_BYTES = 64 * 1024 * 1024;
 
 export function usageKey(type: "skill" | "agent", name: string): string {
   return `${type}:${name}`;
@@ -108,7 +108,9 @@ export function scanTranscriptFile(
 
   const seenDays = new Set<string>();
   for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
+    // Cheap prefilter: only tool_use lines can carry a Skill/Agent invocation, and skipping
+    // JSON.parse on everything else keeps large transcripts fast.
+    if (!line.includes('"tool_use"')) continue;
     let entry: Record<string, unknown>;
     try {
       entry = JSON.parse(line) as Record<string, unknown>;
