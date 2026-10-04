@@ -91,10 +91,11 @@ export interface ToolConfig {
    *  empirically, not documented by the vendor — unlike `paths`, there's no confirmation
    *  mechanism for this, so it can silently stop matching if a tool renames its own convention. */
   builtInDirnames?: string[];
-  /** Skips this tool during scan/rescan and hides its items from the library grid entirely —
-   *  set from the "All tools" page (LibraryView.renderToolsPageContent), not Settings. Its
+  /** "Hidden" in the UI (the stored name predates that): hides this tool from the library grid
+   *  and sidebar only. The tool itself still loads its items, so Insights keep counting them.
+   *  Set from the "All tools" page (LibraryView.renderToolsPageContent), not Settings. Its
    *  shadow-note metadata (tags/favourites/collections) is deliberately preserved while
-   *  disabled — see rescan.ts's performRescan, which still scans a disabled tool so its store
+   *  hidden — see rescan.ts's performRescan, which still scans a disabled tool so its store
    *  entries survive a disable/re-enable round trip; only the returned item list is filtered. */
   disabled?: boolean;
   /** True for a tool the user added themselves via "Add tool" (the "All tools" page), as

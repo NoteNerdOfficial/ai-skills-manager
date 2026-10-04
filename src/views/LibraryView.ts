@@ -350,7 +350,7 @@ export class LibraryView extends ItemView {
    *  stats row above it (see renderToolsPageContent), which always totals every configured tool
    *  regardless of this filter — otherwise picking "Custom" would make "Detected"/"Enabled"
    *  read as counts of custom tools only, silently changing what those numbers mean. */
-  private toolStatusFilter: "all" | "detected" | "not-detected" | "enabled" | "disabled" | "custom" = "all";
+  private toolStatusFilter: "all" | "detected" | "not-detected" | "shown" | "hidden" | "custom" = "all";
   /** True while any of the sidebar's Insights pages is active — same swap-the-content-pane idea as
    *  discoverMode/toolsMode. Not a scope filter: it doesn't narrow this.items, it reports on it.
    *  insightsPage says which one; it outlives dashboardMode so "Back" from an item opened on a
@@ -1034,12 +1034,12 @@ export class LibraryView extends ItemView {
    *  that's how the menu counts what each option would show if picked (see renderFilterButton). */
   private matchesFilters(item: ItemMetadata, ignore?: FilterDimension): boolean {
     const query = this.search.trim().toLowerCase();
-    // Baseline, not a togglable filter (unlike everything below) — a disabled tool's items
+    // Baseline, not a togglable filter (unlike everything below) — a hidden tool's items
     // never show in the main grid, same spirit as enabledFilter already being separate from
     // the scope-filter group. this.items itself stays the full set (rescan.ts deliberately
-    // doesn't drop them, to keep their shadow-note metadata alive across a disable/re-enable),
-    // so the "All tools" page can still read true per-tool counts straight off this.items.
-    if (this.isToolDisabled(item.tool)) return false;
+    // doesn't drop them, to keep their shadow-note metadata alive across a hide/show), so the
+    // "All tools" page and Insights can still read true counts straight off this.items.
+    if (this.isToolHidden(item.tool)) return false;
     if (this.enabledFilter === "enabled" && !item.enabled) return false;
     if (this.enabledFilter === "disabled" && item.enabled) return false;
     if (this.favoritesOnly && !item.favorite) return false;
@@ -1280,7 +1280,7 @@ export class LibraryView extends ItemView {
   private openWorkspaceScopeMenu(evt: MouseEvent) {
     const menu = new Menu();
     for (const project of this.getAllProjects()) {
-      const count = this.items.filter((i) => i.projectId === project.id).length;
+      const count = this.libraryItems().filter((i) => i.projectId === project.id).length;
       menu.addItem((menuItem) =>
         menuItem
           .setTitle(`${project.name} (${count})`)
@@ -1328,7 +1328,7 @@ export class LibraryView extends ItemView {
       sidebar,
       "library",
       "All",
-      this.items.length,
+      this.libraryItems().length,
       !this.isScoped(),
       () => {
         this.clearScopeFilters();
@@ -1341,7 +1341,7 @@ export class LibraryView extends ItemView {
       false,
       this.workspaceScopeTooltip()
     );
-    this.renderNavRow(sidebar, "star", "Favourites", this.items.filter((i) => i.favorite).length, this.favoritesOnly, () => {
+    this.renderNavRow(sidebar, "star", "Favourites", this.libraryItems().filter((i) => i.favorite).length, this.favoritesOnly, () => {
       this.clearScopeFilters();
       this.favoritesOnly = true;
       this.render();
@@ -1523,7 +1523,7 @@ export class LibraryView extends ItemView {
   private renderTypesSection(sidebar: HTMLElement) {
     if (!this.renderCollapsibleHeading(sidebar, "types", "Types")) return;
     for (const type of Object.keys(TYPE_LABELS) as ItemType[]) {
-      const count = this.items.filter((i) => i.type === type).length;
+      const count = this.libraryItems().filter((i) => i.type === type).length;
       this.renderNavRow(sidebar, TYPE_ICONS[type], TYPE_CATEGORY_LABELS[type], count, this.typeFilter === type, () => {
         this.clearScopeFilters();
         this.typeFilter = this.typeFilter === type ? null : type;
@@ -1542,6 +1542,7 @@ export class LibraryView extends ItemView {
     });
     const showEmpty = settings.showEmptySidebarRows;
     for (const tool of this.getSettings().tools) {
+      if (tool.disabled) continue;
       const count = this.items.filter((i) => i.tool === tool.id).length;
       if (!showEmpty && count === 0) continue;
       this.renderNavRow(
@@ -1585,7 +1586,7 @@ export class LibraryView extends ItemView {
     const showEmpty = this.getSettings().showEmptySidebarRows;
     const projects = this.getAllProjects();
     for (const project of projects) {
-      const count = this.items.filter((i) => i.projectId === project.id).length;
+      const count = this.libraryItems().filter((i) => i.projectId === project.id).length;
       if (!showEmpty && count === 0 && project.id !== VAULT_PROJECT_ID) continue;
 
       const row = sidebar.createDiv({ cls: "skillmanager-nav-item" });
@@ -1638,7 +1639,7 @@ export class LibraryView extends ItemView {
     if (!this.renderCollapsibleHeading(sidebar, "plugins", "Plugins")) return;
     const showEmpty = this.getSettings().showEmptySidebarRows;
     for (const plugin of this.discoveredPlugins) {
-      const count = this.items.filter((i) => i.pluginId === plugin.id).length;
+      const count = this.libraryItems().filter((i) => i.pluginId === plugin.id).length;
       // Some plugins (e.g. a language-server integration) contribute no skill/agent/command/rule
       // content at all, not just "none scanned yet" — same "don't pad the sidebar with rows that
       // always read 0" reasoning Tools/Projects already apply, just missing here until now.
@@ -1944,8 +1945,15 @@ export class LibraryView extends ItemView {
     return isBuiltInPath(item.sourcePath, tool);
   }
 
-  private isToolDisabled(toolId: string): boolean {
+  private isToolHidden(toolId: string): boolean {
     return !!this.getSettings().tools.find((t) => t.id === toolId)?.disabled;
+  }
+
+  /** this.items minus hidden tools' items — what the sidebar counts, so a row never promises
+   *  items its page won't show. Insights keep reading this.items: a hidden tool still loads
+   *  everything, so its context cost is real. */
+  private libraryItems(): ItemMetadata[] {
+    return this.items.filter((i) => !this.isToolHidden(i.tool));
   }
 
   private isSingleFileRuleTool(toolId: string): boolean {
@@ -3492,14 +3500,14 @@ export class LibraryView extends ItemView {
     const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
     titleRow.createEl("h2", { text: "All tools", cls: "skillmanager-title" });
     header.createDiv({
-      text: "Every configured tool. Enable or disable one, edit its scanned paths, or add your own.",
+      text: "Every configured tool. Hide one from the library, edit its scanned paths, or add your own.",
       cls: "skillmanager-subtitle",
     });
 
     const stats = header.createDiv({ cls: "skillmanager-tool-stats" });
     const statValues: [string, number][] = [
       ["Detected", tools.filter((t) => this.toolIsDetected(t)).length],
-      ["Enabled", tools.filter((t) => !t.disabled).length],
+      ["Shown", tools.filter((t) => !t.disabled).length],
       ["Custom", tools.filter((t) => t.custom).length],
     ];
     for (const [label, value] of statValues) {
@@ -3548,9 +3556,9 @@ export class LibraryView extends ItemView {
         return this.toolIsDetected(tool);
       case "not-detected":
         return !this.toolIsDetected(tool);
-      case "enabled":
+      case "shown":
         return !tool.disabled;
-      case "disabled":
+      case "hidden":
         return !!tool.disabled;
       case "custom":
         return !!tool.custom;
@@ -3561,8 +3569,8 @@ export class LibraryView extends ItemView {
     const labels: Record<Exclude<typeof this.toolStatusFilter, "all">, string> = {
       detected: "Detected",
       "not-detected": "Not detected",
-      enabled: "Enabled",
-      disabled: "Disabled",
+      shown: "Shown",
+      hidden: "Hidden",
       custom: "Custom",
     };
     const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter tools" } });
@@ -3600,9 +3608,9 @@ export class LibraryView extends ItemView {
     });
   }
 
-  /** Enabled-with-content first, then enabled-and-detected-but-empty, then enabled-but-not-even-
-   *  detected, then disabled last regardless of anything else — so the tools actually worth
-   *  looking at float to the top and a pile of unused/misconfigured/disabled ones sink down
+  /** Shown-with-content first, then shown-and-detected-but-empty, then shown-but-not-even-
+   *  detected, then hidden last regardless of anything else — so the tools actually worth
+   *  looking at float to the top and a pile of unused/misconfigured/hidden ones sink down
    *  instead of being interleaved alphabetically with the ones that matter. Alphabetical within
    *  each tier for stability. */
   private sortedToolsForPage(): ToolConfig[] {
@@ -3615,8 +3623,9 @@ export class LibraryView extends ItemView {
     return [...this.getSettings().tools].sort((a, b) => tier(a) - tier(b) || a.name.localeCompare(b.name));
   }
 
-  private async toggleToolDisabled(tool: ToolConfig) {
+  private async toggleToolHidden(tool: ToolConfig) {
     tool.disabled = !tool.disabled;
+    if (tool.disabled && this.toolFilter === tool.id) this.toolFilter = null;
     await this.saveSettings();
     await this.rescan();
   }
@@ -3639,16 +3648,22 @@ export class LibraryView extends ItemView {
       head.createSpan({ text: "Custom", cls: "skillmanager-card-type skillmanager-card-type-sm" });
     }
 
-    createSwitch(head, {
-      on: !tool.disabled,
-      label: `${tool.name} enabled`,
-      onClick: () => void this.toggleToolDisabled(tool),
+    // An eye, not a switch: hiding only affects this view. The tool keeps loading its items, and
+    // a switch here would read as turning the tool itself off.
+    const hideBtn = head.createEl("button", {
+      cls: "skillmanager-icon-btn skillmanager-tool-visibility-btn",
+      attr: { "aria-label": tool.disabled ? "Show in library" : "Hide from library", "aria-pressed": String(!!tool.disabled) },
+    });
+    setIcon(hideBtn, tool.disabled ? "eye-off" : "eye");
+    hideBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      void this.toggleToolHidden(tool);
     });
 
     const count = this.items.filter((i) => i.tool === tool.id).length;
     card.createDiv({
       cls: "skillmanager-card-desc",
-      text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " (disabled)" : ""}`,
+      text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " (hidden)" : ""}`,
     });
 
     makeActivatable(card);
@@ -4332,7 +4347,7 @@ export class LibraryView extends ItemView {
       // Same match rule as filteredItems' search, across the whole library with nothing else applied.
       const lower = query.toLowerCase();
       const everywhere = this.items.filter(
-        (item) => !this.isToolDisabled(item.tool) && `${item.name} ${item.description}`.toLowerCase().includes(lower)
+        (item) => !this.isToolHidden(item.tool) && `${item.name} ${item.description}`.toLowerCase().includes(lower)
       ).length;
       if (everywhere > 0 && this.isScoped()) {
         const label = `Show ${everywhere} ${everywhere === 1 ? "match" : "matches"} in all items`;
@@ -6317,6 +6332,11 @@ export class LibraryView extends ItemView {
     // Weeks as columns, Mon to Sun as rows, stretched to the rail's width. No axis labels: each
     // cell's tooltip carries its date, which keeps it small enough to sit under the callouts.
     const max = Math.max(0, ...columns.flat().map((c) => c.count));
+    // Key sits at the right end of the callout row, level with the labels.
+    const legend = row.createDiv({ cls: "skillmanager-heatmap-legend", attr: { "aria-hidden": "true" } });
+    legend.createSpan({ text: "Less" });
+    for (let level = 0; level <= 4; level++) legend.createDiv({ cls: `skillmanager-heatmap-cell is-level-${level}` });
+    legend.createSpan({ text: "More" });
     const grid = container.createDiv({ cls: "skillmanager-heatmap" });
     grid.style.gridTemplateColumns = `repeat(${columns.length}, minmax(0, 1fr))`;
     for (let d = 0; d < 7; d++) {

@@ -37,13 +37,13 @@ export interface RescanResult {
  *  match. Shared by the library view (full rescan) and the file view (just needs a fresh read
  *  after a project-presence change) so the scan pipeline can't drift into two implementations.
  *
- *  A disabled tool (see ToolConfig.disabled, set from the "All tools" page) is still scanned
+ *  A hidden tool (see ToolConfig.disabled, set from the "All tools" page) is still scanned
  *  and kept in the store/returned items here, deliberately — skipping the scan entirely would
  *  mean pruneMissing() deletes its shadow notes (tags/favourites/collections), silently wiping
- *  that metadata on every disable rather than just hiding the items until re-enabled. Hiding a
- *  disabled tool's items from the main library grid happens downstream instead, in
- *  LibraryView.filteredItems() — this result stays "everything that's actually stored" so the
- *  "All tools" page can still show a disabled tool's true item count. */
+ *  that metadata on every hide rather than just hiding the items until shown again. Hiding a
+ *  tool's items from the library grid and sidebar happens downstream instead, in
+ *  LibraryView.filteredItems() and libraryItems() — this result stays "everything that's
+ *  actually stored" so the "All tools" page and Insights still see a hidden tool's true items. */
 /** `includeMcpServers` defaults to true (LibraryView.rescan() needs it for the always-visible
  *  sidebar count and the MCP servers tab); main.ts's no-view-open background rescan passes false
  *  since it never reads RescanResult.mcpServers, so there's no reason to synchronously read and

@@ -4746,7 +4746,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  that's how the menu counts what each option would show if picked (see renderFilterButton). */
   matchesFilters(item, ignore) {
     const query = this.search.trim().toLowerCase();
-    if (this.isToolDisabled(item.tool))
+    if (this.isToolHidden(item.tool))
       return false;
     if (this.enabledFilter === "enabled" && !item.enabled)
       return false;
@@ -5002,7 +5002,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
   openWorkspaceScopeMenu(evt) {
     const menu = new import_obsidian14.Menu();
     for (const project of this.getAllProjects()) {
-      const count = this.items.filter((i) => i.projectId === project.id).length;
+      const count = this.libraryItems().filter((i) => i.projectId === project.id).length;
       menu.addItem(
         (menuItem) => menuItem.setTitle(`${project.name} (${count})`).setIcon(projectIcon(project.id)).setDisabled(true)
       );
@@ -5041,7 +5041,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       sidebar,
       "library",
       "All",
-      this.items.length,
+      this.libraryItems().length,
       !this.isScoped(),
       () => {
         this.clearScopeFilters();
@@ -5054,7 +5054,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       false,
       this.workspaceScopeTooltip()
     );
-    this.renderNavRow(sidebar, "star", "Favourites", this.items.filter((i) => i.favorite).length, this.favoritesOnly, () => {
+    this.renderNavRow(sidebar, "star", "Favourites", this.libraryItems().filter((i) => i.favorite).length, this.favoritesOnly, () => {
       this.clearScopeFilters();
       this.favoritesOnly = true;
       this.render();
@@ -5233,7 +5233,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     if (!this.renderCollapsibleHeading(sidebar, "types", "Types"))
       return;
     for (const type of Object.keys(TYPE_LABELS)) {
-      const count = this.items.filter((i) => i.type === type).length;
+      const count = this.libraryItems().filter((i) => i.type === type).length;
       this.renderNavRow(sidebar, TYPE_ICONS[type], TYPE_CATEGORY_LABELS[type], count, this.typeFilter === type, () => {
         this.clearScopeFilters();
         this.typeFilter = this.typeFilter === type ? null : type;
@@ -5252,6 +5252,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
     });
     const showEmpty = settings.showEmptySidebarRows;
     for (const tool of this.getSettings().tools) {
+      if (tool.disabled)
+        continue;
       const count = this.items.filter((i) => i.tool === tool.id).length;
       if (!showEmpty && count === 0)
         continue;
@@ -5295,7 +5297,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const showEmpty = this.getSettings().showEmptySidebarRows;
     const projects = this.getAllProjects();
     for (const project of projects) {
-      const count = this.items.filter((i) => i.projectId === project.id).length;
+      const count = this.libraryItems().filter((i) => i.projectId === project.id).length;
       if (!showEmpty && count === 0 && project.id !== VAULT_PROJECT_ID)
         continue;
       const row = sidebar.createDiv({ cls: "skillmanager-nav-item" });
@@ -5340,7 +5342,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       return;
     const showEmpty = this.getSettings().showEmptySidebarRows;
     for (const plugin of this.discoveredPlugins) {
-      const count = this.items.filter((i) => i.pluginId === plugin.id).length;
+      const count = this.libraryItems().filter((i) => i.pluginId === plugin.id).length;
       if (!showEmpty && count === 0)
         continue;
       const row = sidebar.createDiv({ cls: "skillmanager-nav-item" });
@@ -5603,9 +5605,15 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const tool = this.getSettings().tools.find((t) => t.id === item.tool);
     return isBuiltInPath(item.sourcePath, tool);
   }
-  isToolDisabled(toolId) {
+  isToolHidden(toolId) {
     var _a;
     return !!((_a = this.getSettings().tools.find((t) => t.id === toolId)) == null ? void 0 : _a.disabled);
+  }
+  /** this.items minus hidden tools' items — what the sidebar counts, so a row never promises
+   *  items its page won't show. Insights keep reading this.items: a hidden tool still loads
+   *  everything, so its context cost is real. */
+  libraryItems() {
+    return this.items.filter((i) => !this.isToolHidden(i.tool));
   }
   isSingleFileRuleTool(toolId) {
     var _a;
@@ -7021,13 +7029,13 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
     titleRow.createEl("h2", { text: "All tools", cls: "skillmanager-title" });
     header.createDiv({
-      text: "Every configured tool. Enable or disable one, edit its scanned paths, or add your own.",
+      text: "Every configured tool. Hide one from the library, edit its scanned paths, or add your own.",
       cls: "skillmanager-subtitle"
     });
     const stats = header.createDiv({ cls: "skillmanager-tool-stats" });
     const statValues = [
       ["Detected", tools.filter((t) => this.toolIsDetected(t)).length],
-      ["Enabled", tools.filter((t) => !t.disabled).length],
+      ["Shown", tools.filter((t) => !t.disabled).length],
       ["Custom", tools.filter((t) => t.custom).length]
     ];
     for (const [label, value] of statValues) {
@@ -7069,9 +7077,9 @@ var LibraryView = class extends import_obsidian14.ItemView {
         return this.toolIsDetected(tool);
       case "not-detected":
         return !this.toolIsDetected(tool);
-      case "enabled":
+      case "shown":
         return !tool.disabled;
-      case "disabled":
+      case "hidden":
         return !!tool.disabled;
       case "custom":
         return !!tool.custom;
@@ -7081,8 +7089,8 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const labels = {
       detected: "Detected",
       "not-detected": "Not detected",
-      enabled: "Enabled",
-      disabled: "Disabled",
+      shown: "Shown",
+      hidden: "Hidden",
       custom: "Custom"
     };
     const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Filter tools" } });
@@ -7113,9 +7121,9 @@ var LibraryView = class extends import_obsidian14.ItemView {
       menu.showAtMouseEvent(evt);
     });
   }
-  /** Enabled-with-content first, then enabled-and-detected-but-empty, then enabled-but-not-even-
-   *  detected, then disabled last regardless of anything else — so the tools actually worth
-   *  looking at float to the top and a pile of unused/misconfigured/disabled ones sink down
+  /** Shown-with-content first, then shown-and-detected-but-empty, then shown-but-not-even-
+   *  detected, then hidden last regardless of anything else — so the tools actually worth
+   *  looking at float to the top and a pile of unused/misconfigured/hidden ones sink down
    *  instead of being interleaved alphabetically with the ones that matter. Alphabetical within
    *  each tier for stability. */
   sortedToolsForPage() {
@@ -7130,8 +7138,10 @@ var LibraryView = class extends import_obsidian14.ItemView {
     };
     return [...this.getSettings().tools].sort((a, b) => tier(a) - tier(b) || a.name.localeCompare(b.name));
   }
-  async toggleToolDisabled(tool) {
+  async toggleToolHidden(tool) {
     tool.disabled = !tool.disabled;
+    if (tool.disabled && this.toolFilter === tool.id)
+      this.toolFilter = null;
     await this.saveSettings();
     await this.rescan();
   }
@@ -7154,15 +7164,19 @@ var LibraryView = class extends import_obsidian14.ItemView {
     if (tool.custom) {
       head.createSpan({ text: "Custom", cls: "skillmanager-card-type skillmanager-card-type-sm" });
     }
-    createSwitch(head, {
-      on: !tool.disabled,
-      label: `${tool.name} enabled`,
-      onClick: () => void this.toggleToolDisabled(tool)
+    const hideBtn = head.createEl("button", {
+      cls: "skillmanager-icon-btn skillmanager-tool-visibility-btn",
+      attr: { "aria-label": tool.disabled ? "Show in library" : "Hide from library", "aria-pressed": String(!!tool.disabled) }
+    });
+    (0, import_obsidian14.setIcon)(hideBtn, tool.disabled ? "eye-off" : "eye");
+    hideBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      void this.toggleToolHidden(tool);
     });
     const count = this.items.filter((i) => i.tool === tool.id).length;
     card.createDiv({
       cls: "skillmanager-card-desc",
-      text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " (disabled)" : ""}`
+      text: `${count} item${count === 1 ? "" : "s"}${tool.disabled ? " (hidden)" : ""}`
     });
     makeActivatable(card);
     card.addEventListener("click", () => {
@@ -7805,7 +7819,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     if (query) {
       const lower = query.toLowerCase();
       const everywhere = this.items.filter(
-        (item) => !this.isToolDisabled(item.tool) && `${item.name} ${item.description}`.toLowerCase().includes(lower)
+        (item) => !this.isToolHidden(item.tool) && `${item.name} ${item.description}`.toLowerCase().includes(lower)
       ).length;
       if (everywhere > 0 && this.isScoped()) {
         const label = `Show ${everywhere} ${everywhere === 1 ? "match" : "matches"} in all items`;
@@ -9597,6 +9611,11 @@ ${item.description}`.length),
     if (total === 0)
       return;
     const max = Math.max(0, ...columns.flat().map((c) => c.count));
+    const legend = row.createDiv({ cls: "skillmanager-heatmap-legend", attr: { "aria-hidden": "true" } });
+    legend.createSpan({ text: "Less" });
+    for (let level = 0; level <= 4; level++)
+      legend.createDiv({ cls: `skillmanager-heatmap-cell is-level-${level}` });
+    legend.createSpan({ text: "More" });
     const grid = container.createDiv({ cls: "skillmanager-heatmap" });
     grid.style.gridTemplateColumns = `repeat(${columns.length}, minmax(0, 1fr))`;
     for (let d = 0; d < 7; d++) {

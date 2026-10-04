@@ -1493,6 +1493,22 @@ input.skillmanager-search {
   opacity: 1;
 }
 
+/* Tool cards' hide/show eye sits where the switch used to: pinned right, faint until the card is
+   engaged, and always visible once hidden so the state reads at a glance. */
+.skillmanager-tool-visibility-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+.skillmanager-card:hover .skillmanager-tool-visibility-btn,
+.skillmanager-card:focus-within .skillmanager-tool-visibility-btn,
+.skillmanager-card.is-selected .skillmanager-tool-visibility-btn,
+.skillmanager-tool-visibility-btn[aria-pressed="true"] {
+  opacity: 1;
+}
+
 /* ---------- detail panel (inline, docked beside the grid) ---------- */
 
 .skillmanager-detail {
@@ -1839,6 +1855,31 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-heatmap-cell.is-level-4 {
   background: var(--interactive-accent);
+}
+
+/* Less-to-more key at the right end of the callout row, on the labels' line. */
+.skillmanager-heatmap-legend {
+  display: flex;
+  align-self: flex-end;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.skillmanager-heatmap-legend .skillmanager-heatmap-cell {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.skillmanager-heatmap-legend span:first-child {
+  margin-right: 3px;
+}
+
+.skillmanager-heatmap-legend span:last-child {
+  margin-left: 3px;
 }
 
 /* Weekly bars, used by the Insights Usage page's Activity chart. */

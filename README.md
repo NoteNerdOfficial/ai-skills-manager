@@ -112,7 +112,7 @@ Checkmarks reflect the paths scanned by default. Every one of them, plus a few d
 
 Support for additional tools and edge cases is welcome. If you use one of these tools and can test a layout, share feedback, or improve its scanner, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-![All tools page showing configured tools, item counts, and enable or disable controls](images/all-tools.png)
+![All tools page showing configured tools, item counts, and hide or show controls](images/all-tools.png)
 
 ## Installation
 
