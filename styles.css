@@ -2675,14 +2675,14 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-bar-track {
   flex: 1;
   height: 6px;
-  border-radius: var(--radius-s);
+  border-radius: 3px;
   background: var(--background-modifier-border);
   overflow: hidden;
 }
 
 .skillmanager-dash-bar-fill {
   height: 100%;
-  border-radius: var(--radius-s);
+  border-radius: 3px;
   background: var(--interactive-accent);
 }
 
@@ -2886,7 +2886,7 @@ input.skillmanager-tag-add-input {
 .skillmanager-dash-tile-bar {
   position: relative;
   height: 8px;
-  border-radius: var(--radius-s);
+  border-radius: 3px;
   background: var(--background-modifier-border);
   overflow: hidden;
 }
@@ -2930,12 +2930,12 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-dash-bar-list .skillmanager-dash-bar-track {
   height: 10px;
-  border-radius: var(--radius-s);
+  border-radius: 2px;
   background: transparent;
 }
 
 .skillmanager-dash-bar-list .skillmanager-dash-bar-fill {
-  border-radius: var(--radius-s);
+  border-radius: 2px;
 }
 
 .skillmanager-dash-bar-list .skillmanager-dash-row-cost {

@@ -2872,7 +2872,7 @@ function heatLevel(count, max) {
 var CLAUDE_PROJECTS_DIR = "~/.claude/projects";
 var USAGE_STALE_DAYS = 30;
 var TOP_USED_WINDOW_DAYS = 90;
-var MAX_TRANSCRIPT_FILE_BYTES = 5 * 1024 * 1024;
+var MAX_TRANSCRIPT_FILE_BYTES = 64 * 1024 * 1024;
 function usageKey(type, name) {
   return `${type}:${name}`;
 }
@@ -2921,7 +2921,7 @@ function scanTranscriptFile(filePath, into, sinceMs = 0, daysInto) {
   }
   const seenDays = /* @__PURE__ */ new Set();
   for (const line of raw.split("\n")) {
-    if (!line.trim())
+    if (!line.includes('"tool_use"'))
       continue;
     let entry;
     try {
