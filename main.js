@@ -431,8 +431,8 @@ var import_obsidian15 = require("obsidian");
 // src/views/LibraryView.ts
 var import_obsidian14 = require("obsidian");
 var import_child_process2 = require("child_process");
-var import_fs16 = require("fs");
-var import_path16 = require("path");
+var import_fs17 = require("fs");
+var import_path17 = require("path");
 var import_os4 = require("os");
 
 // src/scanners.ts
@@ -1109,6 +1109,146 @@ function removeFromProject(projectItemSourcePath) {
   (0, import_fs3.unlinkSync)(unit.path);
 }
 
+// src/history.ts
+var import_crypto = require("crypto");
+var import_fs4 = require("fs");
+var import_path5 = require("path");
+var HISTORY_KEPT = 20;
+var MAX_UNIT_SNAPSHOT_BYTES = 20 * 1024 * 1024;
+var META = "meta.json";
+var CONTENT = "content";
+function sizeOf(path) {
+  const stat = (0, import_fs4.statSync)(path);
+  if (!stat.isDirectory())
+    return stat.size;
+  let total = 0;
+  for (const entry of (0, import_fs4.readdirSync)(path)) {
+    if (entry === ".git")
+      continue;
+    total += sizeOf((0, import_path5.join)(path, entry));
+    if (total > MAX_UNIT_SNAPSHOT_BYTES)
+      break;
+  }
+  return total;
+}
+var ItemHistory = class {
+  constructor(root, keep = HISTORY_KEPT) {
+    this.root = root;
+    this.keep = keep;
+  }
+  itemDir(entryId) {
+    return (0, import_path5.join)(this.root, (0, import_crypto.createHash)("sha1").update(entryId).digest("hex").slice(0, 16));
+  }
+  versionDir(entry) {
+    return (0, import_path5.join)(this.itemDir(entry.entryId), entry.id);
+  }
+  /** Newest first. Unreadable or half-written versions are skipped. */
+  list(entryId) {
+    const dir = this.itemDir(entryId);
+    if (!(0, import_fs4.existsSync)(dir))
+      return [];
+    const entries = [];
+    for (const name of (0, import_fs4.readdirSync)(dir)) {
+      try {
+        const meta = JSON.parse((0, import_fs4.readFileSync)((0, import_path5.join)(dir, name, META), "utf-8"));
+        if (meta.entryId === entryId && (0, import_fs4.existsSync)((0, import_path5.join)(dir, name, CONTENT)))
+          entries.push(meta);
+      } catch (e) {
+      }
+    }
+    return entries.sort((a, b) => b.at - a.at || b.id.localeCompare(a.id));
+  }
+  /** Saves `filePath`'s current content before an edit overwrites it. `nextContent` lets a save
+   *  that changes nothing skip the snapshot. Returns null when nothing was saved. */
+  snapshotFile(entryId, unitPath, filePath, kind, nextContent) {
+    if (!(0, import_fs4.existsSync)(filePath))
+      return null;
+    if (nextContent !== void 0 && (0, import_fs4.readFileSync)(filePath, "utf-8") === nextContent)
+      return null;
+    const relPath = filePath === unitPath ? "" : (0, import_path5.relative)(unitPath, filePath);
+    return this.write({ entryId, kind, scope: "file", relPath }, (dest) => (0, import_fs4.copyFileSync)(filePath, dest));
+  }
+  /** Saves the whole unit before an update/restore replaces it. Returns null when it's missing or
+   *  over MAX_UNIT_SNAPSHOT_BYTES. */
+  snapshotUnit(entryId, unitPath, isDirectory, kind, extra = {}) {
+    if (!(0, import_fs4.existsSync)(unitPath) || sizeOf(unitPath) > MAX_UNIT_SNAPSHOT_BYTES)
+      return null;
+    return this.write({ entryId, kind, scope: "unit", relPath: "", ...extra }, (dest) => this.copyUnit(unitPath, isDirectory, dest));
+  }
+  copyUnit(unitPath, isDirectory, dest) {
+    if (isDirectory) {
+      (0, import_fs4.cpSync)(unitPath, dest, { recursive: true, dereference: true, filter: (src) => (0, import_path5.basename)(src) !== ".git" });
+    } else {
+      (0, import_fs4.copyFileSync)(unitPath, dest);
+    }
+  }
+  /** The saved copy: a file for "file" scope or a flat unit, a folder for a folder unit. */
+  contentPath(entry) {
+    return (0, import_path5.join)(this.versionDir(entry), CONTENT);
+  }
+  /** Text of one file in a version: the edited file for "file" scope, or `relPath` inside a
+   *  "unit" snapshot ("" for a flat unit). Empty string when it isn't there. */
+  readText(entry, relPath = "") {
+    const path = entry.scope === "unit" && relPath ? (0, import_path5.join)(this.contentPath(entry), relPath) : this.contentPath(entry);
+    try {
+      return (0, import_fs4.readFileSync)(path, "utf-8");
+    } catch (e) {
+      return "";
+    }
+  }
+  /** Saves the current state of whatever `entry` covers, right before restoring it. Unlike the
+   *  other snapshots this doesn't prune, since pruning could remove `entry` itself before it's
+   *  been copied back; call prune() once the restore is done. */
+  snapshotBeforeRestore(entry, unitPath, isDirectory, commit) {
+    if (entry.scope === "file") {
+      const filePath = entry.relPath ? (0, import_path5.join)(unitPath, entry.relPath) : unitPath;
+      if (!(0, import_fs4.existsSync)(filePath) || (0, import_fs4.readFileSync)(filePath, "utf-8") === this.readText(entry))
+        return null;
+      return this.write({ entryId: entry.entryId, kind: "restore", scope: "file", relPath: entry.relPath }, (dest) => (0, import_fs4.copyFileSync)(filePath, dest), false);
+    }
+    if (!(0, import_fs4.existsSync)(unitPath) || sizeOf(unitPath) > MAX_UNIT_SNAPSHOT_BYTES)
+      return null;
+    return this.write({ entryId: entry.entryId, kind: "restore", scope: "unit", relPath: "", commit }, (dest) => this.copyUnit(unitPath, isDirectory, dest), false);
+  }
+  /** Writes a "file" version back over its file. Unit versions go through the view's
+   *  replaceUnit instead, so the replaced copy reaches the trash like an update. */
+  restoreFile(entry, unitPath) {
+    if (entry.scope !== "file")
+      throw new Error("Not a single-file version.");
+    const target = entry.relPath ? (0, import_path5.join)(unitPath, entry.relPath) : unitPath;
+    (0, import_fs4.mkdirSync)((0, import_path5.dirname)(target), { recursive: true });
+    (0, import_fs4.copyFileSync)(this.contentPath(entry), target);
+  }
+  write(fields, copy, prune = true) {
+    const itemDir = this.itemDir(fields.entryId);
+    const at = Date.now();
+    let id = String(at);
+    for (let n = 1; (0, import_fs4.existsSync)((0, import_path5.join)(itemDir, id)); n++)
+      id = `${at}-${n}`;
+    const entry = { id, at, ...fields };
+    const dir = (0, import_path5.join)(itemDir, id);
+    (0, import_fs4.mkdirSync)(dir, { recursive: true });
+    try {
+      copy((0, import_path5.join)(dir, CONTENT));
+      (0, import_fs4.writeFileSync)((0, import_path5.join)(dir, META), JSON.stringify(entry, null, 2) + "\n");
+    } catch (e) {
+      (0, import_fs4.rmSync)(dir, { recursive: true, force: true });
+      throw e;
+    }
+    if (prune)
+      this.prune(fields.entryId);
+    return entry;
+  }
+  prune(entryId) {
+    for (const old of this.list(entryId).slice(this.keep)) {
+      try {
+        (0, import_fs4.rmSync)(this.versionDir(old), { recursive: true, force: true });
+      } catch (e) {
+      }
+    }
+  }
+};
+
 // src/a11y.ts
 function makeActivatable(el, label) {
   el.tabIndex = 0;
@@ -1144,8 +1284,8 @@ function createSwitch(parent, opts) {
 }
 
 // src/memories.ts
-var import_fs4 = require("fs");
-var import_path5 = require("path");
+var import_fs5 = require("fs");
+var import_path6 = require("path");
 var MEMORY_INDEX_FILENAME = "MEMORY.md";
 var DISABLED_INDEX_SIDECAR = "memory-index.json";
 function projectSlug(projectPath) {
@@ -1159,10 +1299,10 @@ function memoryRoot(tool) {
 function projectMemoryDir(tool, project) {
   var _a;
   const raw = (_a = tool.projectMemoryPath) == null ? void 0 : _a.trim();
-  return raw ? (0, import_path5.join)(expandHome2(project.path), raw) : null;
+  return raw ? (0, import_path6.join)(expandHome2(project.path), raw) : null;
 }
 function isUnder(path, root) {
-  return path.startsWith(root.endsWith(import_path5.sep) ? root : root + import_path5.sep);
+  return path.startsWith(root.endsWith(import_path6.sep) ? root : root + import_path6.sep);
 }
 function isMemoryItem(item, tool, projects = []) {
   if (!tool)
@@ -1176,13 +1316,13 @@ function isMemoryItem(item, tool, projects = []) {
   return projectDir !== null && isUnder(path, projectDir);
 }
 function isMemoryIndex(item) {
-  return (0, import_path5.basename)(stableEntryPath(item.sourcePath)) === MEMORY_INDEX_FILENAME;
+  return (0, import_path6.basename)(stableEntryPath(item.sourcePath)) === MEMORY_INDEX_FILENAME;
 }
 function childDirs(dir) {
   try {
-    return (0, import_fs4.readdirSync)(dir).filter((name) => {
+    return (0, import_fs5.readdirSync)(dir).filter((name) => {
       try {
-        return (0, import_fs4.statSync)((0, import_path5.join)(dir, name)).isDirectory();
+        return (0, import_fs5.statSync)((0, import_path6.join)(dir, name)).isDirectory();
       } catch (e) {
         return false;
       }
@@ -1193,16 +1333,16 @@ function childDirs(dir) {
 }
 function scanMemories(tool, projects) {
   const root = memoryRoot(tool);
-  if (!root || !(0, import_fs4.existsSync)(root))
+  if (!root || !(0, import_fs5.existsSync)(root))
     return [];
-  const projectDirs = childDirs(root).filter((name) => (0, import_fs4.existsSync)((0, import_path5.join)(root, name, "memory")));
+  const projectDirs = childDirs(root).filter((name) => (0, import_fs5.existsSync)((0, import_path6.join)(root, name, "memory")));
   if (projectDirs.length === 0)
     return scanDirectory(root, tool, "rule", null, null);
   const bySlug = new Map(projects.map((p) => [projectSlug(expandHome2(p.path)).toLowerCase(), p.id]));
   return projectDirs.flatMap(
     (name) => {
       var _a;
-      return scanDirectory((0, import_path5.join)(root, name, "memory"), tool, "rule", (_a = bySlug.get(name.toLowerCase())) != null ? _a : null, null);
+      return scanDirectory((0, import_path6.join)(root, name, "memory"), tool, "rule", (_a = bySlug.get(name.toLowerCase())) != null ? _a : null, null);
     }
   );
 }
@@ -1225,47 +1365,47 @@ function indexLinksTo(indexText, fileName) {
   return linkPattern(fileName).test(indexText);
 }
 function removeIndexLines(indexPath, fileName) {
-  if (!(0, import_fs4.existsSync)(indexPath))
+  if (!(0, import_fs5.existsSync)(indexPath))
     return null;
-  const text = (0, import_fs4.readFileSync)(indexPath, "utf-8");
+  const text = (0, import_fs5.readFileSync)(indexPath, "utf-8");
   const pattern = linkPattern(fileName);
   const lines = text.split("\n");
   const removed = lines.filter((line) => pattern.test(line));
   if (removed.length === 0)
     return null;
-  (0, import_fs4.writeFileSync)(indexPath, lines.filter((line) => !pattern.test(line)).join("\n"));
+  (0, import_fs5.writeFileSync)(indexPath, lines.filter((line) => !pattern.test(line)).join("\n"));
   return removed.join("\n");
 }
 function appendIndexLine(indexPath, fileName, line) {
-  if (!(0, import_fs4.existsSync)(indexPath))
+  if (!(0, import_fs5.existsSync)(indexPath))
     return;
-  const text = (0, import_fs4.readFileSync)(indexPath, "utf-8");
+  const text = (0, import_fs5.readFileSync)(indexPath, "utf-8");
   if (indexLinksTo(text, fileName))
     return;
   const separator = text === "" || text.endsWith("\n") ? "" : "\n";
-  (0, import_fs4.writeFileSync)(indexPath, `${text}${separator}${line}
+  (0, import_fs5.writeFileSync)(indexPath, `${text}${separator}${line}
 `);
 }
 function readSidecar(memoryDir) {
   try {
-    return JSON.parse((0, import_fs4.readFileSync)((0, import_path5.join)(memoryDir, DISABLED_DIRNAME, DISABLED_INDEX_SIDECAR), "utf-8"));
+    return JSON.parse((0, import_fs5.readFileSync)((0, import_path6.join)(memoryDir, DISABLED_DIRNAME, DISABLED_INDEX_SIDECAR), "utf-8"));
   } catch (e) {
     return {};
   }
 }
 function writeSidecar(memoryDir, entries) {
-  const path = (0, import_path5.join)(memoryDir, DISABLED_DIRNAME, DISABLED_INDEX_SIDECAR);
+  const path = (0, import_path6.join)(memoryDir, DISABLED_DIRNAME, DISABLED_INDEX_SIDECAR);
   if (Object.keys(entries).length === 0) {
-    if ((0, import_fs4.existsSync)(path))
-      (0, import_fs4.unlinkSync)(path);
+    if ((0, import_fs5.existsSync)(path))
+      (0, import_fs5.unlinkSync)(path);
     return;
   }
-  (0, import_fs4.writeFileSync)(path, JSON.stringify(entries, null, 2) + "\n");
+  (0, import_fs5.writeFileSync)(path, JSON.stringify(entries, null, 2) + "\n");
 }
 function generatedIndexLine(filePath, fileName) {
   let meta = { name: "", description: "" };
   try {
-    meta = parseSourceMeta((0, import_fs4.readFileSync)(filePath, "utf-8").slice(0, 4e3));
+    meta = parseSourceMeta((0, import_fs5.readFileSync)(filePath, "utf-8").slice(0, 4e3));
   } catch (e) {
   }
   const title = meta.name || fileName.replace(/\.md$/, "");
@@ -1279,9 +1419,9 @@ function toggleMemoryEnabled(item) {
   }
   const { willDisable, fromPath, toPath } = previewToggle(item);
   toggleItemEnabled(item);
-  const memoryDir = (0, import_path5.dirname)(willDisable ? fromPath : toPath);
-  const fileName = (0, import_path5.basename)(willDisable ? fromPath : toPath);
-  const indexPath = (0, import_path5.join)(memoryDir, MEMORY_INDEX_FILENAME);
+  const memoryDir = (0, import_path6.dirname)(willDisable ? fromPath : toPath);
+  const fileName = (0, import_path6.basename)(willDisable ? fromPath : toPath);
+  const indexPath = (0, import_path6.join)(memoryDir, MEMORY_INDEX_FILENAME);
   const sidecar = readSidecar(memoryDir);
   if (willDisable) {
     const removed = removeIndexLines(indexPath, fileName);
@@ -1297,10 +1437,10 @@ function forgetMemoryIndexEntry(item) {
   if (isMemoryIndex(item))
     return;
   const stablePath = stableEntryPath(item.sourcePath);
-  const memoryDir = (0, import_path5.dirname)(stablePath);
-  const fileName = (0, import_path5.basename)(stablePath);
+  const memoryDir = (0, import_path6.dirname)(stablePath);
+  const fileName = (0, import_path6.basename)(stablePath);
   if (item.enabled) {
-    removeIndexLines((0, import_path5.join)(memoryDir, MEMORY_INDEX_FILENAME), fileName);
+    removeIndexLines((0, import_path6.join)(memoryDir, MEMORY_INDEX_FILENAME), fileName);
   } else {
     const sidecar = readSidecar(memoryDir);
     delete sidecar[fileName];
@@ -1310,11 +1450,11 @@ function forgetMemoryIndexEntry(item) {
 function checkMemoryIndexed(item) {
   if (!item.enabled || isMemoryIndex(item))
     return [];
-  const indexPath = (0, import_path5.join)((0, import_path5.dirname)(item.sourcePath), MEMORY_INDEX_FILENAME);
-  if (!(0, import_fs4.existsSync)(indexPath))
+  const indexPath = (0, import_path6.join)((0, import_path6.dirname)(item.sourcePath), MEMORY_INDEX_FILENAME);
+  if (!(0, import_fs5.existsSync)(indexPath))
     return [];
   try {
-    if (indexLinksTo((0, import_fs4.readFileSync)(indexPath, "utf-8"), (0, import_path5.basename)(item.sourcePath)))
+    if (indexLinksTo((0, import_fs5.readFileSync)(indexPath, "utf-8"), (0, import_path6.basename)(item.sourcePath)))
       return [];
   } catch (e) {
     return [];
@@ -1612,30 +1752,30 @@ var import_obsidian6 = require("obsidian");
 
 // src/rescan.ts
 var import_obsidian5 = require("obsidian");
-var import_path7 = require("path");
+var import_path8 = require("path");
 
 // src/mcpScanners.ts
-var import_fs5 = require("fs");
-var import_path6 = require("path");
+var import_fs6 = require("fs");
+var import_path7 = require("path");
 function readMcpServersFromFile(path, key = "mcpServers") {
   var _a;
-  if (!(0, import_fs5.existsSync)(path))
+  if (!(0, import_fs6.existsSync)(path))
     return {};
   try {
-    const raw = JSON.parse((0, import_fs5.readFileSync)(path, "utf-8"));
+    const raw = JSON.parse((0, import_fs6.readFileSync)(path, "utf-8"));
     return (_a = raw[key]) != null ? _a : {};
   } catch (e) {
     return {};
   }
 }
 function readMcpServersFromToml(path, tablePrefix = "mcp_servers") {
-  if (!(0, import_fs5.existsSync)(path))
+  if (!(0, import_fs6.existsSync)(path))
     return {};
   try {
     const prefix = `[${tablePrefix}.`;
     const servers = {};
     let current = null;
-    for (const rawLine of (0, import_fs5.readFileSync)(path, "utf-8").split(/\r?\n/)) {
+    for (const rawLine of (0, import_fs6.readFileSync)(path, "utf-8").split(/\r?\n/)) {
       const line = rawLine.trim();
       if (!line || line.startsWith("#"))
         continue;
@@ -1737,7 +1877,7 @@ function scanMcpServers(tools, projects) {
     }
     if (tool.projectMcpConfigPath) {
       for (const project of projects) {
-        const projectPath = (0, import_path6.join)(expandHome2(project.path), tool.projectMcpConfigPath);
+        const projectPath = (0, import_path7.join)(expandHome2(project.path), tool.projectMcpConfigPath);
         for (const [name, config] of Object.entries(readMcpServers(projectPath, tool))) {
           entries.push({
             entryId: `${tool.id}:project:${project.id}:${projectPath}:${name}`,
@@ -1794,7 +1934,7 @@ async function performRescan(app, settings, store, includeMcpServers = true) {
   }
   const existing = await store.list();
   const brokenPaths = new Set(brokenSymlinks.map((link) => link.path));
-  const retainedBrokenIds = existing.filter((item) => brokenPaths.has(item.sourcePath) || brokenPaths.has((0, import_path7.dirname)(item.sourcePath))).map((item) => item.entryId);
+  const retainedBrokenIds = existing.filter((item) => brokenPaths.has(item.sourcePath) || brokenPaths.has((0, import_path8.dirname)(item.sourcePath))).map((item) => item.entryId);
   const validIds = /* @__PURE__ */ new Set([...discovered.map((d) => d.entryId), ...retainedBrokenIds]);
   await store.pruneMissing(validIds);
   return {
@@ -1907,14 +2047,14 @@ var ProjectEditModal = class extends import_obsidian7.Modal {
 
 // src/modals/InstallFromGitHubModal.ts
 var import_obsidian8 = require("obsidian");
-var import_fs7 = require("fs");
-var import_path9 = require("path");
+var import_fs8 = require("fs");
+var import_path10 = require("path");
 
 // src/git.ts
 var import_child_process = require("child_process");
-var import_fs6 = require("fs");
+var import_fs7 = require("fs");
 var import_os3 = require("os");
-var import_path8 = require("path");
+var import_path9 = require("path");
 function git(args, cwd) {
   try {
     return (0, import_child_process.execFileSync)("git", args, {
@@ -1943,7 +2083,7 @@ function remoteHeadCommit(repoUrl, ref) {
   return sha;
 }
 function shallowCloneRepo(repoUrl, ref) {
-  const dir = (0, import_fs6.mkdtempSync)((0, import_path8.join)((0, import_os3.tmpdir)(), "skillmanager-clone-"));
+  const dir = (0, import_fs7.mkdtempSync)((0, import_path9.join)((0, import_os3.tmpdir)(), "skillmanager-clone-"));
   try {
     const args = ["clone", "--depth", "1", "--single-branch"];
     if (ref)
@@ -1951,22 +2091,22 @@ function shallowCloneRepo(repoUrl, ref) {
     args.push(repoUrl, dir);
     git(args);
     const commit = git(["rev-parse", "HEAD"], dir);
-    return { dir, commit, cleanup: () => (0, import_fs6.rmSync)(dir, { recursive: true, force: true }) };
+    return { dir, commit, cleanup: () => (0, import_fs7.rmSync)(dir, { recursive: true, force: true }) };
   } catch (e) {
-    (0, import_fs6.rmSync)(dir, { recursive: true, force: true });
+    (0, import_fs7.rmSync)(dir, { recursive: true, force: true });
     throw e;
   }
 }
 function shallowCloneAtCommit(repoUrl, commitSha) {
-  const dir = (0, import_fs6.mkdtempSync)((0, import_path8.join)((0, import_os3.tmpdir)(), "skillmanager-clone-"));
+  const dir = (0, import_fs7.mkdtempSync)((0, import_path9.join)((0, import_os3.tmpdir)(), "skillmanager-clone-"));
   try {
     git(["init", "-q", dir]);
     git(["remote", "add", "origin", repoUrl], dir);
     git(["fetch", "--depth", "1", "origin", commitSha], dir);
     git(["checkout", "-q", "FETCH_HEAD"], dir);
-    return { dir, commit: commitSha, cleanup: () => (0, import_fs6.rmSync)(dir, { recursive: true, force: true }) };
+    return { dir, commit: commitSha, cleanup: () => (0, import_fs7.rmSync)(dir, { recursive: true, force: true }) };
   } catch (e) {
-    (0, import_fs6.rmSync)(dir, { recursive: true, force: true });
+    (0, import_fs7.rmSync)(dir, { recursive: true, force: true });
     throw new Error(
       `Couldn't fetch the originally-installed commit from this host. Try "Check for updates" instead. (${errorMessage(e)})`
     );
@@ -2154,26 +2294,26 @@ var InstallFromGitHubModal = class extends import_obsidian8.Modal {
     let clone = null;
     try {
       clone = shallowCloneRepo(repoUrl, ref || void 0);
-      (0, import_fs7.rmSync)((0, import_path9.join)(clone.dir, ".git"), { recursive: true, force: true });
-      const sourceRoot = subpath ? (0, import_path9.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs7.existsSync)(sourceRoot)) {
+      (0, import_fs8.rmSync)((0, import_path10.join)(clone.dir, ".git"), { recursive: true, force: true });
+      const sourceRoot = subpath ? (0, import_path10.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs8.existsSync)(sourceRoot)) {
         throw new Error(`"${subpath}" doesn't exist in this repo${ref ? ` at ${ref}` : ""}.`);
       }
-      const sourceStat = (0, import_fs7.statSync)(sourceRoot);
+      const sourceStat = (0, import_fs8.statSync)(sourceRoot);
       const isDirectory = sourceStat.isDirectory();
-      const unitName = subpath ? (0, import_path9.basename)(subpath) : (0, import_path9.basename)(repoUrl, ".git");
-      const destPath = (0, import_path9.join)(destDir, unitName);
-      if ((0, import_fs7.existsSync)(destPath)) {
+      const unitName = subpath ? (0, import_path10.basename)(subpath) : (0, import_path10.basename)(repoUrl, ".git");
+      const destPath = (0, import_path10.join)(destDir, unitName);
+      if ((0, import_fs8.existsSync)(destPath)) {
         throw new Error(`"${unitName}" already exists at ${destDir}.`);
       }
-      (0, import_fs7.mkdirSync)(destDir, { recursive: true });
+      (0, import_fs8.mkdirSync)(destDir, { recursive: true });
       if (isDirectory) {
-        (0, import_fs7.cpSync)(sourceRoot, destPath, { recursive: true });
+        (0, import_fs8.cpSync)(sourceRoot, destPath, { recursive: true });
       } else {
-        (0, import_fs7.copyFileSync)(sourceRoot, destPath);
+        (0, import_fs8.copyFileSync)(sourceRoot, destPath);
       }
-      const primaryFile = isDirectory ? (0, import_path9.join)(destPath, "SKILL.md") : destPath;
-      const meta = (0, import_fs7.existsSync)(primaryFile) ? parseSourceMeta((0, import_fs7.readFileSync)(primaryFile, "utf-8").slice(0, 4e3)) : { name: "", description: "" };
+      const primaryFile = isDirectory ? (0, import_path10.join)(destPath, "SKILL.md") : destPath;
+      const meta = (0, import_fs8.existsSync)(primaryFile) ? parseSourceMeta((0, import_fs8.readFileSync)(primaryFile, "utf-8").slice(0, 4e3)) : { name: "", description: "" };
       const baseName = isDirectory ? unitName : unitName.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
       const name = meta.name || baseName;
       const entryId = makeEntryId(tool.id, this.type, (_d = project == null ? void 0 : project.id) != null ? _d : null, null, baseName, stableEntryPath(primaryFile));
@@ -2206,16 +2346,16 @@ var InstallFromGitHubModal = class extends import_obsidian8.Modal {
 var import_obsidian10 = require("obsidian");
 
 // src/discover.ts
-var import_fs8 = require("fs");
-var import_path10 = require("path");
-var import_crypto = require("crypto");
+var import_fs9 = require("fs");
+var import_path11 = require("path");
+var import_crypto2 = require("crypto");
 var import_obsidian9 = require("obsidian");
 function discoverEntryId(repoUrl, entrySubpath, name) {
-  const hash = (0, import_crypto.createHash)("sha1").update(`${repoUrl}#${entrySubpath}#${name}`).digest("hex").slice(0, 12);
+  const hash = (0, import_crypto2.createHash)("sha1").update(`${repoUrl}#${entrySubpath}#${name}`).digest("hex").slice(0, 12);
   return `${slug(name)}-${hash}`;
 }
 function discoverSourceId(repoUrl, ref, subpath) {
-  return (0, import_crypto.createHash)("sha1").update(`${repoUrl}#${ref}#${subpath}`).digest("hex").slice(0, 16);
+  return (0, import_crypto2.createHash)("sha1").update(`${repoUrl}#${ref}#${subpath}`).digest("hex").slice(0, 16);
 }
 function dedupeDiscoverCatalog(catalog) {
   const byIdentity = /* @__PURE__ */ new Map();
@@ -2245,8 +2385,8 @@ function findRepoManifests(rootDir) {
   const results = [];
   function walk2(dir, depth, typeHint) {
     var _a;
-    const skillManifest = (0, import_path10.join)(dir, "SKILL.md");
-    if ((0, import_fs8.existsSync)(skillManifest)) {
+    const skillManifest = (0, import_path11.join)(dir, "SKILL.md");
+    if ((0, import_fs9.existsSync)(skillManifest)) {
       results.push({ type: "skill", path: skillManifest });
       return;
     }
@@ -2254,22 +2394,22 @@ function findRepoManifests(rootDir) {
       return;
     let entries;
     try {
-      entries = (0, import_fs8.readdirSync)(dir, { withFileTypes: true }).filter((e) => !SKIP_DIRNAMES2.has(e.name)).map((e) => ({ name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() }));
+      entries = (0, import_fs9.readdirSync)(dir, { withFileTypes: true }).filter((e) => !SKIP_DIRNAMES2.has(e.name)).map((e) => ({ name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() }));
     } catch (e) {
       return;
     }
-    const dirType = (_a = TYPE_DIRNAMES[(0, import_path10.basename)(dir).toLowerCase()]) != null ? _a : null;
+    const dirType = (_a = TYPE_DIRNAMES[(0, import_path11.basename)(dir).toLowerCase()]) != null ? _a : null;
     const effectiveType = dirType != null ? dirType : typeHint;
     if (effectiveType) {
       for (const entry of entries) {
         if (entry.isFile && entry.name.endsWith(".md")) {
-          results.push({ type: effectiveType, path: (0, import_path10.join)(dir, entry.name) });
+          results.push({ type: effectiveType, path: (0, import_path11.join)(dir, entry.name) });
         }
       }
     }
     for (const entry of entries) {
       if (entry.isDirectory)
-        walk2((0, import_path10.join)(dir, entry.name), depth + 1, effectiveType);
+        walk2((0, import_path11.join)(dir, entry.name), depth + 1, effectiveType);
     }
   }
   walk2(rootDir, 0, null);
@@ -2278,8 +2418,8 @@ function findRepoManifests(rootDir) {
 async function discoverGitSkills(repoUrl, ref, subpath) {
   const clone = shallowCloneRepo(repoUrl, ref || void 0);
   try {
-    const sourceRoot = subpath ? (0, import_path10.join)(clone.dir, subpath) : clone.dir;
-    if (!(0, import_fs8.existsSync)(sourceRoot)) {
+    const sourceRoot = subpath ? (0, import_path11.join)(clone.dir, subpath) : clone.dir;
+    if (!(0, import_fs9.existsSync)(sourceRoot)) {
       throw new Error(`"${subpath}" doesn't exist in this repo${ref ? ` at ${ref}` : ""}.`);
     }
     const found = findRepoManifests(sourceRoot);
@@ -2288,16 +2428,16 @@ async function discoverGitSkills(repoUrl, ref, subpath) {
     }
     const discoveredAt = Date.now();
     return found.map(({ type, path: manifestPath }) => {
-      const manifestText = (0, import_fs8.readFileSync)(manifestPath, "utf-8");
+      const manifestText = (0, import_fs9.readFileSync)(manifestPath, "utf-8");
       const fields = parseFrontmatter(manifestText);
       const find = (key) => {
         var _a, _b;
         return (_b = (_a = fields.find((f) => f.key === key)) == null ? void 0 : _a.value) != null ? _b : "";
       };
-      const itemPath = type === "skill" ? (0, import_path10.dirname)(manifestPath) : manifestPath;
-      const relFromSourceRoot = (0, import_path10.relative)(sourceRoot, itemPath).split(import_path10.sep).join("/");
+      const itemPath = type === "skill" ? (0, import_path11.dirname)(manifestPath) : manifestPath;
+      const relFromSourceRoot = (0, import_path11.relative)(sourceRoot, itemPath).split(import_path11.sep).join("/");
       const entrySubpath = [subpath, relFromSourceRoot].filter((s) => s && s !== ".").join("/");
-      const fallbackName = type === "skill" ? (0, import_path10.basename)(itemPath) : (0, import_path10.basename)(itemPath).replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
+      const fallbackName = type === "skill" ? (0, import_path11.basename)(itemPath) : (0, import_path11.basename)(itemPath).replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
       const name = find("name") || fallbackName;
       const tags = find("tags").split(",").map((t) => t.trim()).filter(Boolean);
       return {
@@ -2342,11 +2482,11 @@ async function addDiscoverSource(settings, repoUrl, ref, subpath, isInstalled) {
 async function refetchDiscoverEntry(entry) {
   const clone = shallowCloneRepo(entry.repoUrl, entry.ref || void 0);
   try {
-    const manifestPath = entry.type === "skill" ? (0, import_path10.join)(clone.dir, entry.subpath, "SKILL.md") : (0, import_path10.join)(clone.dir, entry.subpath);
-    if (!(0, import_fs8.existsSync)(manifestPath)) {
+    const manifestPath = entry.type === "skill" ? (0, import_path11.join)(clone.dir, entry.subpath, "SKILL.md") : (0, import_path11.join)(clone.dir, entry.subpath);
+    if (!(0, import_fs9.existsSync)(manifestPath)) {
       throw new Error(`"${entry.subpath}" no longer exists in this repo${entry.ref ? ` at ${entry.ref}` : ""}.`);
     }
-    const manifestText = (0, import_fs8.readFileSync)(manifestPath, "utf-8");
+    const manifestText = (0, import_fs9.readFileSync)(manifestPath, "utf-8");
     const fields = parseFrontmatter(manifestText);
     const find = (key) => {
       var _a, _b;
@@ -2532,7 +2672,7 @@ var ConfirmModal = class extends import_obsidian11.Modal {
 
 // src/modals/AddToolModal.ts
 var import_obsidian12 = require("obsidian");
-var import_fs9 = require("fs");
+var import_fs10 = require("fs");
 function attachPathStatus(controlEl) {
   const el = controlEl.createSpan({ cls: "skillmanager-path-status" });
   return (rawPath) => {
@@ -2544,7 +2684,7 @@ function attachPathStatus(controlEl) {
       return;
     }
     const resolved = expandHome2(trimmed);
-    const found = (0, import_fs9.existsSync)(resolved);
+    const found = (0, import_fs10.existsSync)(resolved);
     el.setText(found ? "found" : "not found");
     el.title = resolved;
     el.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
@@ -2704,7 +2844,7 @@ var AddToolModal = class extends import_obsidian12.Modal {
 };
 
 // src/dashboard.ts
-var import_fs10 = require("fs");
+var import_fs11 = require("fs");
 function isSameName(a, b) {
   return a.type === b.type && a.name.trim().toLowerCase() === b.name.trim().toLowerCase();
 }
@@ -2713,7 +2853,7 @@ function computeDashboardMetrics(items) {
   for (const item of items) {
     let content;
     try {
-      content = (0, import_fs10.readFileSync)(item.sourcePath, "utf-8");
+      content = (0, import_fs11.readFileSync)(item.sourcePath, "utf-8");
     } catch (e) {
       continue;
     }
@@ -2724,7 +2864,7 @@ ${item.description}`.length : null;
     const invocationCharCount = isSkillOrAgent ? stripFrontmatter(content).length : null;
     let mtimeMs = 0;
     try {
-      mtimeMs = (0, import_fs10.statSync)(item.sourcePath).mtimeMs;
+      mtimeMs = (0, import_fs11.statSync)(item.sourcePath).mtimeMs;
     } catch (e) {
     }
     metrics.push({ item, charCount, alwaysAvailableCharCount, invocationCharCount, mtimeMs });
@@ -2782,8 +2922,8 @@ function findOverlapPairs(items, threshold = OVERLAP_THRESHOLD) {
 }
 
 // src/claude-usage.ts
-var import_fs11 = require("fs");
-var import_path11 = require("path");
+var import_fs12 = require("fs");
+var import_path12 = require("path");
 
 // src/usage-history.ts
 var HEATMAP_WEEKS = 26;
@@ -2878,27 +3018,27 @@ function usageKey(type, name) {
 }
 function listTranscriptFiles(projectsDir) {
   const files = [];
-  if (!(0, import_fs11.existsSync)(projectsDir))
+  if (!(0, import_fs12.existsSync)(projectsDir))
     return files;
   let projectDirs;
   try {
-    projectDirs = (0, import_fs11.readdirSync)(projectsDir);
+    projectDirs = (0, import_fs12.readdirSync)(projectsDir);
   } catch (e) {
     return files;
   }
   for (const dir of projectDirs) {
-    const dirPath = (0, import_path11.join)(projectsDir, dir);
+    const dirPath = (0, import_path12.join)(projectsDir, dir);
     let entries;
     try {
-      if (!(0, import_fs11.statSync)(dirPath).isDirectory())
+      if (!(0, import_fs12.statSync)(dirPath).isDirectory())
         continue;
-      entries = (0, import_fs11.readdirSync)(dirPath);
+      entries = (0, import_fs12.readdirSync)(dirPath);
     } catch (e) {
       continue;
     }
     for (const entry of entries) {
       if (entry.endsWith(".jsonl"))
-        files.push((0, import_path11.join)(dirPath, entry));
+        files.push((0, import_path12.join)(dirPath, entry));
     }
   }
   return files;
@@ -2907,7 +3047,7 @@ function scanTranscriptFile(filePath, into, sinceMs = 0, daysInto) {
   var _a;
   let stats;
   try {
-    stats = (0, import_fs11.statSync)(filePath);
+    stats = (0, import_fs12.statSync)(filePath);
   } catch (e) {
     return;
   }
@@ -2915,7 +3055,7 @@ function scanTranscriptFile(filePath, into, sinceMs = 0, daysInto) {
     return;
   let raw;
   try {
-    raw = (0, import_fs11.readFileSync)(filePath, "utf-8");
+    raw = (0, import_fs12.readFileSync)(filePath, "utf-8");
   } catch (e) {
     return;
   }
@@ -3003,22 +3143,22 @@ function rankTopUsedItems(items, usageByEntryId) {
 }
 
 // src/codex-usage.ts
-var import_fs12 = require("fs");
-var import_path12 = require("path");
+var import_fs13 = require("fs");
+var import_path13 = require("path");
 var CODEX_SESSIONS_DIR = "~/.codex/sessions";
 function listCodexSessionFiles(sessionsDir) {
   const files = [];
   const visit = (dir) => {
     let entries;
     try {
-      entries = (0, import_fs12.readdirSync)(dir);
+      entries = (0, import_fs13.readdirSync)(dir);
     } catch (e) {
       return;
     }
     for (const entry of entries) {
-      const path = (0, import_path12.join)(dir, entry);
+      const path = (0, import_path13.join)(dir, entry);
       try {
-        if ((0, import_fs12.statSync)(path).isDirectory())
+        if ((0, import_fs13.statSync)(path).isDirectory())
           visit(path);
         else if (entry.endsWith(".jsonl"))
           files.push(path);
@@ -3026,7 +3166,7 @@ function listCodexSessionFiles(sessionsDir) {
       }
     }
   };
-  if ((0, import_fs12.existsSync)(sessionsDir))
+  if ((0, import_fs13.existsSync)(sessionsDir))
     visit(sessionsDir);
   return files;
 }
@@ -3041,7 +3181,7 @@ function scanCodexSessionFile(filePath, items, into, sinceMs = 0, daysInto) {
   var _a;
   let raw;
   try {
-    raw = (0, import_fs12.readFileSync)(filePath, "utf-8");
+    raw = (0, import_fs13.readFileSync)(filePath, "utf-8");
   } catch (e) {
     return;
   }
@@ -3093,19 +3233,19 @@ function computeCodexUsage(items, rawUsage) {
 }
 
 // src/integrity.ts
-var import_fs13 = require("fs");
-var import_path13 = require("path");
+var import_fs14 = require("fs");
+var import_path14 = require("path");
 var MAX_DESCRIPTION_CHARS = 1024;
 var SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 var MAX_SKILL_NAME_CHARS = 64;
 function checkIntegrity(item, raw, parseYaml2) {
   const issues = [];
-  if (item.realPath !== item.sourcePath && !(0, import_fs13.existsSync)(item.realPath)) {
+  if (item.realPath !== item.sourcePath && !(0, import_fs14.existsSync)(item.realPath)) {
     issues.push("Symlink target is missing");
   }
   if (item.type === "skill" || item.type === "agent")
     issues.push(...checkFrontmatter(item, raw, parseYaml2));
-  issues.push(...findBrokenLinks(raw, (0, import_path13.dirname)(item.sourcePath)));
+  issues.push(...findBrokenLinks(raw, (0, import_path14.dirname)(item.sourcePath)));
   return issues;
 }
 function checkFrontmatter(item, raw, parseYaml2) {
@@ -3132,12 +3272,12 @@ function checkFrontmatter(item, raw, parseYaml2) {
   const manualOnly = field("disable-model-invocation") === "true";
   if (!name && !(item.type === "skill" && item.tool === "claude-code"))
     issues.push("Missing name");
-  const isFolderSkill = item.type === "skill" && (0, import_path13.basename)(item.sourcePath).toLowerCase() === "skill.md";
+  const isFolderSkill = item.type === "skill" && (0, import_path14.basename)(item.sourcePath).toLowerCase() === "skill.md";
   if (name && item.type === "skill") {
     if (!SKILL_NAME_PATTERN.test(name) || name.length > MAX_SKILL_NAME_CHARS) {
       issues.push("Name should be lowercase letters, numbers and hyphens (64 max)");
     }
-    const folder = (0, import_path13.basename)((0, import_path13.dirname)(item.sourcePath));
+    const folder = (0, import_path14.basename)((0, import_path14.dirname)(item.sourcePath));
     if (isFolderSkill && folder !== name)
       issues.push(`Name "${name}" doesn't match folder "${folder}"`);
   }
@@ -3155,7 +3295,7 @@ function findBrokenLinks(raw, baseDir) {
     const target = match[1];
     if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("#") || target.startsWith("~"))
       continue;
-    if ((0, import_path13.isAbsolute)(target))
+    if ((0, import_path14.isAbsolute)(target))
       continue;
     let path = target.replace(/[#?].*$/, "");
     if (!path)
@@ -3164,29 +3304,29 @@ function findBrokenLinks(raw, baseDir) {
       path = decodeURIComponent(path);
     } catch (e) {
     }
-    if (!(0, import_fs13.existsSync)((0, import_path13.resolve)(baseDir, path)))
+    if (!(0, import_fs14.existsSync)((0, import_path14.resolve)(baseDir, path)))
       broken.add(path);
   }
   return [...broken].map((path) => `Broken link: ${path}`);
 }
 
 // src/fileTree.ts
-var import_fs14 = require("fs");
-var import_path14 = require("path");
+var import_fs15 = require("fs");
+var import_path15 = require("path");
 var SKIP_ENTRIES = /* @__PURE__ */ new Set(["node_modules", ".git", ".DS_Store"]);
 var MAX_DEPTH = 4;
 function isFolderItem(item) {
-  return (0, import_path14.basename)(item.sourcePath) === "SKILL.md";
+  return (0, import_path15.basename)(item.sourcePath) === "SKILL.md";
 }
 function skillFolder(item) {
-  return (0, import_path14.dirname)(item.sourcePath);
+  return (0, import_path15.dirname)(item.sourcePath);
 }
 function walk(dir, prefix, depth) {
   if (depth > MAX_DEPTH)
     return [];
   let entries;
   try {
-    entries = (0, import_fs14.readdirSync)(dir);
+    entries = (0, import_fs15.readdirSync)(dir);
   } catch (e) {
     return [];
   }
@@ -3194,11 +3334,11 @@ function walk(dir, prefix, depth) {
   for (const entry of entries) {
     if (SKIP_ENTRIES.has(entry) || entry.startsWith("."))
       continue;
-    const absPath = (0, import_path14.join)(dir, entry);
+    const absPath = (0, import_path15.join)(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
     let isDir = false;
     try {
-      isDir = (0, import_fs14.statSync)(absPath).isDirectory();
+      isDir = (0, import_fs15.statSync)(absPath).isDirectory();
     } catch (e) {
       continue;
     }
@@ -3838,6 +3978,18 @@ function splitLines(value) {
 }
 
 // src/diff/renderDiff.ts
+function computeDiffStats(oldText, newText) {
+  const lines = buildDiffLines(oldText, newText);
+  let added = 0;
+  let removed = 0;
+  for (const line of lines) {
+    if (line.marker === "+")
+      added++;
+    else if (line.marker === "-")
+      removed++;
+  }
+  return { added, removed };
+}
 function renderDiffBody(wrapper, oldText, newText) {
   wrapper.addClass("skillmanager-diff-body-wrapper");
   const scrollBody = wrapper.createDiv({ cls: "skillmanager-diff-body skillmanager-diff-gutter-body" });
@@ -3846,6 +3998,52 @@ function renderDiffBody(wrapper, oldText, newText) {
     renderDiffLine(scrollBody, line);
   }
   renderMinimap(wrapper, scrollBody, lines);
+  return scrollBody;
+}
+function foldUnchanged(scrollBody, keep = 3) {
+  const rows = Array.from(scrollBody.children);
+  let runStart = 0;
+  const flush = (end) => {
+    const lead = runStart === 0 ? 0 : keep;
+    const tail = end === rows.length ? 0 : keep;
+    const hidden = rows.slice(runStart + lead, end - tail);
+    if (hidden.length < 4)
+      return;
+    for (const row of hidden)
+      row.hide();
+    const fold = createEl("button", {
+      cls: "skillmanager-diff-fold",
+      text: `${hidden.length} unchanged lines`,
+      attr: { "aria-label": `Show ${hidden.length} unchanged lines` }
+    });
+    fold.addEventListener("click", () => {
+      for (const row of hidden)
+        row.show();
+      fold.remove();
+    });
+    scrollBody.insertBefore(fold, hidden[0]);
+  };
+  for (let i = 0; i <= rows.length; i++) {
+    const isContext = i < rows.length && rows[i].hasClass("skillmanager-diff-line-context");
+    if (isContext)
+      continue;
+    if (i > runStart)
+      flush(i);
+    runStart = i + 1;
+  }
+}
+function changeHunks(scrollBody) {
+  const starts = [];
+  let inHunk = false;
+  for (const child of Array.from(scrollBody.children)) {
+    if (!child.hasClass("skillmanager-diff-line"))
+      continue;
+    const changed = !child.hasClass("skillmanager-diff-line-context");
+    if (changed && !inHunk)
+      starts.push(child);
+    inHunk = changed;
+  }
+  return starts;
 }
 function renderMinimap(wrapper, scrollBody, lines) {
   if (lines.length === 0)
@@ -3893,18 +4091,18 @@ function renderDiffLine(container, line) {
 }
 
 // src/diff/companions.ts
-var import_fs15 = require("fs");
-var import_path15 = require("path");
+var import_fs16 = require("fs");
+var import_path16 = require("path");
 function listFilesRecursive(dir, prefix = "") {
-  if (!(0, import_fs15.existsSync)(dir))
+  if (!(0, import_fs16.existsSync)(dir))
     return [];
   const files = [];
-  for (const entry of (0, import_fs15.readdirSync)(dir)) {
+  for (const entry of (0, import_fs16.readdirSync)(dir)) {
     if (entry === ".git")
       continue;
-    const entryPath = (0, import_path15.join)(dir, entry);
+    const entryPath = (0, import_path16.join)(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
-    if ((0, import_fs15.statSync)(entryPath).isDirectory()) {
+    if ((0, import_fs16.statSync)(entryPath).isDirectory()) {
       files.push(...listFilesRecursive(entryPath, relPath));
     } else {
       files.push(relPath);
@@ -3914,7 +4112,7 @@ function listFilesRecursive(dir, prefix = "") {
 }
 function filesEqual(a, b) {
   try {
-    return (0, import_fs15.readFileSync)(a).equals((0, import_fs15.readFileSync)(b));
+    return (0, import_fs16.readFileSync)(a).equals((0, import_fs16.readFileSync)(b));
   } catch (e) {
     return false;
   }
@@ -3926,7 +4124,7 @@ function computeCompanionChanges(oldDir, newDir) {
   for (const file of newFiles) {
     if (!oldFiles.has(file))
       rows.push({ file, status: "added" });
-    else if (!filesEqual((0, import_path15.join)(oldDir, file), (0, import_path15.join)(newDir, file)))
+    else if (!filesEqual((0, import_path16.join)(oldDir, file), (0, import_path16.join)(newDir, file)))
       rows.push({ file, status: "modified" });
   }
   for (const file of oldFiles) {
@@ -4000,7 +4198,7 @@ var DASHBOARD_TYPE_COLORS = {
 var DASHBOARD_RANKED_COLLAPSED_COUNT = 5;
 function tildePath(path) {
   const home = (0, import_os4.homedir)();
-  return path === home || path.startsWith(home + import_path16.sep) ? "~" + path.slice(home.length) : path;
+  return path === home || path.startsWith(home + import_path17.sep) ? "~" + path.slice(home.length) : path;
 }
 var DASHBOARD_COST_COLLAPSED_COUNT = 10;
 var DASHBOARD_COST_SUMMARY_COUNT = 5;
@@ -4058,11 +4256,12 @@ var RULE_KIND_LABELS = {
 var LibraryView = class extends import_obsidian14.ItemView {
   // Whether the "N more fields" frontmatter disclosure is open — local UI state, reset whenever
   // selection changes so a freshly-opened file always starts collapsed.
-  constructor(leaf, getSettings, store, saveSettings) {
+  constructor(leaf, getSettings, store, saveSettings, pluginDir) {
     super(leaf);
     this.getSettings = getSettings;
     this.store = store;
     this.saveSettings = saveSettings;
+    this.pluginDir = pluginDir;
     this.items = [];
     this.search = "";
     this.enabledFilter = "all";
@@ -4259,6 +4458,10 @@ var LibraryView = class extends import_obsidian14.ItemView {
     this.pendingDetailAnimation = null;
     this.markdownComponent = new import_obsidian14.Component();
     this.review = null;
+    /** The version history panel, shown in the detail rail in place of the file (see
+     *  renderHistory). `selectedId` is the version being previewed, or null for the list. Cleared
+     *  on every navigation, same as a review (see cleanupReview). */
+    this.historyView = null;
     // entryId of the item currently showing the inline "add a tag" input in place of the "+ tag"
     // button — local UI state, not persisted, reset whenever selection changes.
     this.addingTagFor = null;
@@ -4291,6 +4494,22 @@ var LibraryView = class extends import_obsidian14.ItemView {
     if (((_a = this.review) == null ? void 0 : _a.status) === "ready")
       this.review.clone.cleanup();
     this.review = null;
+    this.historyView = null;
+  }
+  itemHistory() {
+    const base = this.vaultPath();
+    return base && this.pluginDir ? new ItemHistory((0, import_path17.join)(base, this.pluginDir, "history")) : null;
+  }
+  /** Best effort: a failed snapshot warns but never blocks the edit/update it was taken for. */
+  trySnapshot(take) {
+    const history = this.itemHistory();
+    if (!history)
+      return;
+    try {
+      take(history);
+    } catch (e) {
+      new import_obsidian14.Notice("Couldn't save a history version: " + errorMessage(e));
+    }
   }
   async rescan() {
     var _a;
@@ -4315,9 +4534,9 @@ var LibraryView = class extends import_obsidian14.ItemView {
         if (this.selectedFilePath === previousSourcePath) {
           this.selectedFilePath = updated.sourcePath;
         } else {
-          const previousDir = (0, import_path16.dirname)(previousSourcePath);
-          if (this.selectedFilePath.startsWith(previousDir + import_path16.sep)) {
-            const updatedDir = (0, import_path16.dirname)(updated.sourcePath);
+          const previousDir = (0, import_path17.dirname)(previousSourcePath);
+          if (this.selectedFilePath.startsWith(previousDir + import_path17.sep)) {
+            const updatedDir = (0, import_path17.dirname)(updated.sourcePath);
             this.selectedFilePath = updatedDir + this.selectedFilePath.slice(previousDir.length);
           }
         }
@@ -4878,7 +5097,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
   }
   itemModifiedMs(item) {
     try {
-      return (0, import_fs16.statSync)(item.sourcePath).mtimeMs;
+      return (0, import_fs17.statSync)(item.sourcePath).mtimeMs;
     } catch (e) {
       return 0;
     }
@@ -5439,7 +5658,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     if (!plugin.repoUrl)
       return;
     const unitPath = linkableUnit(item.sourcePath).path;
-    const subpath = (0, import_path16.relative)(plugin.path, unitPath).split(import_path16.sep).join("/");
+    const subpath = (0, import_path17.relative)(plugin.path, unitPath).split(import_path17.sep).join("/");
     new InstallFromGitHubModal(
       this.app,
       this.getSettings(),
@@ -6835,7 +7054,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
           return;
       } catch (e) {
       }
-      if (!(0, import_fs16.existsSync)(path))
+      if (!(0, import_fs17.existsSync)(path))
         return;
     }
     const shell = this.electronShell();
@@ -6849,15 +7068,15 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  link anyway), and a symlinked flat file is overwritten in place, same as before. Throws
    *  without touching anything if the trash isn't reachable. */
   async replaceUnit(source, target, isDirectory) {
-    if ((0, import_fs16.existsSync)(target)) {
-      const isLink = (0, import_fs16.lstatSync)(target).isSymbolicLink();
+    if ((0, import_fs17.existsSync)(target)) {
+      const isLink = (0, import_fs17.lstatSync)(target).isSymbolicLink();
       if (isLink && isDirectory) {
-        (0, import_fs16.unlinkSync)(target);
+        (0, import_fs17.unlinkSync)(target);
       } else if (!isLink) {
         await this.trashPath(target);
       }
     }
-    (0, import_fs16.cpSync)(source, target, isDirectory ? { recursive: true } : void 0);
+    (0, import_fs17.cpSync)(source, target, isDirectory ? { recursive: true } : void 0);
   }
   fileManagerLabel() {
     if (process.platform === "darwin")
@@ -6897,7 +7116,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       new import_obsidian14.Notice("Can't open files from this device, try Obsidian's desktop app.");
       return;
     }
-    const folderPath = (0, import_path16.dirname)(filePath);
+    const folderPath = (0, import_path17.dirname)(filePath);
     const errorText = await shell.openPath(folderPath);
     if (errorText)
       new import_obsidian14.Notice(`Couldn't open ${folderPath}: ${errorText}`);
@@ -7067,7 +7286,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  correctly-configured tool with zero skills yet is still "detected." */
   toolIsDetected(tool) {
     var _a, _b, _c;
-    return Object.values(tool.paths).some((p) => p && (0, import_fs16.existsSync)(expandHome2(p))) || ((_a = tool.ruleAdditionalPaths) != null ? _a : []).some((e) => e.path.trim() && (0, import_fs16.existsSync)(expandHome2(e.path.trim()))) || (tool.mcpConfigPath ? (0, import_fs16.existsSync)(expandHome2(tool.mcpConfigPath)) : false) || (tool.pluginsRegistry ? (0, import_fs16.existsSync)(expandHome2(tool.pluginsRegistry)) : false) || ((_b = tool.pluginsPaths) != null ? _b : []).some((p) => p && (0, import_fs16.existsSync)(expandHome2(p))) || (((_c = tool.memoryPath) == null ? void 0 : _c.trim()) ? (0, import_fs16.existsSync)(expandHome2(tool.memoryPath.trim())) : false);
+    return Object.values(tool.paths).some((p) => p && (0, import_fs17.existsSync)(expandHome2(p))) || ((_a = tool.ruleAdditionalPaths) != null ? _a : []).some((e) => e.path.trim() && (0, import_fs17.existsSync)(expandHome2(e.path.trim()))) || (tool.mcpConfigPath ? (0, import_fs17.existsSync)(expandHome2(tool.mcpConfigPath)) : false) || (tool.pluginsRegistry ? (0, import_fs17.existsSync)(expandHome2(tool.pluginsRegistry)) : false) || ((_b = tool.pluginsPaths) != null ? _b : []).some((p) => p && (0, import_fs17.existsSync)(expandHome2(p))) || (((_c = tool.memoryPath) == null ? void 0 : _c.trim()) ? (0, import_fs17.existsSync)(expandHome2(tool.memoryPath.trim())) : false);
   }
   toolMatchesStatusFilter(tool) {
     switch (this.toolStatusFilter) {
@@ -7206,7 +7425,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
         return;
       }
       const resolved = resolve4(trimmed);
-      const found = resolved !== null && (0, import_fs16.existsSync)(resolved);
+      const found = resolved !== null && (0, import_fs17.existsSync)(resolved);
       status.setText(found ? "found" : "not found");
       status.title = resolved != null ? resolved : "";
       status.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
@@ -7228,7 +7447,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     var _a;
     const entries = (_a = scope === "global" ? tool.ruleAdditionalPaths : tool.ruleAdditionalProjectPaths) != null ? _a : [];
     const vaultPath = this.vaultPath();
-    const resolve4 = (raw) => scope === "global" ? expandHome2(raw) : vaultPath ? (0, import_path16.join)(vaultPath, raw) : null;
+    const resolve4 = (raw) => scope === "global" ? expandHome2(raw) : vaultPath ? (0, import_path17.join)(vaultPath, raw) : null;
     const commit = (next) => {
       const trimmed = next.filter((e) => e.path.trim());
       if (scope === "global") {
@@ -7266,7 +7485,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
           return;
         }
         const resolved = resolve4(trimmedVal);
-        const found = resolved !== null && (0, import_fs16.existsSync)(resolved);
+        const found = resolved !== null && (0, import_fs17.existsSync)(resolved);
         status.setText(found ? "found" : "not found");
         status.title = resolved != null ? resolved : "";
         status.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
@@ -7377,7 +7596,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
         TYPE_LABELS[type],
         (_f = (_e = tool.projectPaths) == null ? void 0 : _e[type]) != null ? _f : "",
         globalPath ? toProjectRelative(globalPath) : "(not scanned globally)",
-        (raw) => vaultPath ? (0, import_path16.join)(vaultPath, raw) : null,
+        (raw) => vaultPath ? (0, import_path17.join)(vaultPath, raw) : null,
         (value) => {
           var _a2;
           if (value.trim()) {
@@ -7399,7 +7618,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       "Memories",
       (_g = tool.projectMemoryPath) != null ? _g : "",
       ".example/memory",
-      (raw) => vaultPath ? (0, import_path16.join)(vaultPath, raw) : null,
+      (raw) => vaultPath ? (0, import_path17.join)(vaultPath, raw) : null,
       (value) => {
         if (value.trim())
           tool.projectMemoryPath = value.trim();
@@ -7432,7 +7651,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
       "Project config",
       (_i = tool.projectMcpConfigPath) != null ? _i : "",
       ".example/mcp.json",
-      (raw) => vaultPath ? (0, import_path16.join)(vaultPath, raw) : null,
+      (raw) => vaultPath ? (0, import_path17.join)(vaultPath, raw) : null,
       (value) => {
         if (value.trim())
           tool.projectMcpConfigPath = value.trim();
@@ -8237,7 +8456,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
   isBrokenSymlink(item) {
     if (item.projectId === null)
       return false;
-    return this.brokenSymlinks.some((link) => link.path === item.sourcePath || link.path === (0, import_path16.dirname)(item.sourcePath));
+    return this.brokenSymlinks.some((link) => link.path === item.sourcePath || link.path === (0, import_path17.dirname)(item.sourcePath));
   }
   /** A small inline "link" icon for a dashboard row's name, only rendered when the item is a
    *  symlink — lets Prune/Overlap rows (and an overlap's open panel) tell two identically-named
@@ -8292,7 +8511,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
           continue;
         let raw;
         try {
-          raw = (0, import_fs16.readFileSync)(item.sourcePath, "utf-8");
+          raw = (0, import_fs17.readFileSync)(item.sourcePath, "utf-8");
         } catch (e) {
           continue;
         }
@@ -8320,7 +8539,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  project card retained for the dangling link itself (see rescan's retainedBrokenIds). */
   itemForBrokenLink(link, disabledSource) {
     var _a;
-    return (_a = disabledSource != null ? disabledSource : this.items.find((item) => item.sourcePath === link.path || (0, import_path16.dirname)(item.sourcePath) === link.path)) != null ? _a : null;
+    return (_a = disabledSource != null ? disabledSource : this.items.find((item) => item.sourcePath === link.path || (0, import_path17.dirname)(item.sourcePath) === link.path)) != null ? _a : null;
   }
   integrityDisregardKey(item, issues) {
     return `integrity:${item.entryId}:${issues.join("|")}`;
@@ -8626,7 +8845,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
         key: this.brokenSymlinkDisregardKey(link),
         renderName: (nameRow) => {
           (0, import_obsidian14.setIcon)(nameRow.createSpan({ cls: "skillmanager-dash-row-icon" }), TYPE_ICONS[link.type]);
-          nameRow.createSpan({ text: (0, import_path16.basename)(link.path).replace(/\.md$/i, "") });
+          nameRow.createSpan({ text: (0, import_path17.basename)(link.path).replace(/\.md$/i, "") });
         },
         meta: `\u2192 ${tildePath(link.targetPath)}`
       }))
@@ -8919,7 +9138,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
         key: `broken:${this.brokenSymlinkDisregardKey(link)}`,
         renderName: (el) => {
           (0, import_obsidian14.setIcon)(el.createSpan({ cls: "skillmanager-dash-row-icon" }), TYPE_ICONS[link.type]);
-          el.createSpan({ text: (0, import_path16.basename)(link.path).replace(/\.md$/i, "") });
+          el.createSpan({ text: (0, import_path17.basename)(link.path).replace(/\.md$/i, "") });
         },
         problem: disabledSource ? "Points to an item you disabled. Enable it and the link works again." : "Points to a file or folder that no longer exists.",
         tone: disabledSource ? "warn" : "danger",
@@ -9057,7 +9276,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     let mtimeMs = (_a = metric == null ? void 0 : metric.mtimeMs) != null ? _a : 0;
     if (!metric) {
       try {
-        mtimeMs = (0, import_fs16.statSync)(item.sourcePath).mtimeMs;
+        mtimeMs = (0, import_fs17.statSync)(item.sourcePath).mtimeMs;
       } catch (e) {
         mtimeMs = 0;
       }
@@ -9473,13 +9692,17 @@ var LibraryView = class extends import_obsidian14.ItemView {
    *  is one breadcrumb click away rather than a chain of "back" presses whose length depended on
    *  whether the skill happened to have a tree. */
   renderDetailRail(panel, item) {
-    var _a;
+    var _a, _b;
     const tree = this.treeForItem(item);
     this.renderBreadcrumbs(panel, item, tree);
+    if (((_a = this.historyView) == null ? void 0 : _a.entryId) === item.entryId) {
+      this.renderHistory(panel, item);
+      return;
+    }
     const filePath = tree && !this.selectedFilePath ? null : this.selectedFilePath;
     if (filePath)
       this.loadFileContent(item, filePath);
-    const review = ((_a = this.review) == null ? void 0 : _a.entryId) === item.entryId ? this.review : null;
+    const review = ((_b = this.review) == null ? void 0 : _b.entryId) === item.entryId ? this.review : null;
     this.renderDetailHeader(panel, item, filePath, review);
     if ((review == null ? void 0 : review.status) === "ready") {
       this.renderDiffReview(panel, review);
@@ -9516,7 +9739,7 @@ var LibraryView = class extends import_obsidian14.ItemView {
     crumb(item.name, !fileOpenFromTree, fileOpenFromTree ? () => this.backToTree() : void 0);
     if (fileOpenFromTree && this.selectedFilePath) {
       sep5();
-      crumb((0, import_path16.basename)(this.selectedFilePath), true);
+      crumb((0, import_path17.basename)(this.selectedFilePath), true);
     }
   }
   /** Title + type pill + edit action, the tool line under it, then (once a file is open) the
@@ -9531,12 +9754,12 @@ var LibraryView = class extends import_obsidian14.ItemView {
     const section = panel.createDiv({ cls: "skillmanager-detail-head" });
     const header = section.createDiv({ cls: "skillmanager-detail-header" });
     header.createEl("h3", {
-      text: isReviewing ? `${(review == null ? void 0 : review.mode) === "restore" ? "Restore" : "Update"} "${item.name}"` : filePath && !isManifest ? (0, import_path16.basename)(filePath) : item.name,
+      text: isReviewing ? `${(review == null ? void 0 : review.mode) === "restore" ? "Restore" : "Update"} "${item.name}"` : filePath && !isManifest ? (0, import_path17.basename)(filePath) : item.name,
       cls: "skillmanager-detail-title"
     });
     header.createSpan({ text: this.itemTypeLabel(item), cls: "skillmanager-detail-type-pill" });
-    if (filePath && !isReviewing)
-      this.renderDetailActions(header.createDiv({ cls: "skillmanager-detail-actions" }));
+    if (!isReviewing)
+      this.renderDetailActions(header.createDiv({ cls: "skillmanager-detail-actions" }), item, !!filePath);
     const toolInfo = this.toolLabel(item);
     const toolLine = section.createDiv({ cls: "skillmanager-detail-tool" });
     this.renderIcon(toolLine.createSpan({ cls: "skillmanager-detail-tool-icon" }), toolInfo.icon, toolInfo.svgIcon);
@@ -9650,7 +9873,7 @@ ${item.description}`.length),
     let modified = Date.now();
     let fileSize = 0;
     try {
-      const stat = (0, import_fs16.statSync)(filePath);
+      const stat = (0, import_fs17.statSync)(filePath);
       fileSize = stat.size;
       modified = stat.mtimeMs;
     } catch (e) {
@@ -9693,7 +9916,14 @@ ${item.description}`.length),
       this.renderSourceButtons(footer.createDiv({ cls: "skillmanager-detail-source-actions" }), item);
     }
   }
-  renderDetailActions(actions) {
+  renderDetailActions(actions, item, canEdit) {
+    if (this.itemHistory()) {
+      const historyBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "History" } });
+      (0, import_obsidian14.setIcon)(historyBtn, "history");
+      historyBtn.addEventListener("click", () => this.openHistory(item));
+    }
+    if (!canEdit)
+      return;
     const editBtn = actions.createEl("button", {
       cls: "skillmanager-icon-btn",
       attr: { "aria-label": this.detailEditing ? "Preview" : "Edit" }
@@ -9703,6 +9933,314 @@ ${item.description}`.length),
       this.detailEditing = !this.detailEditing;
       this.render();
     });
+  }
+  // ---------- version history (see history.ts) ----------
+  openHistory(item) {
+    this.cleanupReview();
+    this.detailEditing = false;
+    this.historyView = { entryId: item.entryId, selectedId: null, fileIndex: 0, landOn: null };
+    this.pendingDetailAnimation = "forward";
+    this.render();
+  }
+  /** Each version is the state right before a change, so it's named after that change. */
+  historyLabel(item, entry) {
+    switch (entry.kind) {
+      case "edit":
+        return `Before edit to ${entry.relPath || (0, import_path17.basename)(item.sourcePath)}`;
+      case "update":
+        return entry.toCommit ? `Before GitHub update to ${entry.toCommit.slice(0, 7)}` : "Before GitHub update";
+      case "restore-installed":
+        return "Before restoring the installed version";
+      case "restore":
+        return "Before restoring an earlier version";
+    }
+  }
+  historyMeta(entry) {
+    const when = new Date(entry.at).toLocaleString(void 0, { dateStyle: "medium", timeStyle: "short" });
+    const parts = [when, entry.scope === "unit" ? "Whole item" : "One file"];
+    if (entry.commit)
+      parts.push(`at ${entry.commit.slice(0, 7)}`);
+    return parts.join(" \xB7 ");
+  }
+  /** The history panel: a list of saved versions, or one version diffed against what's on disk
+   *  now (shown the same way as an update review: what restoring it would change). */
+  renderHistory(panel, item) {
+    var _a;
+    const view = this.historyView;
+    const history = this.itemHistory();
+    const entries = (_a = history == null ? void 0 : history.list(item.entryId)) != null ? _a : [];
+    const selected = view.selectedId ? entries.find((e) => e.id === view.selectedId) : void 0;
+    const section = panel.createDiv({ cls: "skillmanager-detail-head" });
+    const header = section.createDiv({ cls: "skillmanager-detail-header" });
+    header.createEl("h3", { text: selected ? this.historyLabel(item, selected) : `History of "${item.name}"`, cls: "skillmanager-detail-title" });
+    const closeBtn = header.createDiv({ cls: "skillmanager-detail-actions" }).createEl("button", {
+      cls: "skillmanager-icon-btn",
+      attr: { "aria-label": "Close history" }
+    });
+    (0, import_obsidian14.setIcon)(closeBtn, "x");
+    closeBtn.addEventListener("click", () => {
+      this.historyView = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    });
+    section.createDiv({
+      cls: "skillmanager-detail-tool",
+      text: selected ? this.historyMeta(selected) : `A version is saved before each edit made here and each GitHub update or restore. The last ${HISTORY_KEPT} are kept.`
+    });
+    if (!history)
+      return;
+    if (!selected) {
+      if (entries.length === 0) {
+        panel.createDiv({ cls: "skillmanager-tree-hint", text: "No saved versions yet." });
+        return;
+      }
+      const list = panel.createDiv({ cls: "skillmanager-history-list" });
+      for (const entry of entries) {
+        const row = list.createDiv({ cls: "skillmanager-history-row" });
+        (0, import_obsidian14.setIcon)(row.createSpan({ cls: "skillmanager-history-icon" }), entry.kind === "edit" ? "pencil" : entry.kind === "update" ? "download" : "history");
+        const text = row.createDiv({ cls: "skillmanager-history-text" });
+        text.createDiv({ cls: "skillmanager-history-label", text: this.historyLabel(item, entry) });
+        text.createDiv({ cls: "skillmanager-history-meta", text: this.historyMeta(entry) });
+        makeActivatable(row);
+        row.addEventListener("click", () => {
+          view.selectedId = entry.id;
+          view.fileIndex = 0;
+          view.landOn = null;
+          this.pendingDetailAnimation = "forward";
+          this.render();
+        });
+      }
+      return;
+    }
+    const unit = linkableUnit(item.sourcePath);
+    const changes = [];
+    if (selected.scope === "file" || !unit.isDirectory) {
+      const currentPath = selected.relPath ? (0, import_path17.join)(unit.path, selected.relPath) : unit.path;
+      const versionPath = history.contentPath(selected);
+      if (!(0, import_fs17.existsSync)(currentPath) || !(0, import_fs17.readFileSync)(currentPath).equals((0, import_fs17.readFileSync)(versionPath))) {
+        changes.push({ file: selected.relPath || (0, import_path17.basename)(unit.path), status: (0, import_fs17.existsSync)(currentPath) ? "modified" : "added", current: currentPath, version: versionPath });
+      }
+    } else {
+      const versionRoot = history.contentPath(selected);
+      const skillChanged = !(0, import_fs17.existsSync)((0, import_path17.join)(unit.path, "SKILL.md")) || !(0, import_fs17.existsSync)((0, import_path17.join)(versionRoot, "SKILL.md")) ? (0, import_fs17.existsSync)((0, import_path17.join)(unit.path, "SKILL.md")) !== (0, import_fs17.existsSync)((0, import_path17.join)(versionRoot, "SKILL.md")) : !(0, import_fs17.readFileSync)((0, import_path17.join)(unit.path, "SKILL.md")).equals((0, import_fs17.readFileSync)((0, import_path17.join)(versionRoot, "SKILL.md")));
+      const rows = skillChanged ? [{ file: "SKILL.md", status: "modified" }] : [];
+      rows.push(...computeCompanionChanges(unit.path, versionRoot));
+      for (const row of rows)
+        changes.push({ ...row, current: (0, import_path17.join)(unit.path, row.file), version: (0, import_path17.join)(versionRoot, row.file) });
+    }
+    this.renderHistoryDiff(panel, item, selected, changes);
+  }
+  /** One changed file at a time: file tabs pinned along the top, the diff, and a dock pinned
+   *  along the bottom with Versions, a change stepper and Restore, so neither navigation nor the
+   *  action ever scrolls away. Long unchanged stretches fold (see foldUnchanged), and stepping
+   *  past a file's last change carries on into the next file, so J/K alone walks every change. */
+  renderHistoryDiff(panel, item, selected, changes) {
+    const view = this.historyView;
+    const backToVersions = () => {
+      view.selectedId = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    const renderBack = (parent) => {
+      const btn = parent.createEl("button", { cls: "skillmanager-btn-neutral skillmanager-vdiff-back" });
+      (0, import_obsidian14.setIcon)(btn.createSpan({ cls: "skillmanager-vdiff-btn-icon" }), "arrow-left");
+      btn.createSpan({ text: "Versions" });
+      btn.addEventListener("click", backToVersions);
+    };
+    if (changes.length === 0) {
+      panel.createDiv({ cls: "skillmanager-tree-hint", text: "This version matches what's on disk now." });
+      renderBack(panel.createDiv({ cls: "skillmanager-modal-actions" }));
+      return;
+    }
+    const read = (path2) => (0, import_fs17.existsSync)(path2) ? (0, import_fs17.readFileSync)(path2) : Buffer.alloc(0);
+    const files = changes.map((c) => {
+      const current = read(c.current);
+      const version = read(c.version);
+      const binary = current.includes(0) || version.includes(0);
+      const currentText = binary ? "" : current.toString("utf-8");
+      const versionText = binary ? "" : version.toString("utf-8");
+      return { ...c, binary, currentText, versionText, stats: binary ? null : computeDiffStats(currentText, versionText) };
+    });
+    const index = Math.min(view.fileIndex, files.length - 1);
+    const file = files[index];
+    const goToFile = (next, landOn = null) => {
+      if (next < 0 || next >= files.length || next === index)
+        return;
+      view.fileIndex = next;
+      view.landOn = landOn;
+      this.render();
+    };
+    const renderStats = (parent, f) => {
+      const el = parent.createSpan({ cls: "skillmanager-vtab-stats" });
+      if (!f.stats)
+        el.setText("binary");
+      else {
+        if (f.stats.added)
+          el.createSpan({ cls: "skillmanager-diff-stat-add", text: `+${f.stats.added}` });
+        if (f.stats.removed)
+          el.createSpan({ cls: "skillmanager-diff-stat-remove", text: `\u2212${f.stats.removed}` });
+      }
+    };
+    const strip = panel.createDiv({ cls: "skillmanager-vtabs" });
+    const scroller = strip.createDiv({ cls: "skillmanager-vtabs-scroll", attr: { role: "tablist", "aria-label": "Changed files" } });
+    files.forEach((f, i) => {
+      const tab = scroller.createEl("button", {
+        cls: `skillmanager-vtab${i === index ? " is-active" : ""}`,
+        attr: { role: "tab", "aria-selected": String(i === index), title: `${f.file} (${f.status})` }
+      });
+      tab.createSpan({ cls: `skillmanager-vtab-dot is-${f.status}` });
+      tab.createSpan({ cls: "skillmanager-vtab-name", text: (0, import_path17.basename)(f.file) });
+      renderStats(tab, f);
+      tab.addEventListener("click", () => goToFile(i));
+    });
+    scroller.addEventListener(
+      "wheel",
+      (evt) => {
+        if (Math.abs(evt.deltaY) <= Math.abs(evt.deltaX) || scroller.scrollWidth <= scroller.clientWidth)
+          return;
+        scroller.scrollLeft += evt.deltaY;
+        evt.preventDefault();
+      },
+      { passive: false }
+    );
+    const syncFades = () => {
+      strip.toggleClass("has-more-left", scroller.scrollLeft > 1);
+      strip.toggleClass("has-more-right", scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 1);
+    };
+    scroller.addEventListener("scroll", syncFades);
+    window.requestAnimationFrame(() => {
+      var _a;
+      (_a = scroller.querySelector(".is-active")) == null ? void 0 : _a.scrollIntoView({ inline: "nearest", block: "nearest" });
+      syncFades();
+    });
+    if (files.length > 1) {
+      const allBtn = strip.createEl("button", {
+        cls: "skillmanager-vtabs-all",
+        attr: { "aria-label": `All ${files.length} changed files` }
+      });
+      (0, import_obsidian14.setIcon)(allBtn.createSpan({ cls: "skillmanager-vdiff-btn-icon" }), "list");
+      allBtn.createSpan({ text: `${files.length} files` });
+      allBtn.addEventListener("click", (evt) => {
+        const menu = new import_obsidian14.Menu();
+        files.forEach((f, i) => {
+          menu.addItem((menuItem) => {
+            const detail = f.stats ? `+${f.stats.added} \u2212${f.stats.removed}` : "binary";
+            menuItem.setTitle(`${f.file}  ${f.status === "modified" ? detail : f.status}`).setChecked(i === index).onClick(() => goToFile(i));
+          });
+        });
+        menu.showAtMouseEvent(evt);
+      });
+    }
+    const path = panel.createDiv({ cls: "skillmanager-vdiff-path" });
+    path.createSpan({ cls: `skillmanager-diff-companion-badge is-${file.status}`, text: file.status });
+    path.createSpan({ cls: "skillmanager-vdiff-path-name", text: file.file });
+    const body = panel.createDiv({ cls: "skillmanager-vdiff-file" });
+    let hunks = [];
+    if (file.binary) {
+      body.createDiv({ cls: "skillmanager-tree-hint", text: "Binary file, no preview." });
+    } else {
+      const scrollBody = renderDiffBody(body.createDiv(), file.currentText, file.versionText);
+      foldUnchanged(scrollBody);
+      hunks = changeHunks(scrollBody);
+    }
+    const dock = panel.createDiv({ cls: "skillmanager-vdock", attr: { tabindex: "-1" } });
+    renderBack(dock);
+    const stepper = dock.createDiv({ cls: "skillmanager-vdock-stepper" });
+    const stepBtn = (icon, label, onClick) => {
+      const btn = stepper.createEl("button", { cls: "skillmanager-icon-btn skillmanager-vdiff-step", attr: { "aria-label": label } });
+      (0, import_obsidian14.setIcon)(btn, icon);
+      btn.addEventListener("click", onClick);
+      return btn;
+    };
+    let at = -1;
+    const prevBtn = stepBtn("chevron-up", "Previous change (K)", () => move(-1));
+    const counter = stepper.createSpan({ cls: "skillmanager-vdiff-counter", attr: { "aria-live": "polite" } });
+    const nextBtn = stepBtn("chevron-down", "Next change (J)", () => move(1));
+    dock.createEl("button", { cls: "mod-cta", text: files.length > 1 ? `Restore ${files.length} files` : "Restore this version" }).addEventListener("click", () => void this.restoreHistoryVersion(item, selected));
+    const sync = () => {
+      if (hunks.length === 0)
+        counter.setText(file.binary ? "Binary file" : "No line changes");
+      else
+        counter.setText(at < 0 ? `${hunks.length} change${hunks.length === 1 ? "" : "s"}` : `${at + 1} / ${hunks.length}`);
+      prevBtn.disabled = index === 0 && at <= 0;
+      nextBtn.disabled = index === files.length - 1 && at >= hunks.length - 1;
+    };
+    const focusHunk = (i, smooth = true) => {
+      for (const row of Array.from(body.querySelectorAll(".is-focused-change")))
+        row.removeClass("is-focused-change");
+      at = i;
+      for (let row = hunks[i]; row && row.hasClass("skillmanager-diff-line") && !row.hasClass("skillmanager-diff-line-context"); row = row.nextElementSibling) {
+        row.addClass("is-focused-change");
+      }
+      hunks[i].scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" });
+      sync();
+    };
+    const move = (dir) => {
+      const next = at + dir;
+      if (next >= 0 && next < hunks.length)
+        focusHunk(next);
+      else if (dir === 1 && next >= hunks.length)
+        goToFile(index + 1, "first");
+      else if (dir === -1 && next < 0)
+        goToFile(index - 1, "last");
+    };
+    sync();
+    panel.addEventListener("keydown", (evt) => {
+      if (evt.metaKey || evt.ctrlKey || evt.altKey)
+        return;
+      const target = evt.target;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable))
+        return;
+      const key = evt.key.toLowerCase();
+      if (key === "j")
+        move(1);
+      else if (key === "k")
+        move(-1);
+      else if (key === "]")
+        goToFile(index + 1);
+      else if (key === "[")
+        goToFile(index - 1);
+      else
+        return;
+      evt.preventDefault();
+    });
+    if (view.landOn && hunks.length > 0) {
+      const target = view.landOn === "first" ? 0 : hunks.length - 1;
+      view.landOn = null;
+      window.requestAnimationFrame(() => focusHunk(target, false));
+    }
+    window.requestAnimationFrame(() => dock.focus({ preventScroll: true }));
+  }
+  /** Saves the current state first (so a restore can itself be undone), then writes the version
+   *  back: a single file directly, a whole unit through replaceUnit so the replaced copy goes to
+   *  the trash like an update. A unit version of a GitHub item also puts the tracked commit back. */
+  async restoreHistoryVersion(item, entry) {
+    const history = this.itemHistory();
+    if (!history)
+      return;
+    const unit = linkableUnit(item.sourcePath);
+    try {
+      this.trySnapshot((h) => {
+        var _a;
+        return h.snapshotBeforeRestore(entry, unit.path, unit.isDirectory, (_a = item.sourceCommit) != null ? _a : void 0);
+      });
+      if (entry.scope === "file") {
+        history.restoreFile(entry, unit.path);
+      } else {
+        await this.replaceUnit(history.contentPath(entry), unit.path, unit.isDirectory);
+        if (item.sourceRepo && entry.commit) {
+          await this.store.update(item.entryId, { sourceCommit: entry.commit });
+          this.syncStatus.delete(item.entryId);
+        }
+      }
+      history.prune(item.entryId);
+      this.historyView = null;
+      this.detailLoadedFor = null;
+      await this.rescan();
+      new import_obsidian14.Notice("Restored.");
+    } catch (e) {
+      new import_obsidian14.Notice("Restore failed: " + errorMessage(e));
+    }
   }
   /** Who owns this item's files and how it gets updated: a plugin or the tool itself (both
    *  replace local edits on their own schedule), a tracked GitHub install (updated only through
@@ -9847,17 +10385,17 @@ ${item.description}`.length),
     let clone = null;
     try {
       clone = mode === "restore" ? shallowCloneAtCommit(sourceRepo, item.sourceCommit) : shallowCloneRepo(sourceRepo, item.sourceRef || void 0);
-      (0, import_fs16.rmSync)((0, import_path16.join)(clone.dir, ".git"), { recursive: true, force: true });
+      (0, import_fs17.rmSync)((0, import_path17.join)(clone.dir, ".git"), { recursive: true, force: true });
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
-      const newRoot = subpath ? (0, import_path16.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs16.existsSync)(newRoot)) {
+      const newRoot = subpath ? (0, import_path17.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs17.existsSync)(newRoot)) {
         throw new Error(`"${subpath}" no longer exists in this repo.`);
       }
       const unit = linkableUnit(item.sourcePath);
-      const oldPrimary = unit.isDirectory ? (0, import_path16.join)(unit.path, "SKILL.md") : unit.path;
-      const newPrimary = unit.isDirectory ? (0, import_path16.join)(newRoot, "SKILL.md") : newRoot;
-      const oldText = (0, import_fs16.existsSync)(oldPrimary) ? (0, import_fs16.readFileSync)(oldPrimary, "utf-8") : "";
-      const newText = (0, import_fs16.existsSync)(newPrimary) ? (0, import_fs16.readFileSync)(newPrimary, "utf-8") : "";
+      const oldPrimary = unit.isDirectory ? (0, import_path17.join)(unit.path, "SKILL.md") : unit.path;
+      const newPrimary = unit.isDirectory ? (0, import_path17.join)(newRoot, "SKILL.md") : newRoot;
+      const oldText = (0, import_fs17.existsSync)(oldPrimary) ? (0, import_fs17.readFileSync)(oldPrimary, "utf-8") : "";
+      const newText = (0, import_fs17.existsSync)(newPrimary) ? (0, import_fs17.readFileSync)(newPrimary, "utf-8") : "";
       const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
       if (oldText === newText && companions.length === 0) {
         const newCommit = clone.commit;
@@ -9928,11 +10466,18 @@ ${item.description}`.length),
     }
   }
   async applyReview() {
-    var _a;
+    var _a, _b, _c;
     if (((_a = this.review) == null ? void 0 : _a.status) !== "ready")
       return;
     const { mode, unitPath, isDirectory, newRoot, newCommit, entryId, clone } = this.review;
     try {
+      const fromCommit = (_c = (_b = this.items.find((i) => i.entryId === entryId)) == null ? void 0 : _b.sourceCommit) != null ? _c : void 0;
+      this.trySnapshot(
+        (h) => h.snapshotUnit(entryId, unitPath, isDirectory, mode === "restore" ? "restore-installed" : "update", {
+          commit: fromCommit,
+          toCommit: newCommit
+        })
+      );
       await this.replaceUnit(newRoot, unitPath, isDirectory);
       await this.store.update(entryId, { sourceCommit: newCommit });
       if (mode === "update")
@@ -9958,20 +10503,27 @@ ${item.description}`.length),
     let clone = null;
     try {
       clone = shallowCloneRepo(sourceRepo, item.sourceRef || void 0);
-      (0, import_fs16.rmSync)((0, import_path16.join)(clone.dir, ".git"), { recursive: true, force: true });
+      (0, import_fs17.rmSync)((0, import_path17.join)(clone.dir, ".git"), { recursive: true, force: true });
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
-      const newRoot = subpath ? (0, import_path16.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs16.existsSync)(newRoot)) {
+      const newRoot = subpath ? (0, import_path17.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs17.existsSync)(newRoot)) {
         throw new Error(`"${subpath}" no longer exists in this repo.`);
       }
       const unit = linkableUnit(item.sourcePath);
-      const oldPrimary = unit.isDirectory ? (0, import_path16.join)(unit.path, "SKILL.md") : unit.path;
-      const newPrimary = unit.isDirectory ? (0, import_path16.join)(newRoot, "SKILL.md") : newRoot;
-      const primaryChanged = !(0, import_fs16.existsSync)(oldPrimary) || !(0, import_fs16.existsSync)(newPrimary) ? (0, import_fs16.existsSync)(oldPrimary) !== (0, import_fs16.existsSync)(newPrimary) : !(0, import_fs16.readFileSync)(oldPrimary).equals((0, import_fs16.readFileSync)(newPrimary));
+      const oldPrimary = unit.isDirectory ? (0, import_path17.join)(unit.path, "SKILL.md") : unit.path;
+      const newPrimary = unit.isDirectory ? (0, import_path17.join)(newRoot, "SKILL.md") : newRoot;
+      const primaryChanged = !(0, import_fs17.existsSync)(oldPrimary) || !(0, import_fs17.existsSync)(newPrimary) ? (0, import_fs17.existsSync)(oldPrimary) !== (0, import_fs17.existsSync)(newPrimary) : !(0, import_fs17.readFileSync)(oldPrimary).equals((0, import_fs17.readFileSync)(newPrimary));
       const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
       const changed = primaryChanged || companions.length > 0;
-      if (changed)
+      if (changed) {
+        this.trySnapshot(
+          (h) => {
+            var _a2;
+            return h.snapshotUnit(item.entryId, unit.path, unit.isDirectory, "update", { commit: (_a2 = item.sourceCommit) != null ? _a2 : void 0, toCommit: clone == null ? void 0 : clone.commit });
+          }
+        );
         await this.replaceUnit(newRoot, unit.path, unit.isDirectory);
+      }
       await this.store.update(item.entryId, { sourceCommit: clone.commit });
       return changed;
     } finally {
@@ -10114,7 +10666,7 @@ ${item.description}`.length),
     if (this.detailLoadedFor === loadKey)
       return;
     try {
-      this.detailContent = (0, import_fs16.readFileSync)(filePath, "utf-8");
+      this.detailContent = (0, import_fs17.readFileSync)(filePath, "utf-8");
     } catch (e) {
       this.detailContent = "";
       new import_obsidian14.Notice("Could not read file: " + errorMessage(e));
@@ -10141,7 +10693,9 @@ ${item.description}`.length),
       const save = () => {
         void (async () => {
           try {
-            (0, import_fs16.writeFileSync)(filePath, textarea.value, "utf-8");
+            const unitPath = linkableUnit(item.sourcePath).path;
+            this.trySnapshot((h) => h.snapshotFile(item.entryId, unitPath, filePath, "edit", textarea.value));
+            (0, import_fs17.writeFileSync)(filePath, textarea.value, "utf-8");
             this.detailContent = textarea.value;
             if (isManifest) {
               const meta = parseSourceMeta(textarea.value);
@@ -10792,7 +11346,7 @@ var SkillManagerPlugin = class extends import_obsidian17.Plugin {
     this.store = new ShadowNoteStore(this.app, this.settings.storageFolder);
     this.registerView(
       LIBRARY_VIEW_TYPE,
-      (leaf) => new LibraryView(leaf, () => this.settings, this.store, () => this.saveSettings())
+      (leaf) => new LibraryView(leaf, () => this.settings, this.store, () => this.saveSettings(), this.manifest.dir)
     );
     this.addRibbonIcon(PLUGIN_ICON_ID, "Open AI Skills Manager", () => {
       void this.activateLibrary();

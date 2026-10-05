@@ -27,7 +27,7 @@ export function computeDiffStats(oldText: string, newText: string): DiffStats {
  *  slide the tick marks out of sync with what they're pointing at. `wrapper` is what carries
  *  position:relative so the minimap (and the scroll body's own overlay chrome) anchor to the
  *  whole diff area, not just the scrolled content. */
-export function renderDiffBody(wrapper: HTMLElement, oldText: string, newText: string): void {
+export function renderDiffBody(wrapper: HTMLElement, oldText: string, newText: string): HTMLElement {
   wrapper.addClass("skillmanager-diff-body-wrapper");
   const scrollBody = wrapper.createDiv({ cls: "skillmanager-diff-body skillmanager-diff-gutter-body" });
   const lines = buildDiffLines(oldText, newText);
@@ -35,6 +35,52 @@ export function renderDiffBody(wrapper: HTMLElement, oldText: string, newText: s
     renderDiffLine(scrollBody, line);
   }
   renderMinimap(wrapper, scrollBody, lines);
+  return scrollBody;
+}
+
+/** Collapses each run of unchanged lines longer than `keep * 2 + 2` down to `keep` lines of
+ *  context on either side, behind a row that expands it in place. Works on the rows
+ *  renderDiffBody already drew, so the shared renderer and its line numbers stay untouched. */
+export function foldUnchanged(scrollBody: HTMLElement, keep = 3): void {
+  const rows = Array.from(scrollBody.children) as HTMLElement[];
+  let runStart = 0;
+  const flush = (end: number) => {
+    const lead = runStart === 0 ? 0 : keep;
+    const tail = end === rows.length ? 0 : keep;
+    const hidden = rows.slice(runStart + lead, end - tail);
+    if (hidden.length < 4) return;
+    for (const row of hidden) row.hide();
+    const fold = createEl("button", {
+      cls: "skillmanager-diff-fold",
+      text: `${hidden.length} unchanged lines`,
+      attr: { "aria-label": `Show ${hidden.length} unchanged lines` },
+    });
+    fold.addEventListener("click", () => {
+      for (const row of hidden) row.show();
+      fold.remove();
+    });
+    scrollBody.insertBefore(fold, hidden[0]);
+  };
+  for (let i = 0; i <= rows.length; i++) {
+    const isContext = i < rows.length && rows[i].hasClass("skillmanager-diff-line-context");
+    if (isContext) continue;
+    if (i > runStart) flush(i);
+    runStart = i + 1;
+  }
+}
+
+/** The first row of each contiguous block of added/removed lines, in order: the stops for
+ *  next/previous change navigation. */
+export function changeHunks(scrollBody: HTMLElement): HTMLElement[] {
+  const starts: HTMLElement[] = [];
+  let inHunk = false;
+  for (const child of Array.from(scrollBody.children) as HTMLElement[]) {
+    if (!child.hasClass("skillmanager-diff-line")) continue;
+    const changed = !child.hasClass("skillmanager-diff-line-context");
+    if (changed && !inHunk) starts.push(child);
+    inHunk = changed;
+  }
+  return starts;
 }
 
 /** Change-position ticks (fixed, one per changed line) plus a translucent viewport indicator that

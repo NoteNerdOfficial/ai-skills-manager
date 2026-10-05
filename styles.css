@@ -2463,6 +2463,284 @@ input.skillmanager-tag-add-input {
   font-size: var(--font-ui-smaller);
 }
 
+/* Version diff (see LibraryView.renderHistoryDiff): file tabs pinned to the top of the rail and a
+   dock pinned to the bottom, so switching files, stepping through changes and Restore never
+   scroll away. Negative margins bleed both to the rail's edges (.skillmanager-detail pads
+   18px 24px 32px) so the diff can't show beside or past them while it scrolls underneath. */
+.skillmanager-vtabs {
+  position: sticky;
+  top: -18px;
+  z-index: 2;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  margin: 12px -24px 0;
+  padding: 8px 24px 0;
+  background: var(--background-primary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.skillmanager-vtabs-scroll {
+  display: flex;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.skillmanager-vtabs-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* Edge fades only where tabs are hidden past that edge (toggled from scroll position). */
+.skillmanager-vtabs.has-more-left .skillmanager-vtabs-scroll {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px);
+  mask-image: linear-gradient(to right, transparent, #000 32px);
+}
+
+.skillmanager-vtabs.has-more-right .skillmanager-vtabs-scroll {
+  -webkit-mask-image: linear-gradient(to left, transparent, #000 32px);
+  mask-image: linear-gradient(to left, transparent, #000 32px);
+}
+
+.skillmanager-vtabs.has-more-left.has-more-right .skillmanager-vtabs-scroll {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+}
+
+.skillmanager-vtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: auto;
+  padding: 6px 10px 7px;
+  border-radius: var(--radius-s) var(--radius-s) 0 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.skillmanager-vtab:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.skillmanager-vtab.is-active {
+  border-bottom-color: var(--interactive-accent);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+}
+
+.skillmanager-vtab-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.skillmanager-vtab-dot.is-added {
+  background: var(--color-green);
+}
+
+.skillmanager-vtab-dot.is-removed {
+  background: var(--color-red);
+}
+
+.skillmanager-vtab-dot.is-modified {
+  background: var(--color-orange);
+}
+
+.skillmanager-vtab-stats {
+  display: inline-flex;
+  gap: 4px;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.skillmanager-vtabs-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: auto;
+  margin-bottom: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+.skillmanager-vtabs-all:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.skillmanager-vdiff-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 10px 0 8px;
+}
+
+.skillmanager-vdiff-path-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.skillmanager-vdock {
+  position: sticky;
+  bottom: -32px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 16px -24px -32px;
+  padding: 10px 24px 42px;
+  background: var(--background-primary);
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.skillmanager-vdock:focus {
+  outline: none;
+}
+
+.skillmanager-vdock-stepper {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.skillmanager-vdiff-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skillmanager-vdiff-btn-icon {
+  display: flex;
+  color: var(--text-muted);
+}
+
+.skillmanager-vdiff-btn-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.skillmanager-vdiff-counter {
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.skillmanager-vdiff-step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* The rail scrolls instead of the diff, so the bar above can stay pinned; the minimap is
+   dropped because folding makes its line-proportional ticks misleading, and J/K covers it. */
+.skillmanager-vdiff-file .skillmanager-diff-gutter-body {
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+}
+
+.skillmanager-vdiff-file .skillmanager-diff-minimap {
+  display: none;
+}
+
+/* The change J/K last landed on: its line numbers take the accent, so the eye finds it after
+   the scroll without another block of color on top of the diff's own red/green. */
+.skillmanager-diff-line.is-focused-change .skillmanager-diff-gutter-num {
+  color: var(--interactive-accent);
+  font-weight: 600;
+}
+
+.skillmanager-diff-fold {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 2px 0;
+  padding: 3px 8px;
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+  box-shadow: none;
+  color: var(--text-muted);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-smaller);
+  text-align: left;
+  cursor: pointer;
+}
+
+.skillmanager-diff-fold:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+/* Version history list (see LibraryView.renderHistory), same row feel as the file tree. */
+.skillmanager-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+}
+
+.skillmanager-history-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px;
+  border-radius: var(--radius-m);
+  cursor: pointer;
+}
+
+.skillmanager-history-row:hover,
+.skillmanager-history-row:focus-visible {
+  background: var(--background-modifier-hover);
+}
+
+.skillmanager-history-icon {
+  display: flex;
+  flex-shrink: 0;
+  padding-top: 2px;
+  color: var(--text-muted);
+}
+
+.skillmanager-history-icon .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.skillmanager-history-text {
+  min-width: 0;
+}
+
+.skillmanager-history-label {
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+}
+
+.skillmanager-history-meta {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
 .skillmanager-diff-companion-list {
   margin-top: 12px;
   border-top: 1px solid var(--background-modifier-border);

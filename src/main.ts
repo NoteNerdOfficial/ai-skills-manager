@@ -53,7 +53,7 @@ export default class SkillManagerPlugin extends Plugin {
 
     this.registerView(
       LIBRARY_VIEW_TYPE,
-      (leaf) => new LibraryView(leaf, () => this.settings, this.store, () => this.saveSettings())
+      (leaf) => new LibraryView(leaf, () => this.settings, this.store, () => this.saveSettings(), this.manifest.dir)
     );
 
     this.addRibbonIcon(PLUGIN_ICON_ID, "Open AI Skills Manager", () => {

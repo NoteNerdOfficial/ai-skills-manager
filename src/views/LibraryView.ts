@@ -29,6 +29,7 @@ import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, exp
 import { addToProject, removeFromProject } from "../projectLink";
 import { deleteItem, disabledLocation, previewToggle, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
+import { HISTORY_KEPT, HistoryEntry, ItemHistory } from "../history";
 import { createSwitch, makeActivatable } from "../a11y";
 import { MEMORY_INDEX_FILENAME, checkMemoryIndexed, forgetMemoryIndexEntry, isMemoryIndex, isMemoryItem, toggleMemoryEnabled } from "../memories";
 import { ShadowNoteStore } from "../store";
@@ -85,7 +86,7 @@ import { buildFileTree, countFiles, isFolderItem, TreeNode } from "../fileTree";
 import { getAllProjects as computeAllProjects, performRescan, projectIcon, RescanResult, VAULT_PROJECT_ID } from "../rescan";
 import { originLabel as resolveOriginLabel, sourceLabel as resolveSourceLabel, toolLabel as resolveToolLabel } from "../sourceLabel";
 import { ClonedRepo, remoteHeadCommit, shallowCloneAtCommit, shallowCloneRepo } from "../git";
-import { renderDiffBody } from "../diff/renderDiff";
+import { changeHunks, computeDiffStats, foldUnchanged, renderDiffBody } from "../diff/renderDiff";
 import { computeCompanionChanges, CompanionRow } from "../diff/companions";
 import { UnchangedUpdateModal } from "../modals/UnchangedUpdateModal";
 
@@ -479,6 +480,18 @@ export class LibraryView extends ItemView {
   private pendingDetailAnimation: "forward" | "back" | null = null;
   private readonly markdownComponent = new Component();
   private review: ReviewState | null = null;
+  /** The version history panel, shown in the detail rail in place of the file (see
+   *  renderHistory). `selectedId` is the version being previewed, or null for the list. Cleared
+   *  on every navigation, same as a review (see cleanupReview). */
+  private historyView: {
+    entryId: string;
+    selectedId: string | null;
+    /** Which changed file of the selected version is showing (one at a time, see renderHistoryDiff). */
+    fileIndex: number;
+    /** Set when change navigation crosses into another file, so that file opens on its first or
+     *  last change instead of its top. */
+    landOn: "first" | "last" | null;
+  } | null = null;
   // entryId of the item currently showing the inline "add a tag" input in place of the "+ tag"
   // button — local UI state, not persisted, reset whenever selection changes.
   private addingTagFor: string | null = null;
@@ -489,7 +502,9 @@ export class LibraryView extends ItemView {
     leaf: WorkspaceLeaf,
     private getSettings: () => SkillManagerPluginSettings,
     private store: ShadowNoteStore,
-    private saveSettings: () => Promise<void>
+    private saveSettings: () => Promise<void>,
+    /** The plugin's folder relative to the vault (manifest.dir); version history lives under it. */
+    private pluginDir?: string
   ) {
     super(leaf);
   }
@@ -525,6 +540,23 @@ export class LibraryView extends ItemView {
   private cleanupReview() {
     if (this.review?.status === "ready") this.review.clone.cleanup();
     this.review = null;
+    this.historyView = null;
+  }
+
+  private itemHistory(): ItemHistory | null {
+    const base = this.vaultPath();
+    return base && this.pluginDir ? new ItemHistory(join(base, this.pluginDir, "history")) : null;
+  }
+
+  /** Best effort: a failed snapshot warns but never blocks the edit/update it was taken for. */
+  private trySnapshot(take: (history: ItemHistory) => HistoryEntry | null): void {
+    const history = this.itemHistory();
+    if (!history) return;
+    try {
+      take(history);
+    } catch (e) {
+      new Notice("Couldn't save a history version: " + errorMessage(e));
+    }
   }
 
   async rescan(): Promise<RescanResult> {
@@ -6176,6 +6208,10 @@ export class LibraryView extends ItemView {
   private renderDetailRail(panel: HTMLElement, item: ItemMetadata) {
     const tree = this.treeForItem(item);
     this.renderBreadcrumbs(panel, item, tree);
+    if (this.historyView?.entryId === item.entryId) {
+      this.renderHistory(panel, item);
+      return;
+    }
 
     const filePath = tree && !this.selectedFilePath ? null : this.selectedFilePath;
     if (filePath) this.loadFileContent(item, filePath);
@@ -6247,7 +6283,7 @@ export class LibraryView extends ItemView {
       cls: "skillmanager-detail-title",
     });
     header.createSpan({ text: this.itemTypeLabel(item), cls: "skillmanager-detail-type-pill" });
-    if (filePath && !isReviewing) this.renderDetailActions(header.createDiv({ cls: "skillmanager-detail-actions" }));
+    if (!isReviewing) this.renderDetailActions(header.createDiv({ cls: "skillmanager-detail-actions" }), item, !!filePath);
 
     const toolInfo = this.toolLabel(item);
     const toolLine = section.createDiv({ cls: "skillmanager-detail-tool" });
@@ -6413,7 +6449,13 @@ export class LibraryView extends ItemView {
     }
   }
 
-  private renderDetailActions(actions: HTMLElement) {
+  private renderDetailActions(actions: HTMLElement, item: ItemMetadata, canEdit: boolean) {
+    if (this.itemHistory()) {
+      const historyBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "History" } });
+      setIcon(historyBtn, "history");
+      historyBtn.addEventListener("click", () => this.openHistory(item));
+    }
+    if (!canEdit) return;
     const editBtn = actions.createEl("button", {
       cls: "skillmanager-icon-btn",
       attr: { "aria-label": this.detailEditing ? "Preview" : "Edit" },
@@ -6423,6 +6465,330 @@ export class LibraryView extends ItemView {
       this.detailEditing = !this.detailEditing;
       this.render();
     });
+  }
+
+  // ---------- version history (see history.ts) ----------
+
+  private openHistory(item: ItemMetadata) {
+    this.cleanupReview();
+    this.detailEditing = false;
+    this.historyView = { entryId: item.entryId, selectedId: null, fileIndex: 0, landOn: null };
+    this.pendingDetailAnimation = "forward";
+    this.render();
+  }
+
+  /** Each version is the state right before a change, so it's named after that change. */
+  private historyLabel(item: ItemMetadata, entry: HistoryEntry): string {
+    switch (entry.kind) {
+      case "edit":
+        return `Before edit to ${entry.relPath || basename(item.sourcePath)}`;
+      case "update":
+        return entry.toCommit ? `Before GitHub update to ${entry.toCommit.slice(0, 7)}` : "Before GitHub update";
+      case "restore-installed":
+        return "Before restoring the installed version";
+      case "restore":
+        return "Before restoring an earlier version";
+    }
+  }
+
+  private historyMeta(entry: HistoryEntry): string {
+    const when = new Date(entry.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    const parts = [when, entry.scope === "unit" ? "Whole item" : "One file"];
+    if (entry.commit) parts.push(`at ${entry.commit.slice(0, 7)}`);
+    return parts.join(" · ");
+  }
+
+  /** The history panel: a list of saved versions, or one version diffed against what's on disk
+   *  now (shown the same way as an update review: what restoring it would change). */
+  private renderHistory(panel: HTMLElement, item: ItemMetadata) {
+    const view = this.historyView!;
+    const history = this.itemHistory();
+    const entries = history?.list(item.entryId) ?? [];
+    const selected = view.selectedId ? entries.find((e) => e.id === view.selectedId) : undefined;
+
+    const section = panel.createDiv({ cls: "skillmanager-detail-head" });
+    const header = section.createDiv({ cls: "skillmanager-detail-header" });
+    header.createEl("h3", { text: selected ? this.historyLabel(item, selected) : `History of "${item.name}"`, cls: "skillmanager-detail-title" });
+    const closeBtn = header.createDiv({ cls: "skillmanager-detail-actions" }).createEl("button", {
+      cls: "skillmanager-icon-btn",
+      attr: { "aria-label": "Close history" },
+    });
+    setIcon(closeBtn, "x");
+    closeBtn.addEventListener("click", () => {
+      this.historyView = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    });
+    section.createDiv({
+      cls: "skillmanager-detail-tool",
+      text: selected
+        ? this.historyMeta(selected)
+        : `A version is saved before each edit made here and each GitHub update or restore. The last ${HISTORY_KEPT} are kept.`,
+    });
+
+    if (!history) return;
+    if (!selected) {
+      if (entries.length === 0) {
+        panel.createDiv({ cls: "skillmanager-tree-hint", text: "No saved versions yet." });
+        return;
+      }
+      const list = panel.createDiv({ cls: "skillmanager-history-list" });
+      for (const entry of entries) {
+        const row = list.createDiv({ cls: "skillmanager-history-row" });
+        setIcon(row.createSpan({ cls: "skillmanager-history-icon" }), entry.kind === "edit" ? "pencil" : entry.kind === "update" ? "download" : "history");
+        const text = row.createDiv({ cls: "skillmanager-history-text" });
+        text.createDiv({ cls: "skillmanager-history-label", text: this.historyLabel(item, entry) });
+        text.createDiv({ cls: "skillmanager-history-meta", text: this.historyMeta(entry) });
+        makeActivatable(row);
+        row.addEventListener("click", () => {
+          view.selectedId = entry.id;
+          view.fileIndex = 0;
+          view.landOn = null;
+          this.pendingDetailAnimation = "forward";
+          this.render();
+        });
+      }
+      return;
+    }
+
+    const unit = linkableUnit(item.sourcePath);
+    // One diff per file that differs, so a version whose change was in a reference file (not
+    // SKILL.md) shows that file's diff instead of an unchanged SKILL.md.
+    const changes: { file: string; status: CompanionRow["status"]; current: string; version: string }[] = [];
+    if (selected.scope === "file" || !unit.isDirectory) {
+      const currentPath = selected.relPath ? join(unit.path, selected.relPath) : unit.path;
+      const versionPath = history.contentPath(selected);
+      if (!existsSync(currentPath) || !readFileSync(currentPath).equals(readFileSync(versionPath))) {
+        changes.push({ file: selected.relPath || basename(unit.path), status: existsSync(currentPath) ? "modified" : "added", current: currentPath, version: versionPath });
+      }
+    } else {
+      const versionRoot = history.contentPath(selected);
+      const skillChanged = !existsSync(join(unit.path, "SKILL.md")) || !existsSync(join(versionRoot, "SKILL.md"))
+        ? existsSync(join(unit.path, "SKILL.md")) !== existsSync(join(versionRoot, "SKILL.md"))
+        : !readFileSync(join(unit.path, "SKILL.md")).equals(readFileSync(join(versionRoot, "SKILL.md")));
+      const rows: CompanionRow[] = skillChanged ? [{ file: "SKILL.md", status: "modified" }] : [];
+      rows.push(...computeCompanionChanges(unit.path, versionRoot));
+      for (const row of rows) changes.push({ ...row, current: join(unit.path, row.file), version: join(versionRoot, row.file) });
+    }
+
+    this.renderHistoryDiff(panel, item, selected, changes);
+  }
+
+  /** One changed file at a time: file tabs pinned along the top, the diff, and a dock pinned
+   *  along the bottom with Versions, a change stepper and Restore, so neither navigation nor the
+   *  action ever scrolls away. Long unchanged stretches fold (see foldUnchanged), and stepping
+   *  past a file's last change carries on into the next file, so J/K alone walks every change. */
+  private renderHistoryDiff(
+    panel: HTMLElement,
+    item: ItemMetadata,
+    selected: HistoryEntry,
+    changes: { file: string; status: CompanionRow["status"]; current: string; version: string }[]
+  ) {
+    const view = this.historyView!;
+    const backToVersions = () => {
+      view.selectedId = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    const renderBack = (parent: HTMLElement) => {
+      const btn = parent.createEl("button", { cls: "skillmanager-btn-neutral skillmanager-vdiff-back" });
+      setIcon(btn.createSpan({ cls: "skillmanager-vdiff-btn-icon" }), "arrow-left");
+      btn.createSpan({ text: "Versions" });
+      btn.addEventListener("click", backToVersions);
+    };
+
+    if (changes.length === 0) {
+      panel.createDiv({ cls: "skillmanager-tree-hint", text: "This version matches what's on disk now." });
+      renderBack(panel.createDiv({ cls: "skillmanager-modal-actions" }));
+      return;
+    }
+
+    const read = (path: string) => (existsSync(path) ? readFileSync(path) : Buffer.alloc(0));
+    const files = changes.map((c) => {
+      const current = read(c.current);
+      const version = read(c.version);
+      const binary = current.includes(0) || version.includes(0);
+      const currentText = binary ? "" : current.toString("utf-8");
+      const versionText = binary ? "" : version.toString("utf-8");
+      return { ...c, binary, currentText, versionText, stats: binary ? null : computeDiffStats(currentText, versionText) };
+    });
+    const index = Math.min(view.fileIndex, files.length - 1);
+    const file = files[index];
+    const goToFile = (next: number, landOn: "first" | "last" | null = null) => {
+      if (next < 0 || next >= files.length || next === index) return;
+      view.fileIndex = next;
+      view.landOn = landOn;
+      this.render();
+    };
+    const renderStats = (parent: HTMLElement, f: (typeof files)[number]) => {
+      const el = parent.createSpan({ cls: "skillmanager-vtab-stats" });
+      if (!f.stats) el.setText("binary");
+      else {
+        if (f.stats.added) el.createSpan({ cls: "skillmanager-diff-stat-add", text: `+${f.stats.added}` });
+        if (f.stats.removed) el.createSpan({ cls: "skillmanager-diff-stat-remove", text: `−${f.stats.removed}` });
+      }
+    };
+
+    // ---- file tabs ----
+    const strip = panel.createDiv({ cls: "skillmanager-vtabs" });
+    const scroller = strip.createDiv({ cls: "skillmanager-vtabs-scroll", attr: { role: "tablist", "aria-label": "Changed files" } });
+    files.forEach((f, i) => {
+      const tab = scroller.createEl("button", {
+        cls: `skillmanager-vtab${i === index ? " is-active" : ""}`,
+        attr: { role: "tab", "aria-selected": String(i === index), title: `${f.file} (${f.status})` },
+      });
+      tab.createSpan({ cls: `skillmanager-vtab-dot is-${f.status}` });
+      tab.createSpan({ cls: "skillmanager-vtab-name", text: basename(f.file) });
+      renderStats(tab, f);
+      tab.addEventListener("click", () => goToFile(i));
+    });
+    // A plain mouse wheel only scrolls vertically; turn it sideways so the strip scrolls without
+    // a trackpad or Shift.
+    scroller.addEventListener(
+      "wheel",
+      (evt) => {
+        if (Math.abs(evt.deltaY) <= Math.abs(evt.deltaX) || scroller.scrollWidth <= scroller.clientWidth) return;
+        scroller.scrollLeft += evt.deltaY;
+        evt.preventDefault();
+      },
+      { passive: false }
+    );
+    // Fade whichever edge still has tabs hidden past it.
+    const syncFades = () => {
+      strip.toggleClass("has-more-left", scroller.scrollLeft > 1);
+      strip.toggleClass("has-more-right", scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 1);
+    };
+    scroller.addEventListener("scroll", syncFades);
+    window.requestAnimationFrame(() => {
+      scroller.querySelector(".is-active")?.scrollIntoView({ inline: "nearest", block: "nearest" });
+      syncFades();
+    });
+
+    if (files.length > 1) {
+      const allBtn = strip.createEl("button", {
+        cls: "skillmanager-vtabs-all",
+        attr: { "aria-label": `All ${files.length} changed files` },
+      });
+      setIcon(allBtn.createSpan({ cls: "skillmanager-vdiff-btn-icon" }), "list");
+      allBtn.createSpan({ text: `${files.length} files` });
+      allBtn.addEventListener("click", (evt) => {
+        const menu = new Menu();
+        files.forEach((f, i) => {
+          menu.addItem((menuItem) => {
+            const detail = f.stats ? `+${f.stats.added} −${f.stats.removed}` : "binary";
+            menuItem
+              .setTitle(`${f.file}  ${f.status === "modified" ? detail : f.status}`)
+              .setChecked(i === index)
+              .onClick(() => goToFile(i));
+          });
+        });
+        menu.showAtMouseEvent(evt);
+      });
+    }
+
+    const path = panel.createDiv({ cls: "skillmanager-vdiff-path" });
+    path.createSpan({ cls: `skillmanager-diff-companion-badge is-${file.status}`, text: file.status });
+    path.createSpan({ cls: "skillmanager-vdiff-path-name", text: file.file });
+
+    // ---- diff ----
+    const body = panel.createDiv({ cls: "skillmanager-vdiff-file" });
+    let hunks: HTMLElement[] = [];
+    if (file.binary) {
+      body.createDiv({ cls: "skillmanager-tree-hint", text: "Binary file, no preview." });
+    } else {
+      const scrollBody = renderDiffBody(body.createDiv(), file.currentText, file.versionText);
+      foldUnchanged(scrollBody);
+      hunks = changeHunks(scrollBody);
+    }
+
+    // ---- dock ----
+    const dock = panel.createDiv({ cls: "skillmanager-vdock", attr: { tabindex: "-1" } });
+    renderBack(dock);
+    const stepper = dock.createDiv({ cls: "skillmanager-vdock-stepper" });
+    const stepBtn = (icon: string, label: string, onClick: () => void) => {
+      const btn = stepper.createEl("button", { cls: "skillmanager-icon-btn skillmanager-vdiff-step", attr: { "aria-label": label } });
+      setIcon(btn, icon);
+      btn.addEventListener("click", onClick);
+      return btn;
+    };
+    let at = -1;
+    const prevBtn = stepBtn("chevron-up", "Previous change (K)", () => move(-1));
+    const counter = stepper.createSpan({ cls: "skillmanager-vdiff-counter", attr: { "aria-live": "polite" } });
+    const nextBtn = stepBtn("chevron-down", "Next change (J)", () => move(1));
+    dock.createEl("button", { cls: "mod-cta", text: files.length > 1 ? `Restore ${files.length} files` : "Restore this version" })
+      .addEventListener("click", () => void this.restoreHistoryVersion(item, selected));
+
+    const sync = () => {
+      if (hunks.length === 0) counter.setText(file.binary ? "Binary file" : "No line changes");
+      else counter.setText(at < 0 ? `${hunks.length} change${hunks.length === 1 ? "" : "s"}` : `${at + 1} / ${hunks.length}`);
+      prevBtn.disabled = index === 0 && at <= 0;
+      nextBtn.disabled = index === files.length - 1 && at >= hunks.length - 1;
+    };
+    const focusHunk = (i: number, smooth = true) => {
+      for (const row of Array.from(body.querySelectorAll(".is-focused-change"))) row.removeClass("is-focused-change");
+      at = i;
+      for (let row: Element | null = hunks[i]; row && row.hasClass("skillmanager-diff-line") && !row.hasClass("skillmanager-diff-line-context"); row = row.nextElementSibling) {
+        row.addClass("is-focused-change");
+      }
+      hunks[i].scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" });
+      sync();
+    };
+    const move = (dir: 1 | -1) => {
+      const next = at + dir;
+      if (next >= 0 && next < hunks.length) focusHunk(next);
+      else if (dir === 1 && next >= hunks.length) goToFile(index + 1, "first");
+      else if (dir === -1 && next < 0) goToFile(index - 1, "last");
+    };
+    sync();
+
+    panel.addEventListener("keydown", (evt) => {
+      if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
+      const target = evt.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      const key = evt.key.toLowerCase();
+      if (key === "j") move(1);
+      else if (key === "k") move(-1);
+      else if (key === "]") goToFile(index + 1);
+      else if (key === "[") goToFile(index - 1);
+      else return;
+      evt.preventDefault();
+    });
+
+    if (view.landOn && hunks.length > 0) {
+      const target = view.landOn === "first" ? 0 : hunks.length - 1;
+      view.landOn = null;
+      window.requestAnimationFrame(() => focusHunk(target, false));
+    }
+    // Keys work straight away, without first clicking into the panel.
+    window.requestAnimationFrame(() => dock.focus({ preventScroll: true }));
+  }
+
+  /** Saves the current state first (so a restore can itself be undone), then writes the version
+   *  back: a single file directly, a whole unit through replaceUnit so the replaced copy goes to
+   *  the trash like an update. A unit version of a GitHub item also puts the tracked commit back. */
+  private async restoreHistoryVersion(item: ItemMetadata, entry: HistoryEntry) {
+    const history = this.itemHistory();
+    if (!history) return;
+    const unit = linkableUnit(item.sourcePath);
+    try {
+      this.trySnapshot((h) => h.snapshotBeforeRestore(entry, unit.path, unit.isDirectory, item.sourceCommit ?? undefined));
+      if (entry.scope === "file") {
+        history.restoreFile(entry, unit.path);
+      } else {
+        await this.replaceUnit(history.contentPath(entry), unit.path, unit.isDirectory);
+        if (item.sourceRepo && entry.commit) {
+          await this.store.update(item.entryId, { sourceCommit: entry.commit });
+          this.syncStatus.delete(item.entryId);
+        }
+      }
+      history.prune(item.entryId);
+      this.historyView = null;
+      this.detailLoadedFor = null;
+      await this.rescan();
+      new Notice("Restored.");
+    } catch (e) {
+      new Notice("Restore failed: " + errorMessage(e));
+    }
   }
 
   /** Who owns this item's files and how it gets updated: a plugin or the tool itself (both
@@ -6688,6 +7054,13 @@ export class LibraryView extends ItemView {
     if (this.review?.status !== "ready") return;
     const { mode, unitPath, isDirectory, newRoot, newCommit, entryId, clone } = this.review;
     try {
+      const fromCommit = this.items.find((i) => i.entryId === entryId)?.sourceCommit ?? undefined;
+      this.trySnapshot((h) =>
+        h.snapshotUnit(entryId, unitPath, isDirectory, mode === "restore" ? "restore-installed" : "update", {
+          commit: fromCommit,
+          toCommit: newCommit,
+        })
+      );
       await this.replaceUnit(newRoot, unitPath, isDirectory);
       await this.store.update(entryId, { sourceCommit: newCommit });
       if (mode === "update") this.syncStatus.set(entryId, "current");
@@ -6730,7 +7103,12 @@ export class LibraryView extends ItemView {
       const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
       const changed = primaryChanged || companions.length > 0;
       // Skip the swap when nothing changed, so a bulk run doesn't fill the trash with identical copies.
-      if (changed) await this.replaceUnit(newRoot, unit.path, unit.isDirectory);
+      if (changed) {
+        this.trySnapshot((h) =>
+          h.snapshotUnit(item.entryId, unit.path, unit.isDirectory, "update", { commit: item.sourceCommit ?? undefined, toCommit: clone?.commit })
+        );
+        await this.replaceUnit(newRoot, unit.path, unit.isDirectory);
+      }
       await this.store.update(item.entryId, { sourceCommit: clone.commit });
       return changed;
     } finally {
@@ -6911,6 +7289,8 @@ export class LibraryView extends ItemView {
       const save = () => {
         void (async () => {
           try {
+            const unitPath = linkableUnit(item.sourcePath).path;
+            this.trySnapshot((h) => h.snapshotFile(item.entryId, unitPath, filePath, "edit", textarea.value));
             writeFileSync(filePath, textarea.value, "utf-8");
             this.detailContent = textarea.value;
             // The saved frontmatter may have changed name/description — re-derive them
