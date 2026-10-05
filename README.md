@@ -61,7 +61,7 @@ Per-item metadata (tags, favorites, collection membership) is stored as plain fr
 **A detail panel that answers the important questions first**
 Opening an item shows its name and type, the tool (and plugin) it belongs to, and its description. Below that, a row of key numbers: estimated tokens while it's available, tokens loaded when it's invoked, sessions over the last 26 weeks, and when it was last used. A daily usage heatmap spanning the last 26 weeks appears once there's any use to chart. The plugin keeps its own daily usage history for Claude Code and Codex, so it outlasts the tools' own transcript cleanup.
 
-Everything else sits in one properties panel: tags, whether it runs automatically or only when called, who manages it (you, a GitHub source, a plugin, or the tool itself) and what that means for edits and updates, version, any other frontmatter fields, file size, path, and where it's symlinked from. For items installed from GitHub, the panel ends with the source repo and its **Check for updates** and **Restore installed** buttons.
+Everything else sits in one properties panel: tags, whether it runs automatically or only when called, who manages it (you, a GitHub source, a plugin, or the tool itself) and what that means for edits and updates, version, any other frontmatter fields, file size, path, and where it's symlinked from. For items installed from GitHub, the panel ends with the source repo and its **Check for updates** and **Restore installed** buttons. The **History** button next to Edit opens the item's saved versions.
 
 **Integrity checks**
 Problems that make a tool skip an item or never pick it up are flagged on the item and collected on the Insights Health page: broken or missing frontmatter, a name that doesn't match its folder, a missing or overlong description, a broken symlink, a link to a bundled file that isn't there, or a memory its index never points to.
@@ -82,7 +82,18 @@ Point Discover at a GitHub repo (or a specific subfolder) and it walks it for `S
 ![Adding a GitHub repo as a source and installing a skill from it](images/adding-repo-flow.gif)
 
 **Check for updates, with a real diff**
-For anything installed through the plugin, "Check for updates" fetches the source repo and shows exactly what changed, including companion files like `references/` and `scripts/` alongside the main manifest, before you apply anything. "Restore" reverts an item back to the exact commit it was installed at. An optional background interval can check every tracked source on its own and flag what's stale, without ever applying an update for you.
+For anything installed through the plugin, "Check for updates" fetches the source repo and shows exactly what changed before you apply anything. Every changed file gets its own tab, with its status and line counts, so an update that touches `references/` or `scripts/` shows those diffs too, not just the main manifest. Long unchanged stretches fold away, the arrows in the bottom bar (or `J` and `K`) step from one change to the next across every file, and `[` and `]` switch files. "Restore installed" reverts an item back to the exact commit it was installed at. An optional background interval can check every tracked source on its own and flag what's stale, without ever applying an update for you.
+
+![Reviewing an update with a tab per changed file, folded unchanged lines, and a change stepper next to the Update button](images/check-for-updates.png)
+
+**Version history**
+A version of an item is saved before every edit you make in the detail panel and before every GitHub update or restore, so nothing you change here is a one-way trip. Open **History** from the detail panel to see each saved version, named after the change that followed it ("Before edit to SKILL.md", "Before GitHub update to 6e802bd") with its date and commit.
+
+![History panel listing saved versions of a skill before each GitHub update](images/history.png)
+
+Open a version to see what restoring it would change, in the same tabbed diff as an update review, then restore it in one click. Restoring saves the current state first, so a restore can be undone too. Restoring a version of a GitHub-installed item also puts its tracked commit back, so "Check for updates" stays accurate. The last 20 versions of each item are kept, in the plugin's own folder.
+
+![A saved version open in the tabbed diff, ready to restore two files](images/history-version.png)
 
 **Claude Code and Codex plugin awareness**
 Reads Claude Code's installed-plugins registry and Codex's installed plugin cache so skills, agents, and commands bundled inside installed plugins show up in the library too, tagged with the plugin they came from. Codex plugins are read-only here because AI Skills Manager has no supported Codex setting for enabling or disabling an installed plugin. Manage Codex plugins from Codex itself.
