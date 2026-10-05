@@ -86,8 +86,8 @@ import { buildFileTree, countFiles, isFolderItem, TreeNode } from "../fileTree";
 import { getAllProjects as computeAllProjects, performRescan, projectIcon, RescanResult, VAULT_PROJECT_ID } from "../rescan";
 import { originLabel as resolveOriginLabel, sourceLabel as resolveSourceLabel, toolLabel as resolveToolLabel } from "../sourceLabel";
 import { ClonedRepo, remoteHeadCommit, shallowCloneAtCommit, shallowCloneRepo } from "../git";
-import { changeHunks, computeDiffStats, foldUnchanged, renderDiffBody } from "../diff/renderDiff";
-import { computeCompanionChanges, CompanionRow } from "../diff/companions";
+import { changedUnitFiles, TabsDiffFile } from "../diff/companions";
+import { newTabsDiffState, renderTabsDiff, TabsDiffState } from "../diff/tabsDiff";
 import { UnchangedUpdateModal } from "../modals/UnchangedUpdateModal";
 
 export const LIBRARY_VIEW_TYPE = "skillmanager-library-view";
@@ -106,9 +106,8 @@ type ReviewState =
       status: "ready";
       entryId: string;
       mode: UpdateMode;
-      oldText: string;
-      newText: string;
-      companions: CompanionRow[];
+      /** Every file the update/restore would change (see changedUnitFiles). */
+      files: TabsDiffFile[];
       unitPath: string;
       isDirectory: boolean;
       newRoot: string;
@@ -486,12 +485,10 @@ export class LibraryView extends ItemView {
   private historyView: {
     entryId: string;
     selectedId: string | null;
-    /** Which changed file of the selected version is showing (one at a time, see renderHistoryDiff). */
-    fileIndex: number;
-    /** Set when change navigation crosses into another file, so that file opens on its first or
-     *  last change instead of its top. */
-    landOn: "first" | "last" | null;
   } | null = null;
+  /** Open file and cached diffs for the tabbed diff (history version or update review), keyed by
+   *  what's being compared. Dropped on navigation so reopening rereads what's on disk. */
+  private tabsDiff: { key: string; state: TabsDiffState } | null = null;
   // entryId of the item currently showing the inline "add a tag" input in place of the "+ tag"
   // button — local UI state, not persisted, reset whenever selection changes.
   private addingTagFor: string | null = null;
@@ -541,6 +538,12 @@ export class LibraryView extends ItemView {
     if (this.review?.status === "ready") this.review.clone.cleanup();
     this.review = null;
     this.historyView = null;
+    this.tabsDiff = null;
+  }
+
+  private tabsDiffState(key: string): TabsDiffState {
+    if (this.tabsDiff?.key !== key) this.tabsDiff = { key, state: newTabsDiffState() };
+    return this.tabsDiff.state;
   }
 
   private itemHistory(): ItemHistory | null {
@@ -6472,7 +6475,7 @@ export class LibraryView extends ItemView {
   private openHistory(item: ItemMetadata) {
     this.cleanupReview();
     this.detailEditing = false;
-    this.historyView = { entryId: item.entryId, selectedId: null, fileIndex: 0, landOn: null };
+    this.historyView = { entryId: item.entryId, selectedId: null };
     this.pendingDetailAnimation = "forward";
     this.render();
   }
@@ -6542,8 +6545,7 @@ export class LibraryView extends ItemView {
         makeActivatable(row);
         row.addEventListener("click", () => {
           view.selectedId = entry.id;
-          view.fileIndex = 0;
-          view.landOn = null;
+          this.tabsDiff = null;
           this.pendingDetailAnimation = "forward";
           this.render();
         });
@@ -6552,215 +6554,38 @@ export class LibraryView extends ItemView {
     }
 
     const unit = linkableUnit(item.sourcePath);
-    // One diff per file that differs, so a version whose change was in a reference file (not
-    // SKILL.md) shows that file's diff instead of an unchanged SKILL.md.
-    const changes: { file: string; status: CompanionRow["status"]; current: string; version: string }[] = [];
-    if (selected.scope === "file" || !unit.isDirectory) {
+    let files: TabsDiffFile[];
+    if (selected.scope === "unit") {
+      files = changedUnitFiles(unit.path, history.contentPath(selected), unit.isDirectory);
+    } else {
       const currentPath = selected.relPath ? join(unit.path, selected.relPath) : unit.path;
       const versionPath = history.contentPath(selected);
-      if (!existsSync(currentPath) || !readFileSync(currentPath).equals(readFileSync(versionPath))) {
-        changes.push({ file: selected.relPath || basename(unit.path), status: existsSync(currentPath) ? "modified" : "added", current: currentPath, version: versionPath });
-      }
-    } else {
-      const versionRoot = history.contentPath(selected);
-      const skillChanged = !existsSync(join(unit.path, "SKILL.md")) || !existsSync(join(versionRoot, "SKILL.md"))
-        ? existsSync(join(unit.path, "SKILL.md")) !== existsSync(join(versionRoot, "SKILL.md"))
-        : !readFileSync(join(unit.path, "SKILL.md")).equals(readFileSync(join(versionRoot, "SKILL.md")));
-      const rows: CompanionRow[] = skillChanged ? [{ file: "SKILL.md", status: "modified" }] : [];
-      rows.push(...computeCompanionChanges(unit.path, versionRoot));
-      for (const row of rows) changes.push({ ...row, current: join(unit.path, row.file), version: join(versionRoot, row.file) });
+      const same = existsSync(currentPath) && readFileSync(currentPath).equals(readFileSync(versionPath));
+      files = same ? [] : [{ file: selected.relPath || basename(unit.path), status: existsSync(currentPath) ? "modified" : "added", oldPath: currentPath, newPath: versionPath }];
     }
 
-    this.renderHistoryDiff(panel, item, selected, changes);
-  }
-
-  /** One changed file at a time: file tabs pinned along the top, the diff, and a dock pinned
-   *  along the bottom with Versions, a change stepper and Restore, so neither navigation nor the
-   *  action ever scrolls away. Long unchanged stretches fold (see foldUnchanged), and stepping
-   *  past a file's last change carries on into the next file, so J/K alone walks every change. */
-  private renderHistoryDiff(
-    panel: HTMLElement,
-    item: ItemMetadata,
-    selected: HistoryEntry,
-    changes: { file: string; status: CompanionRow["status"]; current: string; version: string }[]
-  ) {
-    const view = this.historyView!;
     const backToVersions = () => {
       view.selectedId = null;
+      this.tabsDiff = null;
       this.pendingDetailAnimation = "back";
       this.render();
     };
-    const renderBack = (parent: HTMLElement) => {
-      const btn = parent.createEl("button", { cls: "skillmanager-btn-neutral skillmanager-vdiff-back" });
-      setIcon(btn.createSpan({ cls: "skillmanager-vdiff-btn-icon" }), "arrow-left");
-      btn.createSpan({ text: "Versions" });
-      btn.addEventListener("click", backToVersions);
-    };
-
-    if (changes.length === 0) {
+    if (files.length === 0) {
       panel.createDiv({ cls: "skillmanager-tree-hint", text: "This version matches what's on disk now." });
-      renderBack(panel.createDiv({ cls: "skillmanager-modal-actions" }));
+      const actions = panel.createDiv({ cls: "skillmanager-modal-actions" });
+      actions.createEl("button", { cls: "skillmanager-btn-neutral", text: "Versions" }).addEventListener("click", backToVersions);
       return;
     }
-
-    const read = (path: string) => (existsSync(path) ? readFileSync(path) : Buffer.alloc(0));
-    const files = changes.map((c) => {
-      const current = read(c.current);
-      const version = read(c.version);
-      const binary = current.includes(0) || version.includes(0);
-      const currentText = binary ? "" : current.toString("utf-8");
-      const versionText = binary ? "" : version.toString("utf-8");
-      return { ...c, binary, currentText, versionText, stats: binary ? null : computeDiffStats(currentText, versionText) };
-    });
-    const index = Math.min(view.fileIndex, files.length - 1);
-    const file = files[index];
-    const goToFile = (next: number, landOn: "first" | "last" | null = null) => {
-      if (next < 0 || next >= files.length || next === index) return;
-      view.fileIndex = next;
-      view.landOn = landOn;
-      this.render();
-    };
-    const renderStats = (parent: HTMLElement, f: (typeof files)[number]) => {
-      const el = parent.createSpan({ cls: "skillmanager-vtab-stats" });
-      if (!f.stats) el.setText("binary");
-      else {
-        if (f.stats.added) el.createSpan({ cls: "skillmanager-diff-stat-add", text: `+${f.stats.added}` });
-        if (f.stats.removed) el.createSpan({ cls: "skillmanager-diff-stat-remove", text: `−${f.stats.removed}` });
-      }
-    };
-
-    // ---- file tabs ----
-    const strip = panel.createDiv({ cls: "skillmanager-vtabs" });
-    const scroller = strip.createDiv({ cls: "skillmanager-vtabs-scroll", attr: { role: "tablist", "aria-label": "Changed files" } });
-    files.forEach((f, i) => {
-      const tab = scroller.createEl("button", {
-        cls: `skillmanager-vtab${i === index ? " is-active" : ""}`,
-        attr: { role: "tab", "aria-selected": String(i === index), title: `${f.file} (${f.status})` },
-      });
-      tab.createSpan({ cls: `skillmanager-vtab-dot is-${f.status}` });
-      tab.createSpan({ cls: "skillmanager-vtab-name", text: basename(f.file) });
-      renderStats(tab, f);
-      tab.addEventListener("click", () => goToFile(i));
-    });
-    // A plain mouse wheel only scrolls vertically; turn it sideways so the strip scrolls without
-    // a trackpad or Shift.
-    scroller.addEventListener(
-      "wheel",
-      (evt) => {
-        if (Math.abs(evt.deltaY) <= Math.abs(evt.deltaX) || scroller.scrollWidth <= scroller.clientWidth) return;
-        scroller.scrollLeft += evt.deltaY;
-        evt.preventDefault();
+    renderTabsDiff(panel, {
+      files,
+      state: this.tabsDiffState(`history:${selected.id}`),
+      rerender: () => this.render(),
+      back: { label: "Versions", icon: "arrow-left", onClick: backToVersions },
+      primary: {
+        label: files.length > 1 ? `Restore ${files.length} files` : "Restore this version",
+        onClick: () => void this.restoreHistoryVersion(item, selected),
       },
-      { passive: false }
-    );
-    // Fade whichever edge still has tabs hidden past it.
-    const syncFades = () => {
-      strip.toggleClass("has-more-left", scroller.scrollLeft > 1);
-      strip.toggleClass("has-more-right", scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 1);
-    };
-    scroller.addEventListener("scroll", syncFades);
-    window.requestAnimationFrame(() => {
-      scroller.querySelector(".is-active")?.scrollIntoView({ inline: "nearest", block: "nearest" });
-      syncFades();
     });
-
-    if (files.length > 1) {
-      const allBtn = strip.createEl("button", {
-        cls: "skillmanager-vtabs-all",
-        attr: { "aria-label": `All ${files.length} changed files` },
-      });
-      setIcon(allBtn.createSpan({ cls: "skillmanager-vdiff-btn-icon" }), "list");
-      allBtn.createSpan({ text: `${files.length} files` });
-      allBtn.addEventListener("click", (evt) => {
-        const menu = new Menu();
-        files.forEach((f, i) => {
-          menu.addItem((menuItem) => {
-            const detail = f.stats ? `+${f.stats.added} −${f.stats.removed}` : "binary";
-            menuItem
-              .setTitle(`${f.file}  ${f.status === "modified" ? detail : f.status}`)
-              .setChecked(i === index)
-              .onClick(() => goToFile(i));
-          });
-        });
-        menu.showAtMouseEvent(evt);
-      });
-    }
-
-    const path = panel.createDiv({ cls: "skillmanager-vdiff-path" });
-    path.createSpan({ cls: `skillmanager-diff-companion-badge is-${file.status}`, text: file.status });
-    path.createSpan({ cls: "skillmanager-vdiff-path-name", text: file.file });
-
-    // ---- diff ----
-    const body = panel.createDiv({ cls: "skillmanager-vdiff-file" });
-    let hunks: HTMLElement[] = [];
-    if (file.binary) {
-      body.createDiv({ cls: "skillmanager-tree-hint", text: "Binary file, no preview." });
-    } else {
-      const scrollBody = renderDiffBody(body.createDiv(), file.currentText, file.versionText);
-      foldUnchanged(scrollBody);
-      hunks = changeHunks(scrollBody);
-    }
-
-    // ---- dock ----
-    const dock = panel.createDiv({ cls: "skillmanager-vdock", attr: { tabindex: "-1" } });
-    renderBack(dock);
-    const stepper = dock.createDiv({ cls: "skillmanager-vdock-stepper" });
-    const stepBtn = (icon: string, label: string, onClick: () => void) => {
-      const btn = stepper.createEl("button", { cls: "skillmanager-icon-btn skillmanager-vdiff-step", attr: { "aria-label": label } });
-      setIcon(btn, icon);
-      btn.addEventListener("click", onClick);
-      return btn;
-    };
-    let at = -1;
-    const prevBtn = stepBtn("chevron-up", "Previous change (K)", () => move(-1));
-    const counter = stepper.createSpan({ cls: "skillmanager-vdiff-counter", attr: { "aria-live": "polite" } });
-    const nextBtn = stepBtn("chevron-down", "Next change (J)", () => move(1));
-    dock.createEl("button", { cls: "mod-cta", text: files.length > 1 ? `Restore ${files.length} files` : "Restore this version" })
-      .addEventListener("click", () => void this.restoreHistoryVersion(item, selected));
-
-    const sync = () => {
-      if (hunks.length === 0) counter.setText(file.binary ? "Binary file" : "No line changes");
-      else counter.setText(at < 0 ? `${hunks.length} change${hunks.length === 1 ? "" : "s"}` : `${at + 1} / ${hunks.length}`);
-      prevBtn.disabled = index === 0 && at <= 0;
-      nextBtn.disabled = index === files.length - 1 && at >= hunks.length - 1;
-    };
-    const focusHunk = (i: number, smooth = true) => {
-      for (const row of Array.from(body.querySelectorAll(".is-focused-change"))) row.removeClass("is-focused-change");
-      at = i;
-      for (let row: Element | null = hunks[i]; row && row.hasClass("skillmanager-diff-line") && !row.hasClass("skillmanager-diff-line-context"); row = row.nextElementSibling) {
-        row.addClass("is-focused-change");
-      }
-      hunks[i].scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" });
-      sync();
-    };
-    const move = (dir: 1 | -1) => {
-      const next = at + dir;
-      if (next >= 0 && next < hunks.length) focusHunk(next);
-      else if (dir === 1 && next >= hunks.length) goToFile(index + 1, "first");
-      else if (dir === -1 && next < 0) goToFile(index - 1, "last");
-    };
-    sync();
-
-    panel.addEventListener("keydown", (evt) => {
-      if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
-      const target = evt.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
-      const key = evt.key.toLowerCase();
-      if (key === "j") move(1);
-      else if (key === "k") move(-1);
-      else if (key === "]") goToFile(index + 1);
-      else if (key === "[") goToFile(index - 1);
-      else return;
-      evt.preventDefault();
-    });
-
-    if (view.landOn && hunks.length > 0) {
-      const target = view.landOn === "first" ? 0 : hunks.length - 1;
-      view.landOn = null;
-      window.requestAnimationFrame(() => focusHunk(target, false));
-    }
-    // Keys work straight away, without first clicking into the panel.
-    window.requestAnimationFrame(() => dock.focus({ preventScroll: true }));
   }
 
   /** Saves the current state first (so a restore can itself be undone), then writes the version
@@ -6958,18 +6783,14 @@ export class LibraryView extends ItemView {
       }
 
       const unit = linkableUnit(item.sourcePath);
-      const oldPrimary = unit.isDirectory ? join(unit.path, "SKILL.md") : unit.path;
-      const newPrimary = unit.isDirectory ? join(newRoot, "SKILL.md") : newRoot;
-      const oldText = existsSync(oldPrimary) ? readFileSync(oldPrimary, "utf-8") : "";
-      const newText = existsSync(newPrimary) ? readFileSync(newPrimary, "utf-8") : "";
-      const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
+      const files = changedUnitFiles(unit.path, newRoot, unit.isDirectory);
 
       // The lightweight update check compares repository commits, so a repo can be newer even
       // when this particular flat command/file (and any companion files) is unchanged. Do not
       // show a context-only "diff" in that case; it is misleading and makes the update look
       // broken. Advancing the tracked commit is safe because there is nothing from this item to
       // apply.
-      if (oldText === newText && companions.length === 0) {
+      if (files.length === 0) {
         const newCommit = clone.commit;
         clone.cleanup();
         this.render();
@@ -6987,9 +6808,7 @@ export class LibraryView extends ItemView {
         status: "ready",
         entryId: item.entryId,
         mode,
-        oldText,
-        newText,
-        companions,
+        files,
         unitPath: unit.path,
         isDirectory: unit.isDirectory,
         newRoot,
@@ -7006,24 +6825,20 @@ export class LibraryView extends ItemView {
   private renderDiffReview(panel: HTMLElement, review: Extract<ReviewState, { status: "ready" }>) {
     const verb = review.mode === "restore" ? "Restore" : "Update";
 
-    renderDiffBody(panel.createDiv(), review.oldText, review.newText);
-
-    if (review.companions.length > 0) {
-      const list = panel.createDiv({ cls: "skillmanager-diff-companion-list" });
-      list.createDiv({ cls: "skillmanager-modal-meta", text: "Other files in this skill that also changed:" });
-      for (const row of review.companions) {
-        const rowEl = list.createDiv({ cls: "skillmanager-diff-companion-row" });
-        rowEl.createSpan({ cls: `skillmanager-diff-companion-badge is-${row.status}`, text: row.status });
-        rowEl.createSpan({ text: row.file });
-      }
-    }
-
-    const actions = panel.createDiv({ cls: "skillmanager-modal-actions skillmanager-diff-review-actions" });
-    actions.createEl("button", { text: "Cancel", cls: "skillmanager-btn-neutral" }).addEventListener("click", () => {
-      this.cleanupReview();
-      this.render();
+    const count = review.files.length;
+    renderTabsDiff(panel, {
+      files: review.files,
+      state: this.tabsDiffState(`review:${review.entryId}:${review.mode}:${review.newCommit}`),
+      rerender: () => this.render(),
+      back: {
+        label: "Cancel",
+        onClick: () => {
+          this.cleanupReview();
+          this.render();
+        },
+      },
+      primary: { label: count > 1 ? `${verb} ${count} files` : verb, onClick: () => void this.applyReview() },
     });
-    actions.createEl("button", { text: verb, cls: "mod-cta" }).addEventListener("click", () => void this.applyReview());
   }
 
   private renderReviewStatus(
@@ -7095,13 +6910,7 @@ export class LibraryView extends ItemView {
       }
 
       const unit = linkableUnit(item.sourcePath);
-      const oldPrimary = unit.isDirectory ? join(unit.path, "SKILL.md") : unit.path;
-      const newPrimary = unit.isDirectory ? join(newRoot, "SKILL.md") : newRoot;
-      const primaryChanged = !existsSync(oldPrimary) || !existsSync(newPrimary)
-        ? existsSync(oldPrimary) !== existsSync(newPrimary)
-        : !readFileSync(oldPrimary).equals(readFileSync(newPrimary));
-      const companions = unit.isDirectory ? computeCompanionChanges(unit.path, newRoot) : [];
-      const changed = primaryChanged || companions.length > 0;
+      const changed = changedUnitFiles(unit.path, newRoot, unit.isDirectory).length > 0;
       // Skip the swap when nothing changed, so a bulk run doesn't fill the trash with identical copies.
       if (changed) {
         this.trySnapshot((h) =>

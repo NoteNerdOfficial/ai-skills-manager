@@ -2354,53 +2354,18 @@ input.skillmanager-tag-add-input {
 }
 
 /* ---------- diff (update review) ---------- */
-/* Ported from the sibling plugin Terminus's src/diff/renderDiff.ts styling — same gutter +
-   minimap layout, renamed to the skillmanager- prefix and switched to this plugin's own
-   --color-green/--color-red theme variables instead of introducing a new pair. */
+/* Ported from the sibling plugin Terminus's src/diff/renderDiff.ts styling — same gutter layout,
+   renamed to the skillmanager- prefix and switched to this plugin's own --color-green/--color-red
+   theme variables instead of introducing a new pair. */
 
+/* No inner scroll: the rail scrolls, so the tabs and dock around the diff can stay pinned. */
 .skillmanager-diff-gutter-body {
-  padding-right: 16px;
-  max-height: 50vh;
-  overflow-y: auto;
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
 }
 
 .skillmanager-diff-body-wrapper {
   position: relative;
-}
-
-.skillmanager-diff-minimap {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 6px;
-  pointer-events: none;
-}
-
-.skillmanager-diff-minimap-tick {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 2px;
-  border-radius: 1px;
-}
-
-.skillmanager-diff-minimap-tick-add {
-  background-color: var(--color-green);
-}
-
-.skillmanager-diff-minimap-tick-remove {
-  background-color: var(--color-red);
-}
-
-.skillmanager-diff-minimap-viewport {
-  position: absolute;
-  left: 0;
-  right: 0;
-  border-radius: var(--radius-s);
-  background-color: var(--background-modifier-border);
 }
 
 .skillmanager-diff-line {
@@ -2653,18 +2618,6 @@ input.skillmanager-tag-add-input {
   cursor: default;
 }
 
-/* The rail scrolls instead of the diff, so the bar above can stay pinned; the minimap is
-   dropped because folding makes its line-proportional ticks misleading, and J/K covers it. */
-.skillmanager-vdiff-file .skillmanager-diff-gutter-body {
-  max-height: none;
-  overflow: visible;
-  padding-right: 0;
-}
-
-.skillmanager-vdiff-file .skillmanager-diff-minimap {
-  display: none;
-}
-
 /* The change J/K last landed on: its line numbers take the accent, so the eye finds it after
    the scroll without another block of color on top of the diff's own red/green. */
 .skillmanager-diff-line.is-focused-change .skillmanager-diff-gutter-num {
@@ -2741,20 +2694,6 @@ input.skillmanager-tag-add-input {
   color: var(--text-faint);
 }
 
-.skillmanager-diff-companion-list {
-  margin-top: 12px;
-  border-top: 1px solid var(--background-modifier-border);
-  padding-top: 8px;
-}
-
-.skillmanager-diff-companion-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 0;
-  font-size: var(--font-ui-smaller);
-}
-
 .skillmanager-diff-companion-badge {
   flex: 0 0 auto;
   font-size: var(--font-ui-smaller);
@@ -2781,11 +2720,6 @@ input.skillmanager-tag-add-input {
    companion list (or the diff itself, when there are no companions) and right-aligned so the
    primary action lands under the reader's eye after scanning down the diff, not floating at the
    left edge. */
-.skillmanager-diff-review-actions {
-  justify-content: flex-end;
-  margin-top: 20px;
-}
-
 /* ---------- source / install ----------
    Source status (repo + Check for updates/Restore installed) lives in the detail header; see
    .skillmanager-detail-props-source and .skillmanager-detail-source* above. */

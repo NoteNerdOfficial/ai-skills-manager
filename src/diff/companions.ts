@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 
 export type CompanionStatus = "added" | "removed" | "modified";
 export interface CompanionRow {
@@ -50,4 +50,40 @@ export function computeCompanionChanges(oldDir: string, newDir: string): Compani
     if (!newFiles.has(file)) rows.push({ file, status: "removed" });
   }
   return rows.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+/** One changed file: its path relative to the item, what applying would do to it, and the two
+ *  sides (`oldPath` is what's on disk now, `newPath` is what would replace it). */
+export interface TabsDiffFile {
+  file: string;
+  status: CompanionStatus;
+  oldPath: string;
+  newPath: string;
+}
+
+/** Every file that differs between a unit on disk and another copy of it (a history version or a
+ *  freshly fetched update): SKILL.md first when it changed, then the rest sorted. A flat unit is
+ *  one file compared as a whole. */
+export function changedUnitFiles(unitPath: string, otherPath: string, isDirectory: boolean): TabsDiffFile[] {
+  const differs = (a: string, b: string) =>
+    existsSync(a) !== existsSync(b) || (existsSync(a) && !readFileSync(a).equals(readFileSync(b)));
+  if (!isDirectory) {
+    return differs(unitPath, otherPath)
+      ? [{ file: basename(unitPath), status: existsSync(unitPath) ? "modified" : "added", oldPath: unitPath, newPath: otherPath }]
+      : [];
+  }
+  const files: TabsDiffFile[] = [];
+  const manifest = (root: string) => join(root, "SKILL.md");
+  if (differs(manifest(unitPath), manifest(otherPath))) {
+    files.push({
+      file: "SKILL.md",
+      status: !existsSync(manifest(unitPath)) ? "added" : !existsSync(manifest(otherPath)) ? "removed" : "modified",
+      oldPath: manifest(unitPath),
+      newPath: manifest(otherPath),
+    });
+  }
+  for (const row of computeCompanionChanges(unitPath, otherPath)) {
+    files.push({ file: row.file, status: row.status, oldPath: join(unitPath, row.file), newPath: join(otherPath, row.file) });
+  }
+  return files;
 }
