@@ -10894,6 +10894,13 @@ var RELATED_PLUGINS = [
     icon: "layout-panel-left"
   }
 ];
+function renderRelatedPlugin(setting, plugin) {
+  setting.addButton((btn) => btn.setButtonText("View plugin").onClick(() => window.open(plugin.url, "_blank")));
+  setting.settingEl.addClass("skillmanager-related-plugin");
+  const tile = createDiv({ cls: "skillmanager-related-plugin-icon", attr: { "aria-hidden": "true" } });
+  (0, import_obsidian16.setIcon)(tile, plugin.icon);
+  setting.settingEl.prepend(tile);
+}
 var SkillManagerSettingTab = class extends import_obsidian16.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -11016,7 +11023,7 @@ var SkillManagerSettingTab = class extends import_obsidian16.PluginSettingTab {
         items: RELATED_PLUGINS.map((plugin) => ({
           name: plugin.name,
           desc: plugin.desc,
-          action: () => window.open(plugin.url, "_blank")
+          render: (setting) => renderRelatedPlugin(setting.setName(plugin.name).setDesc(plugin.desc), plugin)
         }))
       }
     ];
@@ -11173,15 +11180,7 @@ var SkillManagerSettingTab = class extends import_obsidian16.PluginSettingTab {
       cls: "setting-item-description"
     });
     for (const plugin of RELATED_PLUGINS) {
-      const setting = new import_obsidian16.Setting(containerEl).setName(plugin.name).setDesc(plugin.desc).addButton(
-        (btn) => btn.setButtonText("View plugin").onClick(() => {
-          window.open(plugin.url, "_blank");
-        })
-      );
-      setting.settingEl.addClass("skillmanager-related-plugin");
-      const tile = createDiv({ cls: "skillmanager-related-plugin-icon", attr: { "aria-hidden": "true" } });
-      (0, import_obsidian16.setIcon)(tile, plugin.icon);
-      setting.settingEl.prepend(tile);
+      renderRelatedPlugin(new import_obsidian16.Setting(containerEl).setName(plugin.name).setDesc(plugin.desc), plugin);
     }
   }
 };

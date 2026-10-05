@@ -58,6 +58,16 @@ const RELATED_PLUGINS: { name: string; desc: string; url: string; icon: string }
   },
 ];
 
+/** Icon tile + "View plugin" button on a related plugin's row. Shared by the declarative settings
+ *  (Obsidian 1.13+) and the display() fallback so both look the same. */
+function renderRelatedPlugin(setting: Setting, plugin: (typeof RELATED_PLUGINS)[number]): void {
+  setting.addButton((btn) => btn.setButtonText("View plugin").onClick(() => window.open(plugin.url, "_blank")));
+  setting.settingEl.addClass("skillmanager-related-plugin");
+  const tile = createDiv({ cls: "skillmanager-related-plugin-icon", attr: { "aria-hidden": "true" } });
+  setIcon(tile, plugin.icon);
+  setting.settingEl.prepend(tile);
+}
+
 export class SkillManagerSettingTab extends PluginSettingTab {
   plugin: SkillManagerPlugin;
 
@@ -183,7 +193,7 @@ export class SkillManagerSettingTab extends PluginSettingTab {
         items: RELATED_PLUGINS.map((plugin) => ({
           name: plugin.name,
           desc: plugin.desc,
-          action: () => window.open(plugin.url, "_blank"),
+          render: (setting: Setting) => renderRelatedPlugin(setting.setName(plugin.name).setDesc(plugin.desc), plugin),
         })),
       },
     ];
@@ -378,18 +388,7 @@ export class SkillManagerSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
     for (const plugin of RELATED_PLUGINS) {
-      const setting = new Setting(containerEl)
-        .setName(plugin.name)
-        .setDesc(plugin.desc)
-        .addButton((btn) =>
-          btn.setButtonText("View plugin").onClick(() => {
-            window.open(plugin.url, "_blank");
-          })
-        );
-      setting.settingEl.addClass("skillmanager-related-plugin");
-      const tile = createDiv({ cls: "skillmanager-related-plugin-icon", attr: { "aria-hidden": "true" } });
-      setIcon(tile, plugin.icon);
-      setting.settingEl.prepend(tile);
+      renderRelatedPlugin(new Setting(containerEl).setName(plugin.name).setDesc(plugin.desc), plugin);
     }
   }
 }
