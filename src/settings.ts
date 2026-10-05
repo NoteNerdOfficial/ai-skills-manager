@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, setIcon } from "obsidian";
 import type { SettingDefinitionItem } from "obsidian";
 import type SkillManagerPlugin from "./main";
 import { EnabledFilter, SkillManagerPluginSettings, SortOrder } from "./types";
@@ -29,26 +29,32 @@ const AUTO_UPDATE_CHECK_OPTIONS: { minutes: number; label: string }[] = [
   { minutes: 10080, label: "Weekly" },
 ];
 
-const RELATED_PLUGINS: { name: string; desc: string; url: string }[] = [
+/** `icon` is the plugin's own ribbon/menu icon where it has one, so the tile matches what users
+ *  see once it's installed (Unhidden has none; "eye" stands in). */
+const RELATED_PLUGINS: { name: string; desc: string; url: string; icon: string }[] = [
   {
     name: "Convert to Markdown",
     desc: "Converts PDFs, Word/PowerPoint/Excel files, web pages, and more into Markdown locally, with no cloud services or API keys. Useful for turning existing documentation into new skills, agents, or rules before adding them to a tool.",
     url: "https://community.obsidian.md/plugins/convert-to-markdown",
+    icon: "file-text",
   },
   {
     name: "Terminus",
     desc: "A real terminal inside Obsidian with Claude Code support, including a pending-changes panel for reviewing and accepting file edits. Handy for running the CLI tools whose skills and agents AI Skills Manager is managing, without leaving the vault.",
     url: "https://community.obsidian.md/plugins/terminus",
+    icon: "square-terminal",
   },
   {
     name: "Unhidden",
     desc: "Most tools keep their skills, agents, and commands in dot-folders like .claude or .codex, which Obsidian hides from the file explorer, search, and Bases by default. Unhidden reveals them so those folders show up alongside everything else in your vault.",
     url: "https://community.obsidian.md/plugins/unhidden",
+    icon: "eye",
   },
   {
     name: "Working Tabs",
     desc: "Groups open tabs by task and timeframe instead of folder structure. Helps keep the notes, terminals, and library views open while authoring or reviewing several skills at once from sprawling into a mess of unrelated tabs.",
     url: "https://community.obsidian.md/plugins/working-tabs",
+    icon: "layout-panel-left",
   },
 ];
 
@@ -372,7 +378,7 @@ export class SkillManagerSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
     for (const plugin of RELATED_PLUGINS) {
-      new Setting(containerEl)
+      const setting = new Setting(containerEl)
         .setName(plugin.name)
         .setDesc(plugin.desc)
         .addButton((btn) =>
@@ -380,6 +386,10 @@ export class SkillManagerSettingTab extends PluginSettingTab {
             window.open(plugin.url, "_blank");
           })
         );
+      setting.settingEl.addClass("skillmanager-related-plugin");
+      const tile = createDiv({ cls: "skillmanager-related-plugin-icon", attr: { "aria-hidden": "true" } });
+      setIcon(tile, plugin.icon);
+      setting.settingEl.prepend(tile);
     }
   }
 }

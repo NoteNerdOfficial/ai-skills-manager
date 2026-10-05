@@ -3733,3 +3733,38 @@ input.skillmanager-tag-add-input {
   max-width: none;
   border-radius: var(--radius-s);
 }
+
+/* ---------- settings: related plugins ----------
+   An app-icon style tile in front of each related plugin: a near-black tile with the accent
+   icon in dark mode (matching how these plugins present themselves), and an accent-tinted tile
+   in light mode, where a black block would read as a hole in the page. */
+.skillmanager-related-plugin {
+  gap: 14px;
+}
+
+.skillmanager-related-plugin-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  width: 40px;
+  height: 40px;
+  margin-top: 2px;
+  border-radius: 10px;
+  color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 10%, var(--background-primary));
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+}
+
+.theme-dark .skillmanager-related-plugin-icon {
+  background: linear-gradient(180deg, #232323, #161616);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.skillmanager-related-plugin-icon .svg-icon {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.25;
+}
