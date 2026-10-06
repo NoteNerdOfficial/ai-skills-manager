@@ -84,6 +84,8 @@ Point Discover at a GitHub repo (or a specific subfolder) and it walks it for `S
 **Check for updates, with a real diff**
 For anything installed through the plugin, "Check for updates" fetches the source repo and shows exactly what changed before you apply anything. Every changed file gets its own tab, with its status and line counts, so an update that touches `references/` or `scripts/` shows those diffs too, not just the main manifest. Long unchanged stretches fold away, the arrows in the bottom bar (or `J` and `K`) step from one change to the next across every file, and `[` and `]` switch files. "Restore installed" reverts an item back to the exact commit it was installed at. An optional background interval can check every tracked source on its own and flag what's stale, without ever applying an update for you.
 
+On the All page, **Check for updates** checks every tracked item at once. An item only counts as stale when its own files changed, not just because something else in the same repo did. Items that do have updates are shown on their own right away (the **Updates available** source filter), and opening one shows a banner with a **Review changes** button that opens the same diff.
+
 ![Reviewing an update with a tab per changed file, folded unchanged lines, and a change stepper next to the Update button](images/check-for-updates.png)
 
 **Version history**
