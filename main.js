@@ -4432,6 +4432,7 @@ function tagColorIndex(tag) {
 }
 var SOURCE_FILTER_LABELS = {
   github: "GitHub-tracked",
+  updates: "Updates available",
   builtin: "Built-in",
   local: "Local"
 };
@@ -4485,6 +4486,13 @@ var LibraryView = class extends import_obsidian15.ItemView {
      *  proves otherwise — there's no way to know staleness without asking GitHub, so nothing here
      *  is ever assumed or persisted across sessions. */
     this.syncStatus = /* @__PURE__ */ new Map();
+    /** Per-session, alongside syncStatus: how many of a stale item's own files differ upstream, as
+     *  found by checkTrackedItems' file compare. Shown on the detail rail's update banner. */
+    this.staleFileCounts = /* @__PURE__ */ new Map();
+    /** Per-session temp clones from the last update check, keyed by repo + ref (see checkCloneKey),
+     *  so opening a flagged item's review or running Update all doesn't fetch the repo again.
+     *  Removed when the view closes. */
+    this.checkClones = /* @__PURE__ */ new Map();
     this.bulkCheckInProgress = false;
     this.bulkUpdateInProgress = false;
     /** True while the sidebar's "Discover" row is active — swaps the whole content pane for the
@@ -4674,6 +4682,9 @@ var LibraryView = class extends import_obsidian15.ItemView {
   onClose() {
     this.markdownComponent.unload();
     this.cleanupReview();
+    for (const clone of this.checkClones.values())
+      clone.cleanup();
+    this.checkClones.clear();
     return Promise.resolve();
   }
   /** Discards any pending review and its temp clone — called whenever navigation moves away from
@@ -5190,6 +5201,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
       return false;
     if (ignore !== "source") {
       if (this.sourceFilter === "github" && !item.sourceRepo)
+        return false;
+      if (this.sourceFilter === "updates" && this.syncStatus.get(item.entryId) !== "stale")
         return false;
       if (this.sourceFilter === "builtin" && !this.isBuiltIn(item))
         return false;
@@ -6181,6 +6194,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
     if (!this.isScoped()) {
       const syncActions = toolbar.createDiv({ cls: "skillmanager-toolbar-actions" });
       const staleCount = [...this.syncStatus.values()].filter((s) => s === "stale").length;
+      if (staleCount === 0 && this.sourceFilter === "updates")
+        this.sourceFilter = null;
       const checkBtn = syncActions.createEl("button", {
         text: "Check for updates",
         cls: staleCount > 0 ? "skillmanager-btn-accent-stroke" : "mod-cta"
@@ -8061,7 +8076,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
         );
         for (const option of shown) {
           menu.addItem(
-            (item) => item.setTitle(`${option.label} (${option.count})`).setChecked(current === option.key).onClick(() => {
+            (item) => item.setTitle(`${option.nested ? "\u2003" : ""}${option.label} (${option.count})`).setChecked(current === option.key).onClick(() => {
               set(option.key);
               this.render();
             })
@@ -8075,7 +8090,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
         Object.keys(SOURCE_FILTER_LABELS).map((key) => ({
           key,
           label: SOURCE_FILTER_LABELS[key],
-          match: (item) => key === "github" ? !!item.sourceRepo : key === "builtin" ? this.isBuiltIn(item) : !item.sourceRepo && !this.isBuiltIn(item)
+          match: (item) => key === "github" ? !!item.sourceRepo : key === "updates" ? this.syncStatusFor(item) === "stale" : key === "builtin" ? this.isBuiltIn(item) : !item.sourceRepo && !this.isBuiltIn(item),
+          nested: key === "updates"
         })),
         this.sourceFilter,
         (key) => this.sourceFilter = key
@@ -8527,7 +8543,7 @@ var LibraryView = class extends import_obsidian15.ItemView {
         btn.removeClass("is-syncing");
       } else {
         this.syncStatus.set(item.entryId, "stale");
-        await this.startReview(item, "update");
+        await this.startReview(item, "update", latest);
       }
     } catch (e) {
       new import_obsidian15.Notice(`Couldn't check for updates: ` + errorMessage(e));
@@ -9961,6 +9977,8 @@ var LibraryView = class extends import_obsidian15.ItemView {
     const toolLine = section.createDiv({ cls: "skillmanager-detail-tool" });
     this.renderIcon(toolLine.createSpan({ cls: "skillmanager-detail-tool-icon" }), toolInfo.icon, toolInfo.svgIcon);
     toolLine.createSpan({ text: this.sourceLabel(item) });
+    if (!review && this.syncStatusFor(item) === "stale")
+      this.renderUpdateBanner(section, item);
     if (!filePath || isReviewing) {
       if (item.sourceRepo)
         this.renderSourceStatusInline(section, item);
@@ -10312,6 +10330,24 @@ ${item.description}`.length),
       return historyKey(item.tool, usageKey(item.type, item.name));
     return null;
   }
+  /** Shown on an item the last check found stale, so opening it says so up front instead of
+   *  leaving the card's orange dot as the only hint. Review changes opens the same diff as the
+   *  rail's own Check for updates, reusing the clone that check already fetched. */
+  renderUpdateBanner(container, item) {
+    const banner = container.createDiv({ cls: "skillmanager-update-banner" });
+    (0, import_obsidian15.setIcon)(banner.createSpan({ cls: "skillmanager-update-banner-icon" }), "download");
+    const text = banner.createDiv({ cls: "skillmanager-update-banner-text" });
+    text.createDiv({ cls: "skillmanager-update-banner-title", text: "Update available" });
+    const parsed = parseOwnerRepo(item.sourceRepo);
+    const repo = parsed ? `${parsed.owner}/${parsed.repo}` : item.sourceRepo;
+    const count = this.staleFileCounts.get(item.entryId);
+    text.createDiv({
+      cls: "skillmanager-update-banner-meta",
+      text: count ? `${count} file${count === 1 ? "" : "s"} changed in ${repo}` : `New changes in ${repo}`
+    });
+    const btn = banner.createEl("button", { cls: "mod-cta", text: "Review changes" });
+    this.isolateReviewAction(btn, () => void this.startReview(item, "update"));
+  }
   /** Repo line + update actions as one row, for when no file is open (browsing a multi-file
    *  skill's tree, or an active review). With a file open they sit in the properties panel's
    *  footer instead (see renderDetailProperties). Only items installed through "Install from
@@ -10387,7 +10423,7 @@ ${item.description}`.length),
         return;
       }
       this.syncStatus.set(item.entryId, "stale");
-      await this.startReview(item, "update");
+      await this.startReview(item, "update", latest);
     } catch (e) {
       new import_obsidian15.Notice(`Couldn't check for updates: ` + errorMessage(e));
       checkBtn.disabled = false;
@@ -10400,7 +10436,9 @@ ${item.description}`.length),
    *  disk right now. Shown in place of the normal file preview (see renderDetailRail/
    *  renderDiffReview) rather than a separate view — the point is to review and save right where
    *  you're already looking, not navigate elsewhere. */
-  async startReview(item, mode) {
+  /** `latest`, when the caller just asked the remote for it, makes sure a cached clone from an
+   *  earlier check isn't reused once the repo has moved on since. */
+  async startReview(item, mode, latest) {
     var _a;
     const sourceRepo = item.sourceRepo;
     if (!sourceRepo)
@@ -10414,8 +10452,12 @@ ${item.description}`.length),
     this.render();
     let clone = null;
     try {
-      clone = mode === "restore" ? shallowCloneAtCommit(sourceRepo, item.sourceCommit) : shallowCloneRepo(sourceRepo, item.sourceRef || void 0);
-      (0, import_fs18.rmSync)((0, import_path18.join)(clone.dir, ".git"), { recursive: true, force: true });
+      if (mode === "restore") {
+        clone = shallowCloneAtCommit(sourceRepo, item.sourceCommit);
+        (0, import_fs18.rmSync)((0, import_path18.join)(clone.dir, ".git"), { recursive: true, force: true });
+      } else {
+        clone = this.latestClone(item, latest);
+      }
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
       const newRoot = subpath ? (0, import_path18.join)(clone.dir, subpath) : clone.dir;
       if (!(0, import_fs18.existsSync)(newRoot)) {
@@ -10524,8 +10566,7 @@ ${item.description}`.length),
       throw new Error("no source repo");
     let clone = null;
     try {
-      clone = shallowCloneRepo(sourceRepo, item.sourceRef || void 0);
-      (0, import_fs18.rmSync)((0, import_path18.join)(clone.dir, ".git"), { recursive: true, force: true });
+      clone = this.latestClone(item);
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
       const newRoot = subpath ? (0, import_path18.join)(clone.dir, subpath) : clone.dir;
       if (!(0, import_fs18.existsSync)(newRoot)) {
@@ -10548,62 +10589,111 @@ ${item.description}`.length),
       clone == null ? void 0 : clone.cleanup();
     }
   }
-  /** Bulk-checks every sourceRepo item in the whole library (not just what's currently filtered/
-   *  searched — matches what "the whole library" means on the unscoped "All" page these buttons
-   *  live on) against its remote. Sequential, same as every other git call in this codebase
-   *  (remoteHeadCommit/shallowCloneRepo are blocking execFileSync calls) — yields between calls
-   *  so the button's progress label actually paints. */
+  checkCloneKey(item) {
+    var _a;
+    return `${item.sourceRepo}#${(_a = item.sourceRef) != null ? _a : ""}`;
+  }
+  /** The latest-commit clone for an item's repo: reuses the one the last update check fetched
+   *  (when it's at `commit`, or when no commit is given), otherwise fetches a fresh one and
+   *  caches it. The returned copy's cleanup is a no-op, since the cache owns the temp dir and a
+   *  review or bulk update finishing with it mustn't delete it out from under the next one. */
+  latestClone(item, commit) {
+    const key = this.checkCloneKey(item);
+    let clone = this.checkClones.get(key);
+    if (!clone || commit && clone.commit !== commit) {
+      clone == null ? void 0 : clone.cleanup();
+      this.checkClones.delete(key);
+      clone = shallowCloneRepo(item.sourceRepo, item.sourceRef || void 0);
+      (0, import_fs18.rmSync)((0, import_path18.join)(clone.dir, ".git"), { recursive: true, force: true });
+      this.checkClones.set(key, clone);
+    }
+    return { ...clone, cleanup: () => {
+    } };
+  }
+  /** Checks every sourceRepo item in the whole library (not just what's filtered/searched,
+   *  matching what "the whole library" means on the unscoped "All" page) against its remote.
+   *  A newer repo commit alone doesn't make an item stale: a repo holding several skills moves
+   *  for every one of them. So when the commit differs, the repo is cloned once (cached, see
+   *  latestClone) and the item's own files compared. Unchanged items just have their tracked
+   *  commit advanced, which is all Update all would have done for them. Sequential, same as
+   *  every other git call here (they're blocking execFileSync calls); yields between items so
+   *  progress can paint. */
+  async checkTrackedItems(onProgress) {
+    var _a;
+    const tracked = this.items.filter((i) => i.sourceRepo);
+    const heads = /* @__PURE__ */ new Map();
+    const stale = [];
+    let errors = 0;
+    let advanced = false;
+    for (let i = 0; i < tracked.length; i++) {
+      const item = tracked[i];
+      onProgress == null ? void 0 : onProgress(i + 1, tracked.length);
+      await new Promise((resolve4) => window.setTimeout(resolve4, 0));
+      try {
+        const key = this.checkCloneKey(item);
+        let latest = heads.get(key);
+        if (latest === void 0) {
+          latest = remoteHeadCommit(item.sourceRepo, item.sourceRef || void 0);
+          heads.set(key, latest);
+        }
+        if (latest === item.sourceCommit) {
+          this.syncStatus.set(item.entryId, "current");
+          this.staleFileCounts.delete(item.entryId);
+          continue;
+        }
+        const clone = this.latestClone(item, latest);
+        const subpath = (_a = item.sourceSubpath) != null ? _a : "";
+        const newRoot = subpath ? (0, import_path18.join)(clone.dir, subpath) : clone.dir;
+        const unit = linkableUnit(item.sourcePath);
+        const changed = (0, import_fs18.existsSync)(newRoot) ? changedUnitFiles(unit.path, newRoot, unit.isDirectory).length : -1;
+        if (changed === 0) {
+          await this.store.update(item.entryId, { sourceCommit: clone.commit });
+          this.syncStatus.set(item.entryId, "current");
+          this.staleFileCounts.delete(item.entryId);
+          advanced = true;
+        } else {
+          this.syncStatus.set(item.entryId, "stale");
+          if (changed > 0)
+            this.staleFileCounts.set(item.entryId, changed);
+          else
+            this.staleFileCounts.delete(item.entryId);
+          stale.push(item);
+        }
+      } catch (e) {
+        errors++;
+      }
+    }
+    if (advanced)
+      await this.rescan();
+    return { checked: tracked.length, stale, errors };
+  }
   async bulkCheckForUpdates(btn) {
     if (this.bulkCheckInProgress)
       return;
     this.bulkCheckInProgress = true;
     btn.disabled = true;
-    const tracked = this.items.filter((i) => i.sourceRepo);
-    let errors = 0;
-    for (let i = 0; i < tracked.length; i++) {
-      const item = tracked[i];
-      btn.setText(`Checking ${i + 1}/${tracked.length}\u2026`);
-      await new Promise((resolve4) => window.setTimeout(resolve4, 0));
-      try {
-        const latest = remoteHeadCommit(item.sourceRepo, item.sourceRef || void 0);
-        this.syncStatus.set(item.entryId, latest === item.sourceCommit ? "current" : "stale");
-      } catch (e) {
-        errors++;
-      }
-    }
+    const { checked, stale, errors } = await this.checkTrackedItems((done, total) => btn.setText(`Checking ${done}/${total}\u2026`));
     this.bulkCheckInProgress = false;
-    new import_obsidian15.Notice(
-      errors > 0 ? `Checked ${tracked.length}: ${errors} couldn't be reached.` : `Checked ${tracked.length} skill${tracked.length === 1 ? "" : "s"}.`
-    );
+    const names = stale.map((i) => `"${i.name}"`);
+    const found = stale.length === 0 ? "Everything is up to date." : `${stale.length} update${stale.length === 1 ? "" : "s"} available${stale.length <= 3 ? `: ${names.join(", ")}` : ""}.`;
+    new import_obsidian15.Notice(errors > 0 ? `${found} ${errors} of ${checked} couldn't be reached.` : found);
+    if (stale.length > 0)
+      this.sourceFilter = "updates";
     this.render();
   }
-  /** Same remote check as bulkCheckForUpdates, minus the button/progress UI — used by the
-   *  plugin's auto-update-check interval. Quiet on a clean check; only surfaces a Notice when it
-   *  actually finds something stale (or unreachable), so a background tick doesn't interrupt with
-   *  a "you're all good" popup every time it runs. */
+  /** Same check as bulkCheckForUpdates, minus the button/progress UI and the auto-filter: used
+   *  by the plugin's auto-update-check interval. Quiet on a clean check; only surfaces a Notice
+   *  when it actually finds something stale (or unreachable), so a background tick doesn't
+   *  interrupt with a "you're all good" popup every time it runs. */
   async backgroundCheckForUpdates() {
     if (this.bulkCheckInProgress)
       return;
     this.bulkCheckInProgress = true;
-    const tracked = this.items.filter((i) => i.sourceRepo);
-    let stale = 0;
-    let errors = 0;
-    for (const item of tracked) {
-      try {
-        const latest = remoteHeadCommit(item.sourceRepo, item.sourceRef || void 0);
-        const status = latest === item.sourceCommit ? "current" : "stale";
-        this.syncStatus.set(item.entryId, status);
-        if (status === "stale")
-          stale++;
-      } catch (e) {
-        errors++;
-      }
-      await new Promise((resolve4) => window.setTimeout(resolve4, 0));
-    }
+    const { checked, stale, errors } = await this.checkTrackedItems();
     this.bulkCheckInProgress = false;
-    if (stale > 0) {
-      new import_obsidian15.Notice(`${stale} skill${stale === 1 ? "" : "s"} ${stale === 1 ? "has" : "have"} an update available.`);
-    } else if (errors > 0 && tracked.length === errors) {
+    if (stale.length > 0) {
+      new import_obsidian15.Notice(`${stale.length} skill${stale.length === 1 ? "" : "s"} ${stale.length === 1 ? "has" : "have"} an update available.`);
+    } else if (errors > 0 && checked === errors) {
       new import_obsidian15.Notice(`Auto update check: couldn't reach ${errors} source${errors === 1 ? "" : "s"}.`);
     }
     this.render();

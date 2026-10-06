@@ -266,8 +266,11 @@ function tagColorIndex(tag: string): number {
   return hash % TAG_COLORS;
 }
 
-const SOURCE_FILTER_LABELS: Record<"github" | "builtin" | "local", string> = {
+/** "updates" is the GitHub-tracked items the last check found stale; the Filter menu nests it
+ *  under GitHub-tracked and only lists it while there are any. */
+const SOURCE_FILTER_LABELS: Record<"github" | "updates" | "builtin" | "local", string> = {
   github: "GitHub-tracked",
+  updates: "Updates available",
   builtin: "Built-in",
   local: "Local",
 };
@@ -300,7 +303,7 @@ export class LibraryView extends ItemView {
    *  compounding filter that stays put across sidebar navigation and ANDs with whatever scope
    *  you're already in, rather than being a scope of its own. Lives in the tagbar row (see
    *  renderSourceButton), not the sidebar. */
-  private sourceFilter: "github" | "builtin" | "local" | null = null;
+  private sourceFilter: keyof typeof SOURCE_FILTER_LABELS | null = null;
   /** Same compounding, sticks-around-across-navigation shape as sourceFilter, but scoped to
    *  ItemType "rule": "instructions" narrows to a tool's single loaded-every-session file (e.g.
    *  Claude Code's CLAUDE.md, ToolConfig.singleFileRule), "granular" to a directory of many
@@ -318,6 +321,13 @@ export class LibraryView extends ItemView {
    *  proves otherwise — there's no way to know staleness without asking GitHub, so nothing here
    *  is ever assumed or persisted across sessions. */
   private syncStatus = new Map<string, "current" | "stale">();
+  /** Per-session, alongside syncStatus: how many of a stale item's own files differ upstream, as
+   *  found by checkTrackedItems' file compare. Shown on the detail rail's update banner. */
+  private staleFileCounts = new Map<string, number>();
+  /** Per-session temp clones from the last update check, keyed by repo + ref (see checkCloneKey),
+   *  so opening a flagged item's review or running Update all doesn't fetch the repo again.
+   *  Removed when the view closes. */
+  private checkClones = new Map<string, ClonedRepo>();
   private bulkCheckInProgress = false;
   private bulkUpdateInProgress = false;
   /** True while the sidebar's "Discover" row is active — swaps the whole content pane for the
@@ -528,6 +538,8 @@ export class LibraryView extends ItemView {
   onClose() {
     this.markdownComponent.unload();
     this.cleanupReview();
+    for (const clone of this.checkClones.values()) clone.cleanup();
+    this.checkClones.clear();
     return Promise.resolve();
   }
 
@@ -1089,6 +1101,7 @@ export class LibraryView extends ItemView {
     if (ignore !== "kind" && this.ruleKindFilter && item.type === "rule" && this.ruleKindOf(item) !== this.ruleKindFilter) return false;
     if (ignore !== "source") {
       if (this.sourceFilter === "github" && !item.sourceRepo) return false;
+      if (this.sourceFilter === "updates" && this.syncStatus.get(item.entryId) !== "stale") return false;
       if (this.sourceFilter === "builtin" && !this.isBuiltIn(item)) return false;
       if (this.sourceFilter === "local" && (item.sourceRepo || this.isBuiltIn(item))) return false;
     }
@@ -2143,6 +2156,7 @@ export class LibraryView extends ItemView {
     if (!this.isScoped()) {
       const syncActions = toolbar.createDiv({ cls: "skillmanager-toolbar-actions" });
       const staleCount = [...this.syncStatus.values()].filter((s) => s === "stale").length;
+      if (staleCount === 0 && this.sourceFilter === "updates") this.sourceFilter = null;
 
       // Only one of these two ever holds the solid accent fill at a time: "Check for updates" is
       // the primary action until a check turns up stale items, at which point "Update all"
@@ -4165,7 +4179,7 @@ export class LibraryView extends ItemView {
       const section = <K extends string>(
         title: string,
         dim: FilterDimension,
-        options: { key: K; label: string; match: (item: ItemMetadata) => boolean }[],
+        options: { key: K; label: string; match: (item: ItemMetadata) => boolean; nested?: boolean }[],
         current: K | null,
         set: (key: K | null) => void
       ) => {
@@ -4187,7 +4201,9 @@ export class LibraryView extends ItemView {
         for (const option of shown) {
           menu.addItem((item) =>
             item
-              .setTitle(`${option.label} (${option.count})`)
+              // A subset of the option above it. Indented with an em space rather than CSS since
+              // the menu can be a native OS one with no styleable element.
+              .setTitle(`${option.nested ? "\u2003" : ""}${option.label} (${option.count})`)
               .setChecked(current === option.key)
               .onClick(() => {
                 set(option.key);
@@ -4205,7 +4221,14 @@ export class LibraryView extends ItemView {
           key,
           label: SOURCE_FILTER_LABELS[key],
           match: (item: ItemMetadata) =>
-            key === "github" ? !!item.sourceRepo : key === "builtin" ? this.isBuiltIn(item) : !item.sourceRepo && !this.isBuiltIn(item),
+            key === "github"
+              ? !!item.sourceRepo
+              : key === "updates"
+                ? this.syncStatusFor(item) === "stale"
+                : key === "builtin"
+                  ? this.isBuiltIn(item)
+                  : !item.sourceRepo && !this.isBuiltIn(item),
+          nested: key === "updates",
         })),
         this.sourceFilter,
         (key) => (this.sourceFilter = key)
@@ -4713,7 +4736,7 @@ export class LibraryView extends ItemView {
         this.syncStatus.set(item.entryId, "stale");
         // startReview re-renders the whole view (including this card), so there's no button left
         // here to reset on the success path.
-        await this.startReview(item, "update");
+        await this.startReview(item, "update", latest);
       }
     } catch (e) {
       new Notice(`Couldn't check for updates: ` + errorMessage(e));
@@ -6293,6 +6316,9 @@ export class LibraryView extends ItemView {
     this.renderIcon(toolLine.createSpan({ cls: "skillmanager-detail-tool-icon" }), toolInfo.icon, toolInfo.svgIcon);
     toolLine.createSpan({ text: this.sourceLabel(item) });
 
+    // Any review (loading, error or ready) already answers the banner's question.
+    if (!review && this.syncStatusFor(item) === "stale") this.renderUpdateBanner(section, item);
+
     // A review replaces the file view with a diff (see renderDiffReview); the file-scoped stuff
     // below would either duplicate or fight with that diff, so it's suppressed while it's open.
     if (!filePath || isReviewing) {
@@ -6656,6 +6682,25 @@ export class LibraryView extends ItemView {
     return null;
   }
 
+  /** Shown on an item the last check found stale, so opening it says so up front instead of
+   *  leaving the card's orange dot as the only hint. Review changes opens the same diff as the
+   *  rail's own Check for updates, reusing the clone that check already fetched. */
+  private renderUpdateBanner(container: HTMLElement, item: ItemMetadata) {
+    const banner = container.createDiv({ cls: "skillmanager-update-banner" });
+    setIcon(banner.createSpan({ cls: "skillmanager-update-banner-icon" }), "download");
+    const text = banner.createDiv({ cls: "skillmanager-update-banner-text" });
+    text.createDiv({ cls: "skillmanager-update-banner-title", text: "Update available" });
+    const parsed = parseOwnerRepo(item.sourceRepo as string);
+    const repo = parsed ? `${parsed.owner}/${parsed.repo}` : (item.sourceRepo as string);
+    const count = this.staleFileCounts.get(item.entryId);
+    text.createDiv({
+      cls: "skillmanager-update-banner-meta",
+      text: count ? `${count} file${count === 1 ? "" : "s"} changed in ${repo}` : `New changes in ${repo}`,
+    });
+    const btn = banner.createEl("button", { cls: "mod-cta", text: "Review changes" });
+    this.isolateReviewAction(btn, () => void this.startReview(item, "update"));
+  }
+
   /** Repo line + update actions as one row, for when no file is open (browsing a multi-file
    *  skill's tree, or an active review). With a file open they sit in the properties panel's
    *  footer instead (see renderDetailProperties). Only items installed through "Install from
@@ -6745,7 +6790,7 @@ export class LibraryView extends ItemView {
       this.syncStatus.set(item.entryId, "stale");
       // Found something — startReview re-renders the whole rail (including this button), so
       // there's nothing left to reset here on the success path.
-      await this.startReview(item, "update");
+      await this.startReview(item, "update", latest);
     } catch (e) {
       new Notice(`Couldn't check for updates: ` + errorMessage(e));
       checkBtn.disabled = false;
@@ -6759,7 +6804,9 @@ export class LibraryView extends ItemView {
    *  disk right now. Shown in place of the normal file preview (see renderDetailRail/
    *  renderDiffReview) rather than a separate view — the point is to review and save right where
    *  you're already looking, not navigate elsewhere. */
-  private async startReview(item: ItemMetadata, mode: UpdateMode) {
+  /** `latest`, when the caller just asked the remote for it, makes sure a cached clone from an
+   *  earlier check isn't reused once the repo has moved on since. */
+  private async startReview(item: ItemMetadata, mode: UpdateMode, latest?: string) {
     const sourceRepo = item.sourceRepo;
     if (!sourceRepo) return;
 
@@ -6773,8 +6820,12 @@ export class LibraryView extends ItemView {
 
     let clone: ClonedRepo | null = null;
     try {
-      clone = mode === "restore" ? shallowCloneAtCommit(sourceRepo, item.sourceCommit as string) : shallowCloneRepo(sourceRepo, item.sourceRef || undefined);
-      rmSync(join(clone.dir, ".git"), { recursive: true, force: true });
+      if (mode === "restore") {
+        clone = shallowCloneAtCommit(sourceRepo, item.sourceCommit as string);
+        rmSync(join(clone.dir, ".git"), { recursive: true, force: true });
+      } else {
+        clone = this.latestClone(item, latest);
+      }
 
       const subpath = item.sourceSubpath ?? "";
       const newRoot = subpath ? join(clone.dir, subpath) : clone.dir;
@@ -6900,8 +6951,7 @@ export class LibraryView extends ItemView {
     if (!sourceRepo) throw new Error("no source repo");
     let clone: ClonedRepo | null = null;
     try {
-      clone = shallowCloneRepo(sourceRepo, item.sourceRef || undefined);
-      rmSync(join(clone.dir, ".git"), { recursive: true, force: true });
+      clone = this.latestClone(item);
 
       const subpath = item.sourceSubpath ?? "";
       const newRoot = subpath ? join(clone.dir, subpath) : clone.dir;
@@ -6925,62 +6975,116 @@ export class LibraryView extends ItemView {
     }
   }
 
-  /** Bulk-checks every sourceRepo item in the whole library (not just what's currently filtered/
-   *  searched — matches what "the whole library" means on the unscoped "All" page these buttons
-   *  live on) against its remote. Sequential, same as every other git call in this codebase
-   *  (remoteHeadCommit/shallowCloneRepo are blocking execFileSync calls) — yields between calls
-   *  so the button's progress label actually paints. */
+  private checkCloneKey(item: ItemMetadata): string {
+    return `${item.sourceRepo}#${item.sourceRef ?? ""}`;
+  }
+
+  /** The latest-commit clone for an item's repo: reuses the one the last update check fetched
+   *  (when it's at `commit`, or when no commit is given), otherwise fetches a fresh one and
+   *  caches it. The returned copy's cleanup is a no-op, since the cache owns the temp dir and a
+   *  review or bulk update finishing with it mustn't delete it out from under the next one. */
+  private latestClone(item: ItemMetadata, commit?: string): ClonedRepo {
+    const key = this.checkCloneKey(item);
+    let clone = this.checkClones.get(key);
+    if (!clone || (commit && clone.commit !== commit)) {
+      clone?.cleanup();
+      this.checkClones.delete(key);
+      clone = shallowCloneRepo(item.sourceRepo as string, item.sourceRef || undefined);
+      rmSync(join(clone.dir, ".git"), { recursive: true, force: true });
+      this.checkClones.set(key, clone);
+    }
+    return { ...clone, cleanup: () => {} };
+  }
+
+  /** Checks every sourceRepo item in the whole library (not just what's filtered/searched,
+   *  matching what "the whole library" means on the unscoped "All" page) against its remote.
+   *  A newer repo commit alone doesn't make an item stale: a repo holding several skills moves
+   *  for every one of them. So when the commit differs, the repo is cloned once (cached, see
+   *  latestClone) and the item's own files compared. Unchanged items just have their tracked
+   *  commit advanced, which is all Update all would have done for them. Sequential, same as
+   *  every other git call here (they're blocking execFileSync calls); yields between items so
+   *  progress can paint. */
+  private async checkTrackedItems(onProgress?: (done: number, total: number) => void): Promise<{
+    checked: number;
+    stale: ItemMetadata[];
+    errors: number;
+  }> {
+    const tracked = this.items.filter((i) => i.sourceRepo);
+    const heads = new Map<string, string>();
+    const stale: ItemMetadata[] = [];
+    let errors = 0;
+    let advanced = false;
+    for (let i = 0; i < tracked.length; i++) {
+      const item = tracked[i];
+      onProgress?.(i + 1, tracked.length);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      try {
+        const key = this.checkCloneKey(item);
+        let latest = heads.get(key);
+        if (latest === undefined) {
+          latest = remoteHeadCommit(item.sourceRepo as string, item.sourceRef || undefined);
+          heads.set(key, latest);
+        }
+        if (latest === item.sourceCommit) {
+          this.syncStatus.set(item.entryId, "current");
+          this.staleFileCounts.delete(item.entryId);
+          continue;
+        }
+        const clone = this.latestClone(item, latest);
+        const subpath = item.sourceSubpath ?? "";
+        const newRoot = subpath ? join(clone.dir, subpath) : clone.dir;
+        const unit = linkableUnit(item.sourcePath);
+        // A missing subpath stays stale with no count; opening its review explains the problem.
+        const changed = existsSync(newRoot) ? changedUnitFiles(unit.path, newRoot, unit.isDirectory).length : -1;
+        if (changed === 0) {
+          await this.store.update(item.entryId, { sourceCommit: clone.commit });
+          this.syncStatus.set(item.entryId, "current");
+          this.staleFileCounts.delete(item.entryId);
+          advanced = true;
+        } else {
+          this.syncStatus.set(item.entryId, "stale");
+          if (changed > 0) this.staleFileCounts.set(item.entryId, changed);
+          else this.staleFileCounts.delete(item.entryId);
+          stale.push(item);
+        }
+      } catch {
+        errors++;
+      }
+    }
+    // Picks up the advanced sourceCommits, so the next check compares against them.
+    if (advanced) await this.rescan();
+    return { checked: tracked.length, stale, errors };
+  }
+
   private async bulkCheckForUpdates(btn: HTMLButtonElement) {
     if (this.bulkCheckInProgress) return;
     this.bulkCheckInProgress = true;
     btn.disabled = true;
-    const tracked = this.items.filter((i) => i.sourceRepo);
-    let errors = 0;
-    for (let i = 0; i < tracked.length; i++) {
-      const item = tracked[i];
-      btn.setText(`Checking ${i + 1}/${tracked.length}…`);
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-      try {
-        const latest = remoteHeadCommit(item.sourceRepo as string, item.sourceRef || undefined);
-        this.syncStatus.set(item.entryId, latest === item.sourceCommit ? "current" : "stale");
-      } catch {
-        errors++;
-      }
-    }
+    const { checked, stale, errors } = await this.checkTrackedItems((done, total) => btn.setText(`Checking ${done}/${total}…`));
     this.bulkCheckInProgress = false;
-    new Notice(
-      errors > 0
-        ? `Checked ${tracked.length}: ${errors} couldn't be reached.`
-        : `Checked ${tracked.length} skill${tracked.length === 1 ? "" : "s"}.`
-    );
+    const names = stale.map((i) => `"${i.name}"`);
+    const found =
+      stale.length === 0
+        ? "Everything is up to date."
+        : `${stale.length} update${stale.length === 1 ? "" : "s"} available${stale.length <= 3 ? `: ${names.join(", ")}` : ""}.`;
+    new Notice(errors > 0 ? `${found} ${errors} of ${checked} couldn't be reached.` : found);
+    // Put what was found on screen right away, rather than hidden among everything else.
+    if (stale.length > 0) this.sourceFilter = "updates";
     this.render();
   }
 
-  /** Same remote check as bulkCheckForUpdates, minus the button/progress UI — used by the
-   *  plugin's auto-update-check interval. Quiet on a clean check; only surfaces a Notice when it
-   *  actually finds something stale (or unreachable), so a background tick doesn't interrupt with
-   *  a "you're all good" popup every time it runs. */
+  /** Same check as bulkCheckForUpdates, minus the button/progress UI and the auto-filter: used
+   *  by the plugin's auto-update-check interval. Quiet on a clean check; only surfaces a Notice
+   *  when it actually finds something stale (or unreachable), so a background tick doesn't
+   *  interrupt with a "you're all good" popup every time it runs. */
   async backgroundCheckForUpdates(): Promise<void> {
     if (this.bulkCheckInProgress) return;
     this.bulkCheckInProgress = true;
-    const tracked = this.items.filter((i) => i.sourceRepo);
-    let stale = 0;
-    let errors = 0;
-    for (const item of tracked) {
-      try {
-        const latest = remoteHeadCommit(item.sourceRepo as string, item.sourceRef || undefined);
-        const status = latest === item.sourceCommit ? "current" : "stale";
-        this.syncStatus.set(item.entryId, status);
-        if (status === "stale") stale++;
-      } catch {
-        errors++;
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-    }
+    const { checked, stale, errors } = await this.checkTrackedItems();
     this.bulkCheckInProgress = false;
-    if (stale > 0) {
-      new Notice(`${stale} skill${stale === 1 ? "" : "s"} ${stale === 1 ? "has" : "have"} an update available.`);
-    } else if (errors > 0 && tracked.length === errors) {
+    if (stale.length > 0) {
+      new Notice(`${stale.length} skill${stale.length === 1 ? "" : "s"} ${stale.length === 1 ? "has" : "have"} an update available.`);
+    } else if (errors > 0 && checked === errors) {
       new Notice(`Auto update check: couldn't reach ${errors} source${errors === 1 ? "" : "s"}.`);
     }
     this.render();

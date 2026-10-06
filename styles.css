@@ -3768,3 +3768,50 @@ input.skillmanager-tag-add-input {
   height: 20px;
   stroke-width: 2.25;
 }
+
+/* Detail rail banner for an item the last update check found stale (see renderUpdateBanner).
+   Orange matches the card's stale dot, so the two read as the same signal. */
+.skillmanager-update-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(var(--color-orange-rgb), 0.35);
+  border-radius: var(--radius-m);
+  background: rgba(var(--color-orange-rgb), 0.08);
+}
+
+.skillmanager-update-banner-icon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--color-orange);
+}
+
+.skillmanager-update-banner-icon .svg-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.skillmanager-update-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.skillmanager-update-banner-title {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.skillmanager-update-banner-meta {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillmanager-update-banner button {
+  flex-shrink: 0;
+}
