@@ -13,6 +13,7 @@ import { INSIGHTS_PAGES, LIBRARY_VIEW_TYPE, LibraryView } from "./views/LibraryV
 import { performRescan, RescanResult } from "./rescan";
 import { ShadowNoteStore } from "./store";
 import { remoteHeadCommit } from "./git";
+import { fetchLatestPluginVersion, PluginVersionStatus, versionStatus } from "./pluginVersion";
 
 /** Four outlined shapes (triangle, circle, hexagon, square) in a 2x2 grid — the plugin's mark.
  *  Registered on a 100x100 viewBox, which is what `addIcon()` renders custom icons on. */
@@ -43,6 +44,7 @@ export default class SkillManagerPlugin extends Plugin {
   store: ShadowNoteStore;
   private autoRescanIntervalId: number | null = null;
   private autoUpdateCheckIntervalId: number | null = null;
+  private latestPluginVersion: string | null = null;
 
   async onload() {
     addIcon(PLUGIN_ICON_ID, PLUGIN_ICON_SVG);
@@ -53,7 +55,10 @@ export default class SkillManagerPlugin extends Plugin {
 
     this.registerView(
       LIBRARY_VIEW_TYPE,
-      (leaf) => new LibraryView(leaf, () => this.settings, this.store, () => this.saveSettings(), this.manifest.dir)
+      (leaf) =>
+        new LibraryView(leaf, () => this.settings, this.store, () => this.saveSettings(), this.manifest.dir, () =>
+          this.pluginVersionStatus()
+        )
     );
 
     this.addRibbonIcon(PLUGIN_ICON_ID, "Open AI Skills Manager", () => {
@@ -83,6 +88,25 @@ export default class SkillManagerPlugin extends Plugin {
     this.addSettingTab(new SkillManagerSettingTab(this.app, this));
     this.applyAutoRescanInterval();
     this.applyAutoUpdateCheckInterval();
+
+    // Once at startup, then twice a day: one tiny request to GitHub's releases API.
+    this.app.workspace.onLayoutReady(() => void this.checkPluginVersion());
+    this.registerInterval(window.setInterval(() => void this.checkPluginVersion(), 12 * 60 * 60 * 1000));
+  }
+
+  pluginVersionStatus(): PluginVersionStatus {
+    return versionStatus(this.manifest.version, this.latestPluginVersion);
+  }
+
+  /** Refreshes the cached latest release and re-renders open views so the sidebar version line
+   *  picks it up. A failed check keeps the last known result rather than clearing it. */
+  async checkPluginVersion(): Promise<PluginVersionStatus> {
+    const latest = await fetchLatestPluginVersion();
+    if (latest && latest !== this.latestPluginVersion) {
+      this.latestPluginVersion = latest;
+      this.refreshOpenViews();
+    }
+    return this.pluginVersionStatus();
   }
 
   private openLibraryViews(): LibraryView[] {

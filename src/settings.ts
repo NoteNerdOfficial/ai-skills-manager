@@ -1,8 +1,9 @@
-import { App, PluginSettingTab, Setting, setIcon } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, setIcon } from "obsidian";
 import type { SettingDefinitionItem } from "obsidian";
 import type SkillManagerPlugin from "./main";
 import { EnabledFilter, SkillManagerPluginSettings, SortOrder } from "./types";
 import { SORT_OPTIONS } from "./views/LibraryView";
+import { COMMUNITY_PLUGIN_URL, PluginVersionStatus } from "./pluginVersion";
 
 const ENABLED_FILTER_OPTIONS: { key: EnabledFilter; label: string }[] = [
   { key: "all", label: "All" },
@@ -68,6 +69,38 @@ function renderRelatedPlugin(setting: Setting, plugin: (typeof RELATED_PLUGINS)[
   setting.settingEl.prepend(tile);
 }
 
+/** Installed version plus update status, refreshed with a fresh check each time settings opens.
+ *  Shared by the declarative settings and the display() fallback. */
+function renderVersionSetting(setting: Setting, plugin: SkillManagerPlugin): void {
+  const apply = (status: PluginVersionStatus) => {
+    setting.setName("Version");
+    setting.controlEl.empty();
+    if (status.state === "outdated") {
+      setting.setDesc(`Installed ${status.installed}. Version ${status.latest} is available with the latest fixes and features.`);
+      setting.addButton((btn) => btn.setButtonText("Update").setCta().onClick(() => window.open(COMMUNITY_PLUGIN_URL)));
+      return;
+    }
+    setting.setDesc(
+      status.state === "current"
+        ? `Installed ${status.installed}. You're on the latest version.`
+        : `Installed ${status.installed}. Couldn't check for updates right now. Keep AI Skills Manager up to date from Community plugins to get the latest fixes.`
+    );
+    if (status.state === "unknown") {
+      setting.addButton((btn) => btn.setButtonText("Open Community plugins").onClick(() => window.open(COMMUNITY_PLUGIN_URL)));
+    }
+    setting.addButton((btn) =>
+      btn.setButtonText("Check for updates").onClick(async () => {
+        btn.setDisabled(true).setButtonText("Checking...");
+        const next = await plugin.checkPluginVersion();
+        if (next.state === "current") new Notice("AI Skills Manager is up to date.");
+        apply(next);
+      })
+    );
+  };
+  apply(plugin.pluginVersionStatus());
+  void plugin.checkPluginVersion().then(apply);
+}
+
 export class SkillManagerSettingTab extends PluginSettingTab {
   plugin: SkillManagerPlugin;
 
@@ -80,6 +113,16 @@ export class SkillManagerSettingTab extends PluginSettingTab {
    *  display() below remains as the compatibility fallback for the plugin's minAppVersion. */
   getSettingDefinitions(): SettingDefinitionItem[] {
     return [
+      {
+        type: "group",
+        items: [
+          {
+            name: "Version",
+            desc: "Installed version and whether an update is available.",
+            render: (setting: Setting) => renderVersionSetting(setting, this.plugin),
+          },
+        ],
+      },
       {
         type: "group",
         items: [
@@ -263,6 +306,8 @@ export class SkillManagerSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+
+    renderVersionSetting(new Setting(containerEl), this.plugin);
 
     new Setting(containerEl)
       .setName("Storage folder")

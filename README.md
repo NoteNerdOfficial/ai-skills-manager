@@ -176,6 +176,7 @@ Deleting an item, or updating one from GitHub, moves the old copy to your system
 
 ## Settings
 
+- **Version**: the installed version and whether a newer release is out, with an **Update** button that opens the plugin's Community plugins page. The same version line sits under the plugin name in the library sidebar and turns into an update link when one is available.
 - **Storage folder**: where the plugin's metadata notes live in your vault (default: `AI Skills Manager`).
 - **Library view**: auto-rescan interval, default sort order, default enabled/disabled filter, and whether to show tools/projects with nothing found in them.
 - **Auto check for updates**: an optional background interval (off by default) that checks every tracked source against its remote and flags what's stale.

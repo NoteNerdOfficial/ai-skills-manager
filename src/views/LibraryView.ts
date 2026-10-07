@@ -3,6 +3,7 @@ import { execFile, execFileSync } from "child_process";
 import { cpSync, existsSync, lstatSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, relative, sep } from "path";
 import { homedir } from "os";
+import { COMMUNITY_PLUGIN_URL, PluginVersionStatus } from "../pluginVersion";
 import {
   Collection,
   BrokenSymlink,
@@ -511,7 +512,8 @@ export class LibraryView extends ItemView {
     private store: ShadowNoteStore,
     private saveSettings: () => Promise<void>,
     /** The plugin's folder relative to the vault (manifest.dir); version history lives under it. */
-    private pluginDir?: string
+    private pluginDir?: string,
+    private getVersionStatus?: () => PluginVersionStatus
   ) {
     super(leaf);
   }
@@ -1356,12 +1358,37 @@ export class LibraryView extends ItemView {
 
   // ---------- sidebar ----------
 
+  /** Small version line under the brand name. Turns into an accent "update available" link when
+   *  GitHub has a newer release; otherwise it still links to the plugin's Community plugins page,
+   *  since a failed check can't rule out an update. */
+  private renderVersionLine(parent: HTMLElement) {
+    const status = this.getVersionStatus?.();
+    if (!status) return;
+    const outdated = status.state === "outdated";
+    const link = parent.createEl("a", {
+      cls: "skillmanager-brand-version" + (outdated ? " is-outdated" : ""),
+      text: outdated ? `v${status.installed} · Update` : `v${status.installed}`,
+      href: "#",
+    });
+    link.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      window.open(COMMUNITY_PLUGIN_URL);
+    });
+    setTooltip(
+      link,
+      outdated
+        ? `Version ${status.latest} is available. Open Community plugins to update.`
+        : status.state === "current"
+          ? "You're on the latest version."
+          : "Check Community plugins for updates."
+    );
+  }
+
   private renderSidebar(sidebar: HTMLElement) {
     const brand = sidebar.createDiv({ cls: "skillmanager-brand" });
-    const brandLeft = brand.createDiv({ cls: "skillmanager-brand-left" });
-    const brandIcon = brandLeft.createSpan({ cls: "skillmanager-brand-icon" });
+    const brandIcon = brand.createSpan({ cls: "skillmanager-brand-icon" });
     setIcon(brandIcon, PLUGIN_ICON_ID);
-    brandLeft.createSpan({ text: "AI Skills Manager", cls: "skillmanager-brand-name" });
+    brand.createSpan({ text: "AI Skills Manager", cls: "skillmanager-brand-name" });
 
     const installBtn = brand.createEl("button", {
       cls: "skillmanager-icon-btn skillmanager-install-btn",
@@ -1369,6 +1396,7 @@ export class LibraryView extends ItemView {
     });
     setIcon(installBtn, "plus");
     installBtn.addEventListener("click", () => this.openInstallFromGitHub());
+    this.renderVersionLine(brand);
 
     // Library — always first, not reorderable.
     sidebar.createDiv({ cls: "skillmanager-sidebar-heading", text: "Library" });

@@ -44,18 +44,15 @@
 
 /* ---------- sidebar ---------- */
 
+/* Grid so the icon, name, and install button share the first row and the version line sits
+   under the name without pushing them off-center. */
 .skillmanager-brand {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 1px;
   padding: 4px 8px 14px;
-}
-
-.skillmanager-brand-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .skillmanager-brand-icon {
@@ -66,6 +63,33 @@
 .skillmanager-brand-name {
   font-size: var(--font-ui-medium);
   font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skillmanager-brand-version {
+  grid-column: 2 / 4;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skillmanager-brand-version:hover {
+  color: var(--text-muted);
+  text-decoration: underline;
+}
+
+.skillmanager-brand-version.is-outdated {
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.skillmanager-brand-version.is-outdated:hover {
+  color: var(--text-accent-hover);
 }
 
 /* Overrides .skillmanager-icon-btn's forced-transparent background — this is the one icon button
