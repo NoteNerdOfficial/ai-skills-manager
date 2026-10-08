@@ -1,4 +1,4 @@
-import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { ChildProcess, spawn } from "child_process";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
@@ -15,7 +15,8 @@ const { rmSyncCalls, copyFileSyncControl, renameSyncControl } = vi.hoisted(() =>
   copyFileSyncControl: { shouldFail: false },
   // The next `failNext` renames throw `code`, the way Windows refuses to rename a folder while
   // another process (antivirus, the search indexer, an editor) holds a file inside it open.
-  renameSyncControl: { failNext: 0, code: "EPERM", calls: 0 },
+  // `realErrors` records the codes the real renameSync threw, to prove a held handle caused them.
+  renameSyncControl: { failNext: 0, code: "EPERM", calls: 0, realErrors: [] as string[] },
 }));
 
 vi.mock("fs", async (importOriginal) => {
@@ -38,40 +39,40 @@ vi.mock("fs", async (importOriginal) => {
         err.code = renameSyncControl.code;
         throw err;
       }
-      return actual.renameSync(...args);
+      try {
+        return actual.renameSync(...args);
+      } catch (e) {
+        renameSyncControl.realErrors.push(String((e as NodeJS.ErrnoException).code));
+        throw e;
+      }
     },
   };
 });
 
+interface FileHolder {
+  holder: ChildProcess;
+  /** Created at spawn and kept for the whole test, so no exit can slip between listeners. */
+  exited: Promise<number | null>;
+  /** Resolves once the file is open; rejects if PowerShell fails to start or exits first. */
+  locked: Promise<void>;
+}
+
 /** Opens `file` from a child PowerShell without FILE_SHARE_DELETE (what a scanner does) and holds
- *  it for `ms`. Rejects at once if PowerShell fails to start or exits before locking; anything
- *  slower is bounded by the test's own timeout. */
-function holdFileOpen(file: string, ms: number): Promise<ChildProcess> {
+ *  it for `ms`. Anything slower than a failed start or an early exit is bounded by the test's own
+ *  timeout. */
+function holdFileOpen(file: string, ms: number): FileHolder {
   const holder = spawn("powershell.exe", [
     "-NoProfile",
     "-Command",
     `$f=[IO.File]::Open('${file}','Open','Read','Read'); Write-Output LOCKED; Start-Sleep -Milliseconds ${ms}; $f.Close()`,
   ]);
-  return new Promise((resolve, reject) => {
+  const exited = new Promise<number | null>((resolve) => holder.on("exit", resolve));
+  const locked = new Promise<void>((resolve, reject) => {
     holder.on("error", reject);
-    holder.on("exit", (code) => reject(new Error(`lock holder exited (${code}) before locking`)));
-    holder.stdout.on("data", (b) => {
-      if (String(b).includes("LOCKED")) {
-        holder.removeAllListeners("exit");
-        resolve(holder);
-      }
-    });
+    void exited.then((code) => reject(new Error(`lock holder exited (${code}) before locking`)));
+    holder.stdout.on("data", (b) => String(b).includes("LOCKED") && resolve());
   });
-}
-
-/** True while another process holds `file` without write sharing: opening it for writing fails. */
-function isLockedAgainstWrite(file: string): boolean {
-  try {
-    closeSync(openSync(file, "r+"));
-    return false;
-  } catch {
-    return true;
-  }
+  return { holder, exited, locked };
 }
 
 /** Fails the test loudly if deleteItem ever reaches for the real OS trash during a symlink
@@ -166,6 +167,7 @@ describe("toggleItemEnabled / deleteItem", () => {
     afterEach(() => {
       renameSyncControl.failNext = 0;
       renameSyncControl.code = "EPERM";
+      renameSyncControl.realErrors = [];
     });
 
     it("retries a folder rename that Windows briefly refuses", () => {
@@ -184,8 +186,18 @@ describe("toggleItemEnabled / deleteItem", () => {
       renameSyncControl.calls = 0;
 
       expect(() => toggleItemEnabled(makeItem(join(skillDir, "SKILL.md")))).toThrow(/EPERM/);
-      expect(renameSyncControl.calls).toBe(6);
+      expect(renameSyncControl.calls).toBe(5);
       expect(existsSync(join(skillDir, "SKILL.md"))).toBe(true);
+    });
+
+    it("does not retry a regular-file move", () => {
+      const filePath = join(root, "backend.md");
+      writeFileSync(filePath, "content");
+      renameSyncControl.failNext = 1;
+      renameSyncControl.calls = 0;
+
+      expect(() => toggleItemEnabled(makeItem(filePath))).toThrow(/EPERM/);
+      expect(renameSyncControl.calls).toBe(1);
     });
 
     it("does not retry an error that waiting can't fix", () => {
@@ -198,26 +210,25 @@ describe("toggleItemEnabled / deleteItem", () => {
       expect(renameSyncControl.calls).toBe(1);
     });
 
-    // The real trigger: a file inside the folder is held open for 1.5s. The lock is confirmed
-    // still active right before the toggle, so a slow runner can't let it lapse and pass.
+    // The real trigger: a file inside the folder is held open for 0.8s, inside the ~1.5s retry
+    // budget. The first real rename must have failed on the held handle, or the test proves
+    // nothing about the retry.
     it("disables the folder once the other process lets go", async () => {
       const skillDir = makeSkill();
       const held = join(skillDir, "SKILL.md");
-      let holder: ChildProcess | null = null;
-      let exited: Promise<unknown> = Promise.resolve();
+      const lock = holdFileOpen(held, 800);
       try {
-        holder = await holdFileOpen(held, 1500);
-        exited = new Promise((resolve) => holder?.on("exit", resolve));
-        expect(isLockedAgainstWrite(held)).toBe(true);
+        await lock.locked;
 
         toggleItemEnabled(makeItem(held));
 
+        expect(renameSyncControl.realErrors[0]).toMatch(/^(EPERM|EACCES|EBUSY)$/);
         expect(existsSync(skillDir)).toBe(false);
         expect(existsSync(join(root, DISABLED_DIRNAME, "pdf-editing", "SKILL.md"))).toBe(true);
       } finally {
         // Release the lock before afterEach deletes the temp root.
-        holder?.kill();
-        await exited;
+        lock.holder.kill();
+        await lock.exited;
       }
     }, 20_000);
   });
