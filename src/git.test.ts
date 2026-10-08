@@ -1,5 +1,5 @@
 import { ChildProcess, execFileSync, spawn } from "child_process";
-import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { pathToFileURL } from "url";
@@ -39,35 +39,30 @@ const resetControl = () => {
   rmSyncControl.failOnlyGitDir = false;
 };
 
+interface FileHolder {
+  holder: ChildProcess;
+  /** Created at spawn and kept for the whole test, so no exit can slip between listeners. */
+  exited: Promise<number | null>;
+  /** Resolves once the file is open; rejects if PowerShell fails to start or exits first. */
+  locked: Promise<void>;
+}
+
 /** Opens `file` from a child PowerShell without FILE_SHARE_DELETE (what a scanner does) and holds
- *  it for `ms`. Rejects at once if PowerShell fails to start or exits before locking; anything
- *  slower is bounded by the test's own timeout. */
-function holdFileOpen(file: string, ms: number): Promise<ChildProcess> {
+ *  it for `ms`. Anything slower than a failed start or an early exit is bounded by the test's own
+ *  timeout. */
+function holdFileOpen(file: string, ms: number): FileHolder {
   const holder = spawn("powershell.exe", [
     "-NoProfile",
     "-Command",
     `$f=[IO.File]::Open('${file}','Open','Read','Read'); Write-Output LOCKED; Start-Sleep -Milliseconds ${ms}; $f.Close()`,
   ]);
-  return new Promise((resolve, reject) => {
+  const exited = new Promise<number | null>((resolve) => holder.on("exit", resolve));
+  const locked = new Promise<void>((resolve, reject) => {
     holder.on("error", reject);
-    holder.on("exit", (code) => reject(new Error(`lock holder exited (${code}) before locking`)));
-    holder.stdout.on("data", (b) => {
-      if (String(b).includes("LOCKED")) {
-        holder.removeAllListeners("exit");
-        resolve(holder);
-      }
-    });
+    void exited.then((code) => reject(new Error(`lock holder exited (${code}) before locking`)));
+    holder.stdout.on("data", (b) => String(b).includes("LOCKED") && resolve());
   });
-}
-
-/** True while another process holds `file` without write sharing: opening it for writing fails. */
-function isLockedAgainstWrite(file: string): boolean {
-  try {
-    closeSync(openSync(file, "r+"));
-    return false;
-  } catch {
-    return true;
-  }
+  return { holder, exited, locked };
 }
 
 describe("shallowCloneRepo temp-clone cleanup", () => {
@@ -93,6 +88,61 @@ describe("shallowCloneRepo temp-clone cleanup", () => {
   beforeEach(() => {
     resetControl();
     vi.restoreAllMocks();
+    // The failed-removal queue is module state; start every test with it drained.
+    git.retryPendingCloneRemovals();
+  });
+
+  /** Clones `n` times with every temp-clone removal failing, so each clone lands in the queue. */
+  const stuckClones = (n: number): string[] => {
+    const dirs: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const clone = git.shallowCloneRepo(repoUrl);
+      rmSyncControl.failCode = "EPERM";
+      clone.cleanup();
+      resetControl();
+      dirs.push(clone.dir);
+    }
+    return dirs;
+  };
+
+  it("keeps at most 20 failed removals queued, dropping the oldest with a warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    rmSyncControl.failCode = "EPERM";
+    const dirs = stuckClones(21);
+    const queued = git.pendingCloneRemovals();
+    try {
+      expect(queued).toHaveLength(20);
+      expect(queued).not.toContain(dirs[0]);
+      expect(queued).toContain(dirs[20]);
+      expect(warn.mock.calls.map((c) => c.join(" ")).join("\n")).toMatch(new RegExp(`no longer tracking.*${dirs[0].replace(/\\/g, "\\\\")}`));
+    } finally {
+      for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("retries at most 3 queued removals per cleanup, oldest first", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const dirs = stuckClones(5);
+    expect(git.pendingCloneRemovals()).toEqual(dirs);
+
+    git.shallowCloneRepo(repoUrl).cleanup();
+
+    expect(dirs.map(existsSync)).toEqual([false, false, false, true, true]);
+    expect(git.pendingCloneRemovals()).toEqual(dirs.slice(3));
+  });
+
+  it("removeGitDir() queues the clone when both the .git removal and the clone removal fail", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const clone = git.shallowCloneRepo(repoUrl);
+    rmSyncControl.failCode = "EPERM";
+    try {
+      expect(() => git.removeGitDir(clone)).toThrow(/EPERM, Permission denied: '.*[\\/]\.git'/);
+      expect(existsSync(clone.dir)).toBe(true);
+      expect(git.pendingCloneRemovals()).toEqual([clone.dir]);
+    } finally {
+      resetControl();
+      rmSync(clone.dir, { recursive: true, force: true });
+    }
   });
 
   it("cleanup() does not throw when Windows refuses to delete the temp clone", () => {
@@ -169,8 +219,8 @@ describe("shallowCloneRepo temp-clone cleanup", () => {
   });
 
   // The real-world trigger, issue #2: another process briefly holds a file open inside the fresh
-  // clone. The lock is confirmed still active right before cleanup, so a slow runner can't let it
-  // lapse first and pass without exercising the retry.
+  // clone. Right before cleanup, a plain delete of that file must still be refused, so a slow
+  // runner can't let the lock lapse first and pass without exercising the retry.
   it.skipIf(process.platform !== "win32")(
     "cleanup() still removes the clone when another process holds a file open for a moment",
     async () => {
@@ -178,16 +228,15 @@ describe("shallowCloneRepo temp-clone cleanup", () => {
       const packDir = join(clone.dir, ".git", "objects", "pack");
       const pack = readdirSync(packDir).find((f) => f.endsWith(".pack"));
       const lockedFile = pack ? join(packDir, pack) : join(clone.dir, "SKILL.md");
-      let holder: ChildProcess | null = null;
+      const lock = holdFileOpen(lockedFile, 1500);
       try {
-        holder = await holdFileOpen(lockedFile, 1500);
-        const exited = new Promise((resolve) => holder?.on("exit", resolve));
-        expect(isLockedAgainstWrite(lockedFile)).toBe(true);
+        await lock.locked;
+        expect(() => rmSync(lockedFile, { force: true })).toThrow(/EBUSY|EPERM/);
         clone.cleanup();
         expect(existsSync(clone.dir)).toBe(false);
-        await exited;
       } finally {
-        holder?.kill();
+        lock.holder.kill();
+        await lock.exited;
         rmSync(clone.dir, { recursive: true, force: true });
       }
     },
