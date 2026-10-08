@@ -1,6 +1,6 @@
 import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, parseYaml, setIcon, setTooltip } from "obsidian";
 import { execFile, execFileSync } from "child_process";
-import { cpSync, existsSync, lstatSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { cpSync, existsSync, lstatSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, relative, sep } from "path";
 import { homedir } from "os";
 import { COMMUNITY_PLUGIN_URL, PluginVersionStatus } from "../pluginVersion";
@@ -86,7 +86,7 @@ import { formatBytes, formatDate, formatRelativeDay, formatTokens, stripFrontmat
 import { buildFileTree, countFiles, isFolderItem, TreeNode } from "../fileTree";
 import { getAllProjects as computeAllProjects, performRescan, projectIcon, RescanResult, VAULT_PROJECT_ID } from "../rescan";
 import { originLabel as resolveOriginLabel, sourceLabel as resolveSourceLabel, toolLabel as resolveToolLabel } from "../sourceLabel";
-import { ClonedRepo, remoteHeadCommit, shallowCloneAtCommit, shallowCloneRepo } from "../git";
+import { ClonedRepo, remoteHeadCommit, removeGitDir, shallowCloneAtCommit, shallowCloneRepo } from "../git";
 import { changedUnitFiles, TabsDiffFile } from "../diff/companions";
 import { newTabsDiffState, renderTabsDiff, TabsDiffState } from "../diff/tabsDiff";
 import { UnchangedUpdateModal } from "../modals/UnchangedUpdateModal";
@@ -6850,7 +6850,7 @@ export class LibraryView extends ItemView {
     try {
       if (mode === "restore") {
         clone = shallowCloneAtCommit(sourceRepo, item.sourceCommit as string);
-        rmSync(join(clone.dir, ".git"), { recursive: true, force: true });
+        removeGitDir(clone);
       } else {
         clone = this.latestClone(item, latest);
       }
@@ -7018,7 +7018,7 @@ export class LibraryView extends ItemView {
       clone?.cleanup();
       this.checkClones.delete(key);
       clone = shallowCloneRepo(item.sourceRepo as string, item.sourceRef || undefined);
-      rmSync(join(clone.dir, ".git"), { recursive: true, force: true });
+      removeGitDir(clone);
       this.checkClones.set(key, clone);
     }
     return { ...clone, cleanup: () => {} };
