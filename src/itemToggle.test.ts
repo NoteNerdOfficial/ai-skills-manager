@@ -66,7 +66,11 @@ function holdFileOpen(file: string, ms: number): FileHolder {
     "-Command",
     `$f=[IO.File]::Open('${file}','Open','Read','Read'); Write-Output LOCKED; Start-Sleep -Milliseconds ${ms}; $f.Close()`,
   ]);
-  const exited = new Promise<number | null>((resolve) => holder.on("exit", resolve));
+  // Settles on a failed spawn too ('error' with no 'exit'), so a finally awaiting it can't hang.
+  const exited = new Promise<number | null>((resolve) => {
+    holder.on("exit", resolve);
+    holder.on("error", () => resolve(null));
+  });
   const locked = new Promise<void>((resolve, reject) => {
     holder.on("error", reject);
     void exited.then((code) => reject(new Error(`lock holder exited (${code}) before locking`)));
