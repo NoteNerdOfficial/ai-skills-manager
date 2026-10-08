@@ -51,8 +51,38 @@ function moveEntry(fromPath: string, toPath: string, isDirectory: boolean): void
     const absoluteTarget = isAbsolute(rawTarget) ? rawTarget : resolve(dirname(fromPath), rawTarget);
     unlinkSync(fromPath);
     symlinkSync(absoluteTarget, toPath, isDirectory ? "dir" : "file");
+  } else if (isDirectory) {
+    renameFolderWithRetry(fromPath, toPath);
   } else {
     renameSync(fromPath, toPath);
+  }
+}
+
+/** Windows refuses to rename a folder while another process (antivirus, the search indexer, an
+ *  editor) holds a file inside it open without FILE_SHARE_DELETE, and reports one of these codes
+ *  until the handle closes. On other platforms they mean a real permission problem that waiting
+ *  won't fix. */
+const RENAME_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const RENAME_RETRIES = 4;
+const RENAME_RETRY_DELAY_MS = 150;
+
+/** renameSync for a folder, retried on Windows with a linear backoff (150ms, 300ms, 450ms, 600ms:
+ *  5 attempts, at most ~1.5s of waiting) and then rethrowing the last error; Node has no built-in
+ *  retry for rename. The wait is a busy-loop because the toggle stays synchronous for its callers
+ *  and Atomics.wait isn't allowed on a browser main thread; it only runs after a failed rename. */
+function renameFolderWithRetry(fromPath: string, toPath: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(fromPath, toPath);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "";
+      if (process.platform !== "win32" || attempt >= RENAME_RETRIES || !RENAME_RETRY_CODES.has(code)) throw e;
+      const until = Date.now() + RENAME_RETRY_DELAY_MS * (attempt + 1);
+      while (Date.now() < until) {
+        // Busy-wait; see above.
+      }
+    }
   }
 }
 

@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { ChildProcess, spawn } from "child_process";
 import { tmpdir } from "os";
 import { dirname, join, sep } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,9 +10,13 @@ import { ItemMetadata, ToolConfig } from "./types";
 // is not configurable in ESM"), so proving deleteItem/togglePluginEnabled never fall back to a
 // direct rmSync/copyFileSync goes through a real module mock instead — vi.hoisted keeps these
 // two controls reachable from inside the (hoisted-to-the-top) vi.mock factory below.
-const { rmSyncCalls, copyFileSyncControl } = vi.hoisted(() => ({
+const { rmSyncCalls, copyFileSyncControl, renameSyncControl } = vi.hoisted(() => ({
   rmSyncCalls: [] as unknown[][],
   copyFileSyncControl: { shouldFail: false },
+  // The next `failNext` renames throw `code`, the way Windows refuses to rename a folder while
+  // another process (antivirus, the search indexer, an editor) holds a file inside it open.
+  // `realErrors` records the codes the real renameSync threw, to prove a held handle caused them.
+  renameSyncControl: { failNext: 0, code: "EPERM", calls: 0, realErrors: [] as string[] },
 }));
 
 vi.mock("fs", async (importOriginal) => {
@@ -26,8 +31,53 @@ vi.mock("fs", async (importOriginal) => {
       if (copyFileSyncControl.shouldFail) throw new Error("disk full");
       return actual.copyFileSync(...args);
     },
+    renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+      renameSyncControl.calls++;
+      if (renameSyncControl.failNext > 0) {
+        renameSyncControl.failNext--;
+        const err = new Error(`${renameSyncControl.code}: operation not permitted, rename '${String(args[0])}'`) as NodeJS.ErrnoException;
+        err.code = renameSyncControl.code;
+        throw err;
+      }
+      try {
+        return actual.renameSync(...args);
+      } catch (e) {
+        renameSyncControl.realErrors.push(String((e as NodeJS.ErrnoException).code));
+        throw e;
+      }
+    },
   };
 });
+
+interface FileHolder {
+  holder: ChildProcess;
+  /** Created at spawn and kept for the whole test, so no exit can slip between listeners. */
+  exited: Promise<number | null>;
+  /** Resolves once the file is open; rejects if PowerShell fails to start or exits first. */
+  locked: Promise<void>;
+}
+
+/** Opens `file` from a child PowerShell without FILE_SHARE_DELETE (what a scanner does) and holds
+ *  it for `ms`. Anything slower than a failed start or an early exit is bounded by the test's own
+ *  timeout. */
+function holdFileOpen(file: string, ms: number): FileHolder {
+  const holder = spawn("powershell.exe", [
+    "-NoProfile",
+    "-Command",
+    `$f=[IO.File]::Open('${file}','Open','Read','Read'); Write-Output LOCKED; Start-Sleep -Milliseconds ${ms}; $f.Close()`,
+  ]);
+  // Settles on a failed spawn too ('error' with no 'exit'), so a finally awaiting it can't hang.
+  const exited = new Promise<number | null>((resolve) => {
+    holder.on("exit", resolve);
+    holder.on("error", () => resolve(null));
+  });
+  const locked = new Promise<void>((resolve, reject) => {
+    holder.on("error", reject);
+    void exited.then((code) => reject(new Error(`lock holder exited (${code}) before locking`)));
+    holder.stdout.on("data", (b) => String(b).includes("LOCKED") && resolve());
+  });
+  return { holder, exited, locked };
+}
 
 /** Fails the test loudly if deleteItem ever reaches for the real OS trash during a symlink
  *  delete — see the "removes only the link" test below. */
@@ -108,6 +158,83 @@ describe("toggleItemEnabled / deleteItem", () => {
     const disabledDir = join(root, DISABLED_DIRNAME, "pdf-editing");
     expect(existsSync(join(disabledDir, "SKILL.md"))).toBe(true);
     expect(existsSync(join(disabledDir, "helper.py"))).toBe(true);
+  });
+
+  describe.skipIf(process.platform !== "win32")("on Windows, when another process holds a file inside the skill folder", () => {
+    const makeSkill = () => {
+      const skillDir = join(root, "pdf-editing");
+      mkdirSync(skillDir);
+      writeFileSync(join(skillDir, "SKILL.md"), "---\nname: pdf-editing\n---\n");
+      return skillDir;
+    };
+
+    afterEach(() => {
+      renameSyncControl.failNext = 0;
+      renameSyncControl.code = "EPERM";
+      renameSyncControl.realErrors = [];
+    });
+
+    it("retries a folder rename that Windows briefly refuses", () => {
+      const skillDir = makeSkill();
+      renameSyncControl.failNext = 2;
+
+      toggleItemEnabled(makeItem(join(skillDir, "SKILL.md")));
+
+      expect(existsSync(skillDir)).toBe(false);
+      expect(existsSync(join(root, DISABLED_DIRNAME, "pdf-editing", "SKILL.md"))).toBe(true);
+    });
+
+    it("gives up after a bounded number of attempts and rethrows the last error", () => {
+      const skillDir = makeSkill();
+      renameSyncControl.failNext = 1_000;
+      renameSyncControl.calls = 0;
+
+      expect(() => toggleItemEnabled(makeItem(join(skillDir, "SKILL.md")))).toThrow(/EPERM/);
+      expect(renameSyncControl.calls).toBe(5);
+      expect(existsSync(join(skillDir, "SKILL.md"))).toBe(true);
+    });
+
+    it("does not retry a regular-file move", () => {
+      const filePath = join(root, "backend.md");
+      writeFileSync(filePath, "content");
+      renameSyncControl.failNext = 1;
+      renameSyncControl.calls = 0;
+
+      expect(() => toggleItemEnabled(makeItem(filePath))).toThrow(/EPERM/);
+      expect(renameSyncControl.calls).toBe(1);
+    });
+
+    it("does not retry an error that waiting can't fix", () => {
+      const skillDir = makeSkill();
+      renameSyncControl.failNext = 1_000;
+      renameSyncControl.code = "ENOSPC";
+      renameSyncControl.calls = 0;
+
+      expect(() => toggleItemEnabled(makeItem(join(skillDir, "SKILL.md")))).toThrow(/ENOSPC/);
+      expect(renameSyncControl.calls).toBe(1);
+    });
+
+    // The real trigger: a file inside the folder is held open for 0.8s, inside the ~1.5s retry
+    // budget. The first real rename must have failed on the held handle, or the test proves
+    // nothing about the retry.
+    it("disables the folder once the other process lets go", async () => {
+      const skillDir = makeSkill();
+      const held = join(skillDir, "SKILL.md");
+      const lock = holdFileOpen(held, 800);
+      try {
+        await lock.locked;
+
+        toggleItemEnabled(makeItem(held));
+
+        expect(renameSyncControl.realErrors[0]).toMatch(/^(EPERM|EACCES|EBUSY)$/);
+        expect(existsSync(skillDir)).toBe(false);
+        expect(existsSync(join(root, DISABLED_DIRNAME, "pdf-editing", "SKILL.md"))).toBe(true);
+      } finally {
+        // Release the lock before afterEach deletes the temp root.
+        lock.holder.kill();
+        await lock.exited;
+      }
+    }, 20_000);
   });
 
   it("throws rather than clobbering an existing file when disabling twice", () => {
