@@ -420,6 +420,7 @@ var DEFAULT_SETTINGS = {
   dashboardDisregarded: {},
   workspaceHintDismissed: false,
   mcpConfigEditorApp: "",
+  gitProxy: "",
   confirmBeforeToggle: true,
   usageHistory: {},
   libraryLayout: "grid"
@@ -551,8 +552,29 @@ function moveEntry(fromPath, toPath, isDirectory) {
     const absoluteTarget = (0, import_path2.isAbsolute)(rawTarget) ? rawTarget : (0, import_path2.resolve)((0, import_path2.dirname)(fromPath), rawTarget);
     (0, import_fs.unlinkSync)(fromPath);
     (0, import_fs.symlinkSync)(absoluteTarget, toPath, isDirectory ? "dir" : "file");
+  } else if (isDirectory) {
+    renameFolderWithRetry(fromPath, toPath);
   } else {
     (0, import_fs.renameSync)(fromPath, toPath);
+  }
+}
+var RENAME_RETRY_CODES = /* @__PURE__ */ new Set(["EPERM", "EACCES", "EBUSY"]);
+var RENAME_RETRIES = 4;
+var RENAME_RETRY_DELAY_MS = 150;
+function renameFolderWithRetry(fromPath, toPath) {
+  var _a;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      (0, import_fs.renameSync)(fromPath, toPath);
+      return;
+    } catch (e) {
+      const code = (_a = e.code) != null ? _a : "";
+      if (process.platform !== "win32" || attempt >= RENAME_RETRIES || !RENAME_RETRY_CODES.has(code))
+        throw e;
+      const until = Date.now() + RENAME_RETRY_DELAY_MS * (attempt + 1);
+      while (Date.now() < until) {
+      }
+    }
   }
 }
 function toggleItemEnabled(item) {
@@ -2085,11 +2107,133 @@ var import_child_process = require("child_process");
 var import_fs7 = require("fs");
 var import_os3 = require("os");
 var import_path9 = require("path");
+var NETWORK_ENV_KEYS = [
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "GIT_SSL_CAINFO",
+  "GIT_SSL_CAPATH",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "CURL_CA_BUNDLE"
+];
+function isNetworkEnvKey(key) {
+  return NETWORK_ENV_KEYS.includes(key.toUpperCase());
+}
+var proxyOverride = "";
+function setGitProxy(proxy) {
+  proxyOverride = proxy.trim();
+}
+var detectedEnv = null;
+function proxyEnvFromScutil(output) {
+  var _a;
+  const field = (name) => {
+    var _a2, _b;
+    return (_b = (_a2 = new RegExp(`^\\s*${name}\\s*:\\s*(\\S+)\\s*$`, "m").exec(output)) == null ? void 0 : _a2[1]) != null ? _b : "";
+  };
+  const env = {};
+  for (const scheme of ["HTTPS", "HTTP"]) {
+    if (field(`${scheme}Enable`) !== "1" || !field(`${scheme}Proxy`))
+      continue;
+    const port = field(`${scheme}Port`);
+    env[`${scheme}_PROXY`] = `http://${field(`${scheme}Proxy`)}${port ? `:${port}` : ""}`;
+  }
+  const exceptions = (_a = /ExceptionsList\s*:\s*<array>\s*\{([^}]*)\}/.exec(output)) == null ? void 0 : _a[1];
+  if (exceptions && Object.keys(env).length > 0) {
+    const hosts = [...exceptions.matchAll(/^\s*\d+\s*:\s*(\S+)\s*$/gm)].map((m) => m[1].replace(/^\*/, ""));
+    if (hosts.length > 0)
+      env.NO_PROXY = hosts.join(",");
+  }
+  return env;
+}
+function detectNetworkEnv() {
+  if (detectedEnv)
+    return detectedEnv;
+  const env = {};
+  const has = (key) => Object.entries({ ...process.env, ...env }).some(([k, v]) => k.toUpperCase() === key && v);
+  if (process.platform !== "win32") {
+    try {
+      const marker = "__SKILLMANAGER_ENV__";
+      const output = (0, import_child_process.execFileSync)(process.env.SHELL || "/bin/zsh", ["-ilc", `echo ${marker}; env`], {
+        encoding: "utf-8",
+        timeout: 5e3,
+        stdio: ["ignore", "pipe", "ignore"]
+      });
+      const body = output.slice(output.indexOf(marker) + marker.length);
+      for (const line of body.split("\n")) {
+        const eq = line.indexOf("=");
+        if (eq <= 0)
+          continue;
+        const key = line.slice(0, eq);
+        if (isNetworkEnvKey(key) && !process.env[key])
+          env[key] = line.slice(eq + 1);
+      }
+    } catch (e) {
+    }
+  }
+  if (process.platform === "darwin" && !has("HTTPS_PROXY") && !has("HTTP_PROXY") && !has("ALL_PROXY")) {
+    try {
+      Object.assign(env, proxyEnvFromScutil((0, import_child_process.execFileSync)("scutil", ["--proxy"], { encoding: "utf-8", timeout: 3e3 })));
+    } catch (e) {
+    }
+  }
+  detectedEnv = env;
+  return env;
+}
+function gitEnv() {
+  const env = { ...process.env, ...detectNetworkEnv() };
+  if (proxyOverride) {
+    for (const key of Object.keys(env)) {
+      if (["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"].includes(key.toUpperCase()))
+        delete env[key];
+    }
+    env.HTTPS_PROXY = proxyOverride;
+    env.HTTP_PROXY = proxyOverride;
+  }
+  env.GIT_TERMINAL_PROMPT = "0";
+  return env;
+}
+function hostOf(args) {
+  for (const arg of args) {
+    try {
+      const url = new URL(arg);
+      if (url.hostname)
+        return url.hostname;
+    } catch (e) {
+      const scp = /^[^@/]+@([^:/]+):/.exec(arg);
+      if (scp)
+        return scp[1];
+    }
+  }
+  return "the remote";
+}
+function friendlyGitError(stderr, host) {
+  var _a, _b;
+  const fatal = (_b = (_a = /fatal: .*/.exec(stderr)) == null ? void 0 : _a[0]) == null ? void 0 : _b.trim();
+  const detail = fatal ? ` (${fatal})` : "";
+  if (/could not read (Username|Password)|terminal prompts disabled|Authentication failed|Invalid username or password|returned error: 40[13]|redirection:[\s\S]*\/login/i.test(
+    stderr
+  )) {
+    return `${host} needs you to sign in. Clone this repo once from a terminal so git saves your credentials, then try again.${detail}`;
+  }
+  if (/Repository not found|returned error: 404/i.test(stderr)) {
+    return `Couldn't find that repo on ${host}. Check the URL, and that your account can open it.${detail}`;
+  }
+  if (/Connection reset|Failed to connect|Could not resolve (host|proxy)|Connection timed out|Connection refused|Proxy CONNECT aborted|Recv failure|SSL_ERROR_SYSCALL/i.test(stderr)) {
+    return `Couldn't reach ${host}. On a work network, git may need a proxy: set one under Settings > AI Skills Manager > Network, or ask IT for the proxy address.${detail}`;
+  }
+  if (/SSL certificate problem|unable to get local issuer certificate|self.signed certificate/i.test(stderr)) {
+    return `Couldn't verify ${host}'s certificate. Your network may inspect secure traffic; ask IT for its root certificate and point git at it with "git config --global http.sslCAInfo <file>".${detail}`;
+  }
+  return null;
+}
 function git(args, cwd) {
   try {
     return (0, import_child_process.execFileSync)("git", args, {
       cwd,
       encoding: "utf-8",
+      env: gitEnv(),
       maxBuffer: 10 * 1024 * 1024,
       // Update reviews run from the view and must not remain in a loading state forever when
       // GitHub, a proxy, or git's credential/network layer stops responding.
@@ -2100,8 +2244,13 @@ function git(args, cwd) {
       throw new Error("Git isn't installed, or isn't on your PATH. Install Git to use Discover, install-from-GitHub, and update checks.");
     }
     if (e instanceof Error && (e.code === "ETIMEDOUT" || e.killed)) {
-      throw new Error("GitHub did not respond within 45 seconds. Check your connection and try again.");
+      throw new Error(`${hostOf(args)} did not respond within 45 seconds. Check your connection and try again.`);
     }
+    const rawStderr = e.stderr;
+    const stderr = typeof rawStderr === "string" ? rawStderr : "";
+    const friendly = friendlyGitError(stderr, hostOf(args));
+    if (friendly)
+      throw new Error(friendly);
     throw e;
   }
 }
@@ -2112,6 +2261,50 @@ function remoteHeadCommit(repoUrl, ref) {
     throw new Error(`No matching ref found in ${repoUrl}`);
   return sha;
 }
+function removeClonePath(path, maxRetries = 5) {
+  (0, import_fs7.rmSync)(path, { recursive: true, force: true, maxRetries, retryDelay: 200 });
+}
+var pendingRemovals = /* @__PURE__ */ new Set();
+var MAX_PENDING_REMOVALS = 20;
+var MAX_RETRIES_PER_CLEANUP = 3;
+function cleanupClone(dir, maxRetries) {
+  retryPendingCloneRemovals(MAX_RETRIES_PER_CLEANUP);
+  try {
+    removeClonePath(dir, maxRetries);
+  } catch (e) {
+    console.warn(`AI Skills Manager: couldn't remove temp clone ${dir}, will retry later: ${errorMessage(e)}`);
+    queueRemoval(dir);
+  }
+}
+function queueRemoval(dir) {
+  pendingRemovals.add(dir);
+  if (pendingRemovals.size <= MAX_PENDING_REMOVALS)
+    return;
+  const oldest = pendingRemovals.values().next().value;
+  pendingRemovals.delete(oldest);
+  console.warn(`AI Skills Manager: no longer tracking temp clone ${oldest}; delete it by hand if it's still there.`);
+}
+function retryPendingCloneRemovals(limit = Infinity) {
+  let tried = 0;
+  for (const dir of [...pendingRemovals]) {
+    if (tried++ >= limit)
+      break;
+    pendingRemovals.delete(dir);
+    try {
+      (0, import_fs7.rmSync)(dir, { recursive: true, force: true });
+    } catch (e) {
+      pendingRemovals.add(dir);
+    }
+  }
+}
+function removeGitDir(clone) {
+  try {
+    removeClonePath((0, import_path9.join)(clone.dir, ".git"));
+  } catch (e) {
+    cleanupClone(clone.dir, 0);
+    throw e;
+  }
+}
 function shallowCloneRepo(repoUrl, ref) {
   const dir = (0, import_fs7.mkdtempSync)((0, import_path9.join)((0, import_os3.tmpdir)(), "skillmanager-clone-"));
   try {
@@ -2121,9 +2314,9 @@ function shallowCloneRepo(repoUrl, ref) {
     args.push(repoUrl, dir);
     git(args);
     const commit = git(["rev-parse", "HEAD"], dir);
-    return { dir, commit, cleanup: () => (0, import_fs7.rmSync)(dir, { recursive: true, force: true }) };
+    return { dir, commit, cleanup: () => cleanupClone(dir) };
   } catch (e) {
-    (0, import_fs7.rmSync)(dir, { recursive: true, force: true });
+    cleanupClone(dir);
     throw e;
   }
 }
@@ -2134,9 +2327,9 @@ function shallowCloneAtCommit(repoUrl, commitSha) {
     git(["remote", "add", "origin", repoUrl], dir);
     git(["fetch", "--depth", "1", "origin", commitSha], dir);
     git(["checkout", "-q", "FETCH_HEAD"], dir);
-    return { dir, commit: commitSha, cleanup: () => (0, import_fs7.rmSync)(dir, { recursive: true, force: true }) };
+    return { dir, commit: commitSha, cleanup: () => cleanupClone(dir) };
   } catch (e) {
-    (0, import_fs7.rmSync)(dir, { recursive: true, force: true });
+    cleanupClone(dir);
     throw new Error(
       `Couldn't fetch the originally-installed commit from this host. Try "Check for updates" instead. (${errorMessage(e)})`
     );
@@ -2152,13 +2345,22 @@ function parseGitHubUrl(input) {
   } catch (e) {
     return null;
   }
-  if (url.hostname !== "github.com" && !url.hostname.endsWith(".github.com"))
+  if (url.protocol !== "https:" && url.protocol !== "http:")
     return null;
   const segments = url.pathname.split("/").filter(Boolean);
-  const [owner, repoRaw, treeKeyword, ref, ...rest] = segments;
-  if (!owner || !repoRaw)
+  const isGitHubDotCom = url.hostname === "github.com" || url.hostname.endsWith(".github.com");
+  let treeAt = isGitHubDotCom ? 2 : segments.indexOf("tree");
+  if (treeAt === -1)
+    treeAt = segments.length;
+  const repoSegments = segments.slice(0, treeAt);
+  if (repoSegments[repoSegments.length - 1] === "-")
+    repoSegments.pop();
+  if (repoSegments.length < 2)
     return null;
-  const repoUrl = `https://github.com/${owner}/${repoRaw.replace(/\.git$/, "")}.git`;
+  const origin = isGitHubDotCom ? "https://github.com" : url.origin;
+  const repoPath = repoSegments.join("/").replace(/\.git$/, "");
+  const repoUrl = `${origin}/${repoPath}.git`;
+  const [treeKeyword, ref, ...rest] = segments.slice(treeAt);
   if (treeKeyword === "tree" && ref) {
     return { repoUrl, ref, subpath: rest.join("/") };
   }
@@ -2206,7 +2408,7 @@ var InstallFromGitHubModal = class extends import_obsidian9.Modal {
     const { contentEl } = this;
     contentEl.addClass("skillmanager-modal");
     this.setTitle("Install from GitHub");
-    new import_obsidian9.Setting(contentEl).setName("Repository URL").setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.").addText((text) => {
+    new import_obsidian9.Setting(contentEl).setName("Repository URL").setDesc("A GitHub repo URL (github.com or your company's GitHub), optionally with /tree/<branch>/<subpath> for a specific folder.").addText((text) => {
       text.setPlaceholder("https://github.com/owner/repo");
       if (this.prefill)
         text.setValue(this.prefill.repoUrl);
@@ -2324,7 +2526,7 @@ var InstallFromGitHubModal = class extends import_obsidian9.Modal {
     let clone = null;
     try {
       clone = shallowCloneRepo(repoUrl, ref || void 0);
-      (0, import_fs8.rmSync)((0, import_path10.join)(clone.dir, ".git"), { recursive: true, force: true });
+      removeGitDir(clone);
       const sourceRoot = subpath ? (0, import_path10.join)(clone.dir, subpath) : clone.dir;
       if (!(0, import_fs8.existsSync)(sourceRoot)) {
         throw new Error(`"${subpath}" doesn't exist in this repo${ref ? ` at ${ref}` : ""}.`);
@@ -2598,7 +2800,7 @@ var AddDiscoverSourceModal = class extends import_obsidian11.Modal {
     });
     let refText;
     let subpathText;
-    new import_obsidian11.Setting(contentEl).setName("Repository URL").setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.").addText((text) => {
+    new import_obsidian11.Setting(contentEl).setName("Repository URL").setDesc("A GitHub repo URL (github.com or your company's GitHub), optionally with /tree/<branch>/<subpath> for a specific folder.").addText((text) => {
       text.setPlaceholder("https://github.com/owner/repo").setValue(this.repoUrlInput).onChange((value) => {
         this.repoUrlInput = value;
         const parsed = parseGitHubUrl(value);
@@ -10508,7 +10710,7 @@ ${item.description}`.length),
     try {
       if (mode === "restore") {
         clone = shallowCloneAtCommit(sourceRepo, item.sourceCommit);
-        (0, import_fs18.rmSync)((0, import_path18.join)(clone.dir, ".git"), { recursive: true, force: true });
+        removeGitDir(clone);
       } else {
         clone = this.latestClone(item, latest);
       }
@@ -10658,7 +10860,7 @@ ${item.description}`.length),
       clone == null ? void 0 : clone.cleanup();
       this.checkClones.delete(key);
       clone = shallowCloneRepo(item.sourceRepo, item.sourceRef || void 0);
-      (0, import_fs18.rmSync)((0, import_path18.join)(clone.dir, ".git"), { recursive: true, force: true });
+      removeGitDir(clone);
       this.checkClones.set(key, clone);
     }
     return { ...clone, cleanup: () => {
@@ -11190,6 +11392,22 @@ var SkillManagerSettingTab = class extends import_obsidian17.PluginSettingTab {
       },
       {
         type: "group",
+        heading: "Network",
+        items: [
+          {
+            name: "Git proxy",
+            desc: "Proxy git uses to reach GitHub, e.g. http://proxy.example.com:8080. Leave blank to use the proxy from your shell profile or system network settings.",
+            control: {
+              type: "text",
+              key: "gitProxy",
+              placeholder: "http://proxy.example.com:8080",
+              defaultValue: ""
+            }
+          }
+        ]
+      },
+      {
+        type: "group",
         heading: "Support",
         items: [
           {
@@ -11215,6 +11433,7 @@ var SkillManagerSettingTab = class extends import_obsidian17.PluginSettingTab {
     switch (key) {
       case "storageFolder":
       case "mcpConfigEditorApp":
+      case "gitProxy":
       case "defaultSortOrder":
       case "defaultEnabledFilter":
         return settings[key];
@@ -11268,6 +11487,10 @@ var SkillManagerSettingTab = class extends import_obsidian17.PluginSettingTab {
       case "mcpConfigEditorApp":
         if (typeof value === "string")
           this.plugin.settings.mcpConfigEditorApp = value.trim();
+        break;
+      case "gitProxy":
+        if (typeof value === "string")
+          this.plugin.settings.gitProxy = value.trim();
         break;
       default:
         return;
@@ -11348,6 +11571,15 @@ var SkillManagerSettingTab = class extends import_obsidian17.PluginSettingTab {
     ).addText(
       (text) => text.setPlaceholder("Visual Studio Code").setValue(this.plugin.settings.mcpConfigEditorApp).onChange(async (value) => {
         this.plugin.settings.mcpConfigEditorApp = value.trim();
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian17.Setting(containerEl).setName("Network").setHeading();
+    new import_obsidian17.Setting(containerEl).setName("Git proxy").setDesc(
+      "Proxy git uses to reach GitHub for Discover, installs, and update checks, e.g. http://proxy.example.com:8080. Leave blank to use the proxy from your shell profile or your Mac's network settings. Set this if adding a source fails with a connection error on a work network."
+    ).addText(
+      (text) => text.setPlaceholder("http://proxy.example.com:8080").setValue(this.plugin.settings.gitProxy).onChange(async (value) => {
+        this.plugin.settings.gitProxy = value.trim();
         await this.plugin.saveSettings();
       })
     );
@@ -11596,6 +11828,9 @@ var SkillManagerPlugin = class extends import_obsidian19.Plugin {
     this.app.workspace.onLayoutReady(() => void this.checkPluginVersion());
     this.registerInterval(window.setInterval(() => void this.checkPluginVersion(), 12 * 60 * 60 * 1e3));
   }
+  onunload() {
+    retryPendingCloneRemovals();
+  }
   pluginVersionStatus() {
     return versionStatus(this.manifest.version, this.latestPluginVersion);
   }
@@ -11733,11 +11968,13 @@ var SkillManagerPlugin = class extends import_obsidian19.Plugin {
       tools: [...mergedTools, ...customTools],
       sectionOrder: mergedSectionOrder
     });
+    setGitProxy(this.settings.gitProxy);
   }
   async saveSettings() {
     var _a;
     await this.saveData(this.settings);
     (_a = this.store) == null ? void 0 : _a.setFolder(this.settings.storageFolder);
+    setGitProxy(this.settings.gitProxy);
   }
   async activateLibrary() {
     const { workspace } = this.app;

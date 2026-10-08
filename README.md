@@ -35,6 +35,7 @@ AI Skills Manager works directly on the real folders each tool reads. It doesn't
 - [Installation](#installation)
 - [Getting started](#getting-started)
 - [Settings](#settings)
+- [Using it on a work network](#using-it-on-a-work-network)
 - [Development](#development)
 - [Contributing](#contributing)
 - [License](#license)
@@ -75,7 +76,7 @@ Memory files an agent writes for itself are listed under **Memories & Rules**, n
 Add a global skill to a project workspace and it's symlinked into that project's local tool folder, never copied, so it can't drift out of sync with the source. Remove it and only the link goes away; the original is untouched.
 
 **Discover and install from GitHub**
-Point Discover at a GitHub repo (or a specific subfolder) and it walks it for `SKILL.md` files and agent/command/rule markdown, showing star counts and previews before you install. Or paste a repo URL (or a GitHub `tree` URL for one branch/subfolder) directly into "Install from GitHub" and pick which tool, type, and project (or global) it lands in.
+Point Discover at a GitHub repo (or a specific subfolder) and it walks it for `SKILL.md` files and agent/command/rule markdown, showing star counts and previews before you install. Or paste a repo URL (or a GitHub `tree` URL for one branch/subfolder) directly into "Install from GitHub" and pick which tool, type, and project (or global) it lands in. Self-hosted GitHub works too: paste the repo or `tree` URL from your company's GitHub the same way.
 
 ![Discover tab, empty state with suggested starter repos](images/discover.png)
 
@@ -180,10 +181,19 @@ Deleting an item, or updating one from GitHub, moves the old copy to your system
 - **Storage folder**: where the plugin's metadata notes live in your vault (default: `AI Skills Manager`).
 - **Library view**: auto-rescan interval, default sort order, default enabled/disabled filter, and whether to show tools/projects with nothing found in them.
 - **Auto check for updates**: an optional background interval (off by default) that checks every tracked source against its remote and flags what's stale.
+- **Git proxy**: the proxy git uses for Discover, installs, and update checks. Leave blank to use the proxy from your shell profile or your Mac's network settings. See [Using it on a work network](#using-it-on-a-work-network).
 - **MCP config editor app**: macOS only; which app "Open config file" on an MCP server should use, overriding the OS's default file association.
 - **Tools**: every tool's global and project-scoped paths, editable per type (plus an optional memory folder), with a live "found/not found" check against your actual filesystem. Managed from the "All tools" page in the library sidebar.
 - **Project workspaces**: managed from the Workspaces section of the library sidebar rather than the settings tab; add, edit, or remove project folders (beyond the current vault) to scan for project-local skills.
 
+## Using it on a work network
+
+Discover, install, and update checks run `git` in the background. On a managed work computer, two things can get in the way:
+
+- **A proxy.** If adding a source fails with "Couldn't reach github.com", git needs your network's proxy. The plugin picks it up from your shell profile (`HTTPS_PROXY`) or your Mac's network settings automatically. If it still fails, find the proxy address with `echo $HTTPS_PROXY`, `git config --get http.proxy`, or `scutil --proxy` in Terminal, or ask IT for "the HTTP proxy host and port for git", and enter it as `http://host:port` under **Settings → Git proxy**.
+- **Sign-in for private repos.** The plugin can't show a sign-in prompt. Clone the repo once from Terminal (`git clone <repo URL>`) and sign in when asked, so git saves your credentials. Adding the source in the plugin works after that.
+
+If you see a certificate error instead, your network inspects secure traffic. Ask IT for its root certificate and point git at it with `git config --global http.sslCAInfo <path to certificate>`.
 
 ## Development
 

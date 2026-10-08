@@ -384,6 +384,9 @@ export interface SkillManagerPluginSettings {
    *  for that file, which for an extension like .json or .toml can land on an unexpected app
    *  (e.g. Xcode, if it's claimed that association) — set this to override it. macOS only. */
   mcpConfigEditorApp: string;
+  /** Proxy URL git uses for Discover, install-from-GitHub, and update checks. Blank means use
+   *  whatever is detected (shell profile env vars, then the macOS system proxy). */
+  gitProxy: string;
   /** On by default: a card's toggle, a Dashboard Disable/Restore action, and the broken-symlinks
    *  "Enable source" shortcut all show a confirmation naming the exact folder move (see
    *  LibraryView's confirmToggle) before toggleItemEnabled actually moves anything on disk.
@@ -787,6 +790,7 @@ export const DEFAULT_SETTINGS: SkillManagerPluginSettings = {
   dashboardDisregarded: {},
   workspaceHintDismissed: false,
   mcpConfigEditorApp: "",
+  gitProxy: "",
   confirmBeforeToggle: true,
   usageHistory: {},
   libraryLayout: "grid",

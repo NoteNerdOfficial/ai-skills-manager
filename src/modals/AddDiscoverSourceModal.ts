@@ -45,7 +45,7 @@ export class AddDiscoverSourceModal extends Modal {
 
     new Setting(contentEl)
       .setName("Repository URL")
-      .setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.")
+      .setDesc("A GitHub repo URL (github.com or your company's GitHub), optionally with /tree/<branch>/<subpath> for a specific folder.")
       .addText((text) => {
         text.setPlaceholder("https://github.com/owner/repo").setValue(this.repoUrlInput).onChange((value) => {
           this.repoUrlInput = value;

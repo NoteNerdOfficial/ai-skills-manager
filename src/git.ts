@@ -4,11 +4,151 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { errorMessage } from "./errors";
 
+/** Env vars that tell git (via libcurl) how to reach the network: proxies and extra CA bundles.
+ *  On a managed computer these usually live in the shell profile, which an app launched from the
+ *  Dock or Start menu never reads. */
+const NETWORK_ENV_KEYS = [
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "GIT_SSL_CAINFO",
+  "GIT_SSL_CAPATH",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "CURL_CA_BUNDLE",
+];
+
+function isNetworkEnvKey(key: string): boolean {
+  return NETWORK_ENV_KEYS.includes(key.toUpperCase());
+}
+
+/** Proxy set in the plugin's settings. Wins over anything detected. */
+let proxyOverride = "";
+
+export function setGitProxy(proxy: string): void {
+  proxyOverride = proxy.trim();
+}
+
+let detectedEnv: Record<string, string> | null = null;
+
+/** Parses `scutil --proxy` output into proxy env vars, for when the macOS network settings name a
+ *  fixed HTTPS/HTTP proxy. A proxy only given through an auto-config (PAC) URL can't be used by
+ *  git, so that case needs the proxy setting instead. */
+export function proxyEnvFromScutil(output: string): Record<string, string> {
+  const field = (name: string) => new RegExp(`^\\s*${name}\\s*:\\s*(\\S+)\\s*$`, "m").exec(output)?.[1] ?? "";
+  const env: Record<string, string> = {};
+  for (const scheme of ["HTTPS", "HTTP"]) {
+    if (field(`${scheme}Enable`) !== "1" || !field(`${scheme}Proxy`)) continue;
+    const port = field(`${scheme}Port`);
+    env[`${scheme}_PROXY`] = `http://${field(`${scheme}Proxy`)}${port ? `:${port}` : ""}`;
+  }
+  const exceptions = /ExceptionsList\s*:\s*<array>\s*\{([^}]*)\}/.exec(output)?.[1];
+  if (exceptions && Object.keys(env).length > 0) {
+    const hosts = [...exceptions.matchAll(/^\s*\d+\s*:\s*(\S+)\s*$/gm)].map((m) => m[1].replace(/^\*/, ""));
+    if (hosts.length > 0) env.NO_PROXY = hosts.join(",");
+  }
+  return env;
+}
+
+/** Reads the network env vars from a login shell, then falls back to the macOS system proxy.
+ *  Runs once per session; each source is best effort and a failure just means it's skipped. */
+function detectNetworkEnv(): Record<string, string> {
+  if (detectedEnv) return detectedEnv;
+  const env: Record<string, string> = {};
+  const has = (key: string) => Object.entries({ ...process.env, ...env }).some(([k, v]) => k.toUpperCase() === key && v);
+
+  if (process.platform !== "win32") {
+    try {
+      const marker = "__SKILLMANAGER_ENV__";
+      const output = execFileSync(process.env.SHELL || "/bin/zsh", ["-ilc", `echo ${marker}; env`], {
+        encoding: "utf-8",
+        timeout: 5_000,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const body = output.slice(output.indexOf(marker) + marker.length);
+      for (const line of body.split("\n")) {
+        const eq = line.indexOf("=");
+        if (eq <= 0) continue;
+        const key = line.slice(0, eq);
+        if (isNetworkEnvKey(key) && !process.env[key]) env[key] = line.slice(eq + 1);
+      }
+    } catch {
+      // No usable shell, or its profile hung. The system proxy below may still work.
+    }
+  }
+
+  if (process.platform === "darwin" && !has("HTTPS_PROXY") && !has("HTTP_PROXY") && !has("ALL_PROXY")) {
+    try {
+      Object.assign(env, proxyEnvFromScutil(execFileSync("scutil", ["--proxy"], { encoding: "utf-8", timeout: 3_000 })));
+    } catch {
+      // Not fatal: git just connects directly.
+    }
+  }
+
+  detectedEnv = env;
+  return env;
+}
+
+function gitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...detectNetworkEnv() };
+  if (proxyOverride) {
+    for (const key of Object.keys(env)) {
+      if (["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"].includes(key.toUpperCase())) delete env[key];
+    }
+    env.HTTPS_PROXY = proxyOverride;
+    env.HTTP_PROXY = proxyOverride;
+  }
+  // There's no terminal to type a username into. Without this, a host that wants sign-in makes
+  // git wait for input until the timeout instead of failing right away.
+  env.GIT_TERMINAL_PROMPT = "0";
+  return env;
+}
+
+/** The host a git command talks to, for error messages. */
+function hostOf(args: string[]): string {
+  for (const arg of args) {
+    try {
+      const url = new URL(arg);
+      if (url.hostname) return url.hostname;
+    } catch {
+      const scp = /^[^@/]+@([^:/]+):/.exec(arg);
+      if (scp) return scp[1];
+    }
+  }
+  return "the remote";
+}
+
+/** Turns git's raw stderr into a message that says what went wrong and what to try, keeping git's
+ *  own "fatal:" line at the end for troubleshooting. Returns null for errors it doesn't recognise. */
+export function friendlyGitError(stderr: string, host: string): string | null {
+  const fatal = /fatal: .*/.exec(stderr)?.[0]?.trim();
+  const detail = fatal ? ` (${fatal})` : "";
+  if (
+    /could not read (Username|Password)|terminal prompts disabled|Authentication failed|Invalid username or password|returned error: 40[13]|redirection:[\s\S]*\/login/i.test(
+      stderr
+    )
+  ) {
+    return `${host} needs you to sign in. Clone this repo once from a terminal so git saves your credentials, then try again.${detail}`;
+  }
+  if (/Repository not found|returned error: 404/i.test(stderr)) {
+    return `Couldn't find that repo on ${host}. Check the URL, and that your account can open it.${detail}`;
+  }
+  if (/Connection reset|Failed to connect|Could not resolve (host|proxy)|Connection timed out|Connection refused|Proxy CONNECT aborted|Recv failure|SSL_ERROR_SYSCALL/i.test(stderr)) {
+    return `Couldn't reach ${host}. On a work network, git may need a proxy: set one under Settings > AI Skills Manager > Network, or ask IT for the proxy address.${detail}`;
+  }
+  if (/SSL certificate problem|unable to get local issuer certificate|self.signed certificate/i.test(stderr)) {
+    return `Couldn't verify ${host}'s certificate. Your network may inspect secure traffic; ask IT for its root certificate and point git at it with "git config --global http.sslCAInfo <file>".${detail}`;
+  }
+  return null;
+}
+
 function git(args: string[], cwd?: string): string {
   try {
     return execFileSync("git", args, {
       cwd,
       encoding: "utf-8",
+      env: gitEnv(),
       maxBuffer: 10 * 1024 * 1024,
       // Update reviews run from the view and must not remain in a loading state forever when
       // GitHub, a proxy, or git's credential/network layer stops responding.
@@ -19,8 +159,12 @@ function git(args: string[], cwd?: string): string {
       throw new Error("Git isn't installed, or isn't on your PATH. Install Git to use Discover, install-from-GitHub, and update checks.");
     }
     if (e instanceof Error && ((e as NodeJS.ErrnoException).code === "ETIMEDOUT" || (e as NodeJS.ErrnoException & { killed?: boolean }).killed)) {
-      throw new Error("GitHub did not respond within 45 seconds. Check your connection and try again.");
+      throw new Error(`${hostOf(args)} did not respond within 45 seconds. Check your connection and try again.`);
     }
+    const rawStderr = (e as { stderr?: unknown }).stderr;
+    const stderr = typeof rawStderr === "string" ? rawStderr : "";
+    const friendly = friendlyGitError(stderr, hostOf(args));
+    if (friendly) throw new Error(friendly);
     throw e;
   }
 }

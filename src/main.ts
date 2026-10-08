@@ -12,7 +12,7 @@ import { SkillManagerSettingTab } from "./settings";
 import { INSIGHTS_PAGES, LIBRARY_VIEW_TYPE, LibraryView } from "./views/LibraryView";
 import { performRescan, RescanResult } from "./rescan";
 import { ShadowNoteStore } from "./store";
-import { remoteHeadCommit, retryPendingCloneRemovals } from "./git";
+import { remoteHeadCommit, retryPendingCloneRemovals, setGitProxy } from "./git";
 import { fetchLatestPluginVersion, PluginVersionStatus, versionStatus } from "./pluginVersion";
 
 /** Four outlined shapes (triangle, circle, hexagon, square) in a 2x2 grid — the plugin's mark.
@@ -259,11 +259,13 @@ export default class SkillManagerPlugin extends Plugin {
       tools: [...mergedTools, ...customTools],
       sectionOrder: mergedSectionOrder,
     });
+    setGitProxy(this.settings.gitProxy);
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
     this.store?.setFolder(this.settings.storageFolder);
+    setGitProxy(this.settings.gitProxy);
   }
 
   async activateLibrary(): Promise<LibraryView | null> {

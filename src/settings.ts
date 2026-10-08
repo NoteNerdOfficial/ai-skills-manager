@@ -221,6 +221,22 @@ export class SkillManagerSettingTab extends PluginSettingTab {
       },
       {
         type: "group",
+        heading: "Network",
+        items: [
+          {
+            name: "Git proxy",
+            desc: "Proxy git uses to reach GitHub, e.g. http://proxy.example.com:8080. Leave blank to use the proxy from your shell profile or system network settings.",
+            control: {
+              type: "text",
+              key: "gitProxy",
+              placeholder: "http://proxy.example.com:8080",
+              defaultValue: "",
+            },
+          },
+        ],
+      },
+      {
+        type: "group",
         heading: "Support",
         items: [
           {
@@ -247,9 +263,10 @@ export class SkillManagerSettingTab extends PluginSettingTab {
     switch (key as keyof SkillManagerPluginSettings) {
       case "storageFolder":
       case "mcpConfigEditorApp":
+      case "gitProxy":
       case "defaultSortOrder":
       case "defaultEnabledFilter":
-        return settings[key as "storageFolder" | "mcpConfigEditorApp" | "defaultSortOrder" | "defaultEnabledFilter"];
+        return settings[key as "storageFolder" | "mcpConfigEditorApp" | "gitProxy" | "defaultSortOrder" | "defaultEnabledFilter"];
       case "autoRescanMinutes":
       case "autoUpdateCheckMinutes":
         return String(settings[key]);
@@ -296,6 +313,9 @@ export class SkillManagerSettingTab extends PluginSettingTab {
         break;
       case "mcpConfigEditorApp":
         if (typeof value === "string") this.plugin.settings.mcpConfigEditorApp = value.trim();
+        break;
+      case "gitProxy":
+        if (typeof value === "string") this.plugin.settings.gitProxy = value.trim();
         break;
       default:
         return;
@@ -413,6 +433,22 @@ export class SkillManagerSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.mcpConfigEditorApp)
           .onChange(async (value) => {
             this.plugin.settings.mcpConfigEditorApp = value.trim();
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl).setName("Network").setHeading();
+    new Setting(containerEl)
+      .setName("Git proxy")
+      .setDesc(
+        "Proxy git uses to reach GitHub for Discover, installs, and update checks, e.g. http://proxy.example.com:8080. Leave blank to use the proxy from your shell profile or your Mac's network settings. Set this if adding a source fails with a connection error on a work network."
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("http://proxy.example.com:8080")
+          .setValue(this.plugin.settings.gitProxy)
+          .onChange(async (value) => {
+            this.plugin.settings.gitProxy = value.trim();
             await this.plugin.saveSettings();
           })
       );

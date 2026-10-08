@@ -297,3 +297,47 @@ describe("shallowCloneRepo temp-clone cleanup", () => {
     20_000
   );
 });
+
+describe("friendlyGitError", () => {
+  it("explains a failed connection as a proxy problem", () => {
+    const msg = git.friendlyGitError("fatal: unable to access 'https://github.com/o/r.git/': Failed to connect to github.com port 443", "github.com");
+    expect(msg).toMatch(/Couldn't reach github\.com/);
+    expect(msg).toMatch(/proxy/);
+    expect(msg).toMatch(/Failed to connect/);
+  });
+
+  it("explains a missing sign-in", () => {
+    expect(git.friendlyGitError("fatal: could not read Username for 'https://git.example.com': terminal prompts disabled", "git.example.com")).toMatch(
+      /git\.example\.com needs you to sign in/
+    );
+  });
+
+  it("explains a redirect to a login page as a missing sign-in", () => {
+    const stderr = "fatal: unable to update url base from redirection:\n  asked for: https://git.example.com/o/r/info/refs\n   redirect: https://git.example.com/login?return_to=x";
+    expect(git.friendlyGitError(stderr, "git.example.com")).toMatch(/needs you to sign in/);
+  });
+
+  it("leaves unrecognised errors alone", () => {
+    expect(git.friendlyGitError("fatal: something else", "github.com")).toBeNull();
+  });
+});
+
+describe("proxyEnvFromScutil", () => {
+  it("reads a fixed HTTPS proxy and its exceptions", () => {
+    const output = `<dictionary> {
+  ExceptionsList : <array> {
+    0 : *.local
+    1 : 169.254/16
+  }
+  HTTPSEnable : 1
+  HTTPSPort : 8080
+  HTTPSProxy : proxy.example.com
+  ProxyAutoConfigEnable : 0
+}`;
+    expect(git.proxyEnvFromScutil(output)).toEqual({ HTTPS_PROXY: "http://proxy.example.com:8080", NO_PROXY: ".local,169.254/16" });
+  });
+
+  it("returns nothing when only a PAC URL is set", () => {
+    expect(git.proxyEnvFromScutil("<dictionary> {\n  ProxyAutoConfigEnable : 1\n  ProxyAutoConfigURLString : http://pac.example.com/p.pac\n}")).toEqual({});
+  });
+});

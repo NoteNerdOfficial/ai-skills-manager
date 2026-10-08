@@ -16,10 +16,11 @@ export interface ParsedGitHubUrl {
   subpath: string;
 }
 
-/** Accepts a bare repo URL or a GitHub "tree" URL (which encodes a branch/tag and a subpath) and
- *  splits out the three fields the install form needs. Returns null for anything that isn't a
- *  github.com URL with at least an owner/repo — the caller falls back to leaving the ref/subpath
- *  fields for the user to fill in by hand. */
+/** Accepts a bare repo URL or a "tree" URL (which encodes a branch/tag and a subpath) and splits
+ *  out the three fields the install form needs. Works for github.com and for self-hosted GitHub
+ *  (any host), where the repo can sit under nested groups, so everything before the "tree"
+ *  segment is the repo path. Returns null for anything that isn't an http(s) URL with at least an
+ *  owner/repo; the caller then passes the input to git as typed. */
 export function parseGitHubUrl(input: string): ParsedGitHubUrl | null {
   let url: URL;
   try {
@@ -27,13 +28,21 @@ export function parseGitHubUrl(input: string): ParsedGitHubUrl | null {
   } catch {
     return null;
   }
-  if (url.hostname !== "github.com" && !url.hostname.endsWith(".github.com")) return null;
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
 
   const segments = url.pathname.split("/").filter(Boolean);
-  const [owner, repoRaw, treeKeyword, ref, ...rest] = segments;
-  if (!owner || !repoRaw) return null;
+  const isGitHubDotCom = url.hostname === "github.com" || url.hostname.endsWith(".github.com");
+  // github.com is always owner/repo, so anything past that (blob, issues, ...) isn't part of it.
+  let treeAt = isGitHubDotCom ? 2 : segments.indexOf("tree");
+  if (treeAt === -1) treeAt = segments.length;
+  const repoSegments = segments.slice(0, treeAt);
+  if (repoSegments[repoSegments.length - 1] === "-") repoSegments.pop();
+  if (repoSegments.length < 2) return null;
 
-  const repoUrl = `https://github.com/${owner}/${repoRaw.replace(/\.git$/, "")}.git`;
+  const origin = isGitHubDotCom ? "https://github.com" : url.origin;
+  const repoPath = repoSegments.join("/").replace(/\.git$/, "");
+  const repoUrl = `${origin}/${repoPath}.git`;
+  const [treeKeyword, ref, ...rest] = segments.slice(treeAt);
   if (treeKeyword === "tree" && ref) {
     return { repoUrl, ref, subpath: rest.join("/") };
   }
@@ -123,7 +132,7 @@ export class InstallFromGitHubModal extends Modal {
 
     new Setting(contentEl)
       .setName("Repository URL")
-      .setDesc("A github.com repo URL, optionally with /tree/<branch>/<subpath> for a specific folder.")
+      .setDesc("A GitHub repo URL (github.com or your company's GitHub), optionally with /tree/<branch>/<subpath> for a specific folder.")
       .addText((text) => {
         text.setPlaceholder("https://github.com/owner/repo");
         if (this.prefill) text.setValue(this.prefill.repoUrl);
