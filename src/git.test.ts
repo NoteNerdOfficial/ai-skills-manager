@@ -10,8 +10,14 @@ import * as git from "./git";
 // When failCode is set, rmSync on a matching temp-clone path throws the errno error Windows gives
 // when antivirus or the search indexer still has a file open inside the clone (EPERM on Node 24+,
 // EBUSY on 22). failOnlyGitDir narrows the failure to the clone's .git folder.
+// `failPaths` fails only those exact paths; `calls` records every rmSync path and its options.
 const { rmSyncControl } = vi.hoisted(() => ({
-  rmSyncControl: { failCode: null as string | null, failOnlyGitDir: false },
+  rmSyncControl: {
+    failCode: null as string | null,
+    failOnlyGitDir: false,
+    failPaths: new Set<string>(),
+    calls: [] as { path: string; options: { maxRetries?: number } | undefined }[],
+  },
 }));
 
 vi.mock("fs", async (importOriginal) => {
@@ -20,6 +26,12 @@ vi.mock("fs", async (importOriginal) => {
     ...actual,
     rmSync: (...args: Parameters<typeof actual.rmSync>) => {
       const path = String(args[0]);
+      rmSyncControl.calls.push({ path, options: args[1] });
+      if (rmSyncControl.failPaths.has(path)) {
+        const err = new Error(`EPERM, Permission denied: '${path}'`) as NodeJS.ErrnoException;
+        err.code = "EPERM";
+        throw err;
+      }
       const matches = path.includes("skillmanager-clone-") && (!rmSyncControl.failOnlyGitDir || /[\\/]\.git$/.test(path));
       if (rmSyncControl.failCode && matches) {
         const err = new Error(`${rmSyncControl.failCode}, Permission denied: '${path}'`) as NodeJS.ErrnoException;
@@ -37,6 +49,8 @@ const gitIn = (cwd: string, ...args: string[]) =>
 const resetControl = () => {
   rmSyncControl.failCode = null;
   rmSyncControl.failOnlyGitDir = false;
+  rmSyncControl.failPaths.clear();
+  rmSyncControl.calls = [];
 };
 
 interface FileHolder {
@@ -56,7 +70,11 @@ function holdFileOpen(file: string, ms: number): FileHolder {
     "-Command",
     `$f=[IO.File]::Open('${file}','Open','Read','Read'); Write-Output LOCKED; Start-Sleep -Milliseconds ${ms}; $f.Close()`,
   ]);
-  const exited = new Promise<number | null>((resolve) => holder.on("exit", resolve));
+  // Settles on a failed spawn too ('error' with no 'exit'), so a finally awaiting it can't hang.
+  const exited = new Promise<number | null>((resolve) => {
+    holder.on("exit", resolve);
+    holder.on("error", () => resolve(null));
+  });
   const locked = new Promise<void>((resolve, reject) => {
     holder.on("error", reject);
     void exited.then((code) => reject(new Error(`lock holder exited (${code}) before locking`)));
@@ -105,30 +123,66 @@ describe("shallowCloneRepo temp-clone cleanup", () => {
     return dirs;
   };
 
-  it("keeps at most 20 failed removals queued, dropping the oldest with a warning", () => {
+  it("keeps at most 20 failed removals queued, dropping one with a warning that names it", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    rmSyncControl.failCode = "EPERM";
     const dirs = stuckClones(21);
     const queued = git.pendingCloneRemovals();
+    const dropped = dirs.filter((d) => !queued.includes(d));
     try {
       expect(queued).toHaveLength(20);
-      expect(queued).not.toContain(dirs[0]);
+      expect(dropped).toHaveLength(1);
       expect(queued).toContain(dirs[20]);
-      expect(warn.mock.calls.map((c) => c.join(" ")).join("\n")).toMatch(new RegExp(`no longer tracking.*${dirs[0].replace(/\\/g, "\\\\")}`));
+      expect(warn.mock.calls.map((c) => c.join(" ")).join("\n")).toMatch(new RegExp(`no longer tracking.*${dropped[0].replace(/\\/g, "\\\\")}`));
     } finally {
       for (const d of dirs) rmSync(d, { recursive: true, force: true });
     }
   }, 60_000);
 
-  it("retries at most 3 queued removals per cleanup, oldest first", () => {
+  it("retries at most 3 queued removals per cleanup, from the front of the queue", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    const dirs = stuckClones(5);
-    expect(git.pendingCloneRemovals()).toEqual(dirs);
+    stuckClones(5);
+    const queued = git.pendingCloneRemovals();
+    expect(queued).toHaveLength(5);
 
     git.shallowCloneRepo(repoUrl).cleanup();
 
-    expect(dirs.map(existsSync)).toEqual([false, false, false, true, true]);
-    expect(git.pendingCloneRemovals()).toEqual(dirs.slice(3));
+    expect(queued.map(existsSync)).toEqual([false, false, false, true, true]);
+    expect(git.pendingCloneRemovals()).toEqual(queued.slice(3));
+  });
+
+  it("a queued clone that is still locked moves to the back, so a later entry gets its turn", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    stuckClones(4);
+    const [a, b, c, d] = git.pendingCloneRemovals();
+    for (const locked of [a, b, c]) rmSyncControl.failPaths.add(locked);
+    try {
+      git.shallowCloneRepo(repoUrl).cleanup();
+      git.shallowCloneRepo(repoUrl).cleanup();
+
+      expect(existsSync(d)).toBe(false);
+      expect([...git.pendingCloneRemovals()].sort()).toEqual([a, b, c].sort());
+    } finally {
+      resetControl();
+      for (const dir of [a, b, c, d]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("after the .git removal has used its retries, the whole-clone removal makes one quick attempt", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const clone = git.shallowCloneRepo(repoUrl);
+    rmSyncControl.failCode = "EPERM";
+    rmSyncControl.calls = [];
+    try {
+      expect(() => git.removeGitDir(clone)).toThrow();
+      const gitDirCalls = rmSyncControl.calls.filter((c) => c.path === join(clone.dir, ".git"));
+      const cloneCalls = rmSyncControl.calls.filter((c) => c.path === clone.dir);
+      expect(gitDirCalls.map((c) => c.options?.maxRetries)).toEqual([5]);
+      expect(cloneCalls).toHaveLength(1);
+      expect(cloneCalls[0].options?.maxRetries ?? 0).toBe(0);
+    } finally {
+      resetControl();
+      rmSync(clone.dir, { recursive: true, force: true });
+    }
   });
 
   it("removeGitDir() queues the clone when both the .git removal and the clone removal fail", () => {

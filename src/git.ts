@@ -39,8 +39,8 @@ export function remoteHeadCommit(repoUrl: string, ref?: string): string {
  *  open git's newly written pack files right after a clone, and deleting while they hold them
  *  fails (EBUSY on Node 22, EPERM on Node 24+). maxRetries makes Node retry those codes with a
  *  linear backoff (200ms, 400ms, … ~3s in total), which covers a scan of a small skill repo. */
-function removeClonePath(path: string): void {
-  rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+function removeClonePath(path: string, maxRetries = 5): void {
+  rmSync(path, { recursive: true, force: true, maxRetries, retryDelay: 200 });
 }
 
 /** Best effort: temp clones whose cleanup failed even after retries, oldest first, tried again on
@@ -56,10 +56,10 @@ const MAX_RETRIES_PER_CLEANUP = 3;
 
 /** A temp clone that can't be deleted is litter in %TEMP%, not a failed operation, so cleanup
  *  never throws: a throw from a `finally` would replace the caller's real result or error. */
-function cleanupClone(dir: string): void {
+function cleanupClone(dir: string, maxRetries?: number): void {
   retryPendingCloneRemovals(MAX_RETRIES_PER_CLEANUP);
   try {
-    removeClonePath(dir);
+    removeClonePath(dir, maxRetries);
   } catch (e) {
     console.warn(`AI Skills Manager: couldn't remove temp clone ${dir}, will retry later: ${errorMessage(e)}`);
     queueRemoval(dir);
@@ -75,16 +75,17 @@ function queueRemoval(dir: string): void {
 }
 
 /** One quick attempt (no retry backoff) at each of the `limit` oldest clones whose cleanup failed
- *  earlier (all of them by default); anything still held stays queued. */
+ *  earlier (all of them by default). One still held moves to the back of the queue, so a capped
+ *  pass rotates through every entry instead of retrying the same locked ones forever. */
 export function retryPendingCloneRemovals(limit = Infinity): void {
   let tried = 0;
   for (const dir of [...pendingRemovals]) {
     if (tried++ >= limit) break;
+    pendingRemovals.delete(dir);
     try {
       rmSync(dir, { recursive: true, force: true });
-      pendingRemovals.delete(dir);
     } catch {
-      // Still held; stays queued for the next attempt.
+      pendingRemovals.add(dir);
     }
   }
 }
@@ -95,13 +96,15 @@ export function pendingCloneRemovals(): string[] {
 }
 
 /** Removes a clone's .git folder so its contents can be copied as-is. If that still fails after
- *  retries, the whole clone is cleaned up before rethrowing, so a caller that hasn't stored the
- *  clone anywhere yet never orphans the temp dir. */
+ *  retries, the whole clone is removed, or queued for retry if that also fails, before rethrowing,
+ *  so a caller that hasn't stored the clone anywhere yet doesn't drop it untracked. The retry
+ *  budget is already spent on the same lock by then, so the whole-clone removal makes one quick
+ *  attempt rather than waiting a second time. */
 export function removeGitDir(clone: ClonedRepo): void {
   try {
     removeClonePath(join(clone.dir, ".git"));
   } catch (e) {
-    clone.cleanup();
+    cleanupClone(clone.dir, 0);
     throw e;
   }
 }
