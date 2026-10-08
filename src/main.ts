@@ -12,7 +12,7 @@ import { SkillManagerSettingTab } from "./settings";
 import { INSIGHTS_PAGES, LIBRARY_VIEW_TYPE, LibraryView } from "./views/LibraryView";
 import { performRescan, RescanResult } from "./rescan";
 import { ShadowNoteStore } from "./store";
-import { remoteHeadCommit } from "./git";
+import { remoteHeadCommit, retryPendingCloneRemovals } from "./git";
 import { fetchLatestPluginVersion, PluginVersionStatus, versionStatus } from "./pluginVersion";
 
 /** Four outlined shapes (triangle, circle, hexagon, square) in a 2x2 grid — the plugin's mark.
@@ -92,6 +92,11 @@ export default class SkillManagerPlugin extends Plugin {
     // Once at startup, then twice a day: one tiny request to GitHub's releases API.
     this.app.workspace.onLayoutReady(() => void this.checkPluginVersion());
     this.registerInterval(window.setInterval(() => void this.checkPluginVersion(), 12 * 60 * 60 * 1000));
+  }
+
+  onunload() {
+    // Last chance for temp clones whose cleanup failed while a scanner held their files.
+    retryPendingCloneRemovals();
   }
 
   pluginVersionStatus(): PluginVersionStatus {

@@ -35,6 +35,56 @@ export function remoteHeadCommit(repoUrl: string, ref?: string): string {
   return sha;
 }
 
+/** Deletes a path inside (or of) a fresh temp clone. On Windows, antivirus and the search indexer
+ *  open git's newly written pack files right after a clone, and deleting while they hold them
+ *  fails (EBUSY on Node 22, EPERM on Node 24+). maxRetries makes Node retry those codes with a
+ *  linear backoff (200ms, 400ms, … ~3s in total), which covers a scan of a small skill repo. */
+function removeClonePath(path: string): void {
+  rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+}
+
+/** Temp clones whose cleanup failed even after retries, tried again on the next cleanup and when
+ *  the plugin unloads. Kept in memory rather than swept from the temp folder on load, because a
+ *  sweep could delete a clone another vault's update-check cache is still using. */
+const pendingRemovals = new Set<string>();
+
+/** A temp clone that can't be deleted is litter in %TEMP%, not a failed operation, so cleanup
+ *  never throws: a throw from a `finally` would replace the caller's real result or error. */
+function cleanupClone(dir: string): void {
+  retryPendingCloneRemovals();
+  try {
+    removeClonePath(dir);
+  } catch (e) {
+    pendingRemovals.add(dir);
+    console.warn(`AI Skills Manager: couldn't remove temp clone ${dir}, will retry later: ${errorMessage(e)}`);
+  }
+}
+
+/** One quick attempt (no retry backoff) at each clone whose cleanup failed earlier; anything still
+ *  held stays queued. */
+export function retryPendingCloneRemovals(): void {
+  for (const dir of pendingRemovals) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      pendingRemovals.delete(dir);
+    } catch {
+      // Still held; stays queued for the next attempt.
+    }
+  }
+}
+
+/** Removes a clone's .git folder so its contents can be copied as-is. If that still fails after
+ *  retries, the whole clone is cleaned up before rethrowing, so a caller that hasn't stored the
+ *  clone anywhere yet never orphans the temp dir. */
+export function removeGitDir(clone: ClonedRepo): void {
+  try {
+    removeClonePath(join(clone.dir, ".git"));
+  } catch (e) {
+    clone.cleanup();
+    throw e;
+  }
+}
+
 export interface ClonedRepo {
   /** Absolute path to the temp clone — caller reads whatever subpath it needs from here. */
   dir: string;
@@ -56,9 +106,9 @@ export function shallowCloneRepo(repoUrl: string, ref?: string): ClonedRepo {
     args.push(repoUrl, dir);
     git(args);
     const commit = git(["rev-parse", "HEAD"], dir);
-    return { dir, commit, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+    return { dir, commit, cleanup: () => cleanupClone(dir) };
   } catch (e) {
-    rmSync(dir, { recursive: true, force: true });
+    cleanupClone(dir);
     throw e;
   }
 }
@@ -76,9 +126,9 @@ export function shallowCloneAtCommit(repoUrl: string, commitSha: string): Cloned
     git(["remote", "add", "origin", repoUrl], dir);
     git(["fetch", "--depth", "1", "origin", commitSha], dir);
     git(["checkout", "-q", "FETCH_HEAD"], dir);
-    return { dir, commit: commitSha, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+    return { dir, commit: commitSha, cleanup: () => cleanupClone(dir) };
   } catch (e) {
-    rmSync(dir, { recursive: true, force: true });
+    cleanupClone(dir);
     throw new Error(
       `Couldn't fetch the originally-installed commit from this host. Try "Check for updates" instead. (${errorMessage(e)})`
     );

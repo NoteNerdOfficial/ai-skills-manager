@@ -1,9 +1,9 @@
 import { App, Modal, Notice, Setting } from "obsidian";
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, statSync } from "fs";
 import { basename, join } from "path";
 import { ItemType, ProjectWorkspace, SkillManagerPluginSettings, TYPE_LABELS } from "../types";
 import { candidateTypesForTool, makeEntryId, parseSourceMeta, resolveToolDir, stableEntryPath } from "../scanners";
-import { shallowCloneRepo } from "../git";
+import { removeGitDir, shallowCloneRepo } from "../git";
 import { ShadowNoteStore } from "../store";
 import { errorMessage } from "../errors";
 import { RescanResult } from "../rescan";
@@ -255,7 +255,7 @@ export class InstallFromGitHubModal extends Modal {
     let clone: ReturnType<typeof shallowCloneRepo> | null = null;
     try {
       clone = shallowCloneRepo(repoUrl, ref || undefined);
-      rmSync(join(clone.dir, ".git"), { recursive: true, force: true });
+      removeGitDir(clone);
 
       const sourceRoot = subpath ? join(clone.dir, subpath) : clone.dir;
       if (!existsSync(sourceRoot)) {
