@@ -184,7 +184,7 @@ describe("toggleItemEnabled / deleteItem", () => {
       expect(existsSync(join(root, DISABLED_DIRNAME, "pdf-editing", "SKILL.md"))).toBe(true);
     });
 
-    it("gives up after a bounded number of attempts and reports the original error", () => {
+    it("gives up after a bounded number of attempts and rethrows the last error", () => {
       const skillDir = makeSkill();
       renameSyncControl.failNext = 1_000;
       renameSyncControl.calls = 0;
