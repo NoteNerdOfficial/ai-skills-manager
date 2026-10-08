@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, sep } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DISABLED_DIRNAME, DISABLED_SUFFIX, TrashFn, deleteItem, previewToggle, toggleItemEnabled, togglePluginEnabled, upgradeLegacyDisabledFile } from "./itemToggle";
 import { ItemMetadata, ToolConfig } from "./types";
@@ -166,7 +166,9 @@ describe("toggleItemEnabled / deleteItem", () => {
     mkdirSync(projectDir, { recursive: true });
     const linkPath = join(projectDir, "backend.md");
     symlinkSync("../../global-target.md", linkPath, "file");
-    expect(readlinkSync(linkPath)).toBe("../../global-target.md");
+    // Windows stores a relative symlink target with backslashes ("..\..\global-target.md"), so
+    // compare separator-independently; this only checks the fixture is a relative link.
+    expect(readlinkSync(linkPath).split(sep).join("/")).toBe("../../global-target.md");
 
     toggleItemEnabled(makeItem(linkPath));
 
