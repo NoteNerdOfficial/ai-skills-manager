@@ -52,7 +52,34 @@ function moveEntry(fromPath: string, toPath: string, isDirectory: boolean): void
     unlinkSync(fromPath);
     symlinkSync(absoluteTarget, toPath, isDirectory ? "dir" : "file");
   } else {
-    renameSync(fromPath, toPath);
+    renameWithRetry(fromPath, toPath);
+  }
+}
+
+/** Windows refuses to rename a folder while another process (antivirus, the search indexer, an
+ *  editor) holds a file inside it open, and reports one of these codes until the handle closes.
+ *  On other platforms they mean a real permission problem that waiting won't fix. */
+const RENAME_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const RENAME_RETRIES = 5;
+const RENAME_RETRY_DELAY_MS = 200;
+
+/** renameSync with the same linear backoff rmSync's maxRetries uses (200ms, 400ms, … ~3s), on
+ *  Windows only; Node has no built-in retry for rename. The wait is a short busy-loop because the
+ *  move must stay synchronous for its callers, and Atomics.wait isn't allowed on a browser main
+ *  thread. */
+function renameWithRetry(fromPath: string, toPath: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(fromPath, toPath);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "";
+      if (process.platform !== "win32" || attempt >= RENAME_RETRIES || !RENAME_RETRY_CODES.has(code)) throw e;
+      const until = Date.now() + RENAME_RETRY_DELAY_MS * (attempt + 1);
+      while (Date.now() < until) {
+        // Busy-wait; see above.
+      }
+    }
   }
 }
 
