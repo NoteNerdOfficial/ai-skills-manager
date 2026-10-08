@@ -2209,7 +2209,7 @@ function hostOf(args) {
   return "the remote";
 }
 function friendlyGitError(stderr, host) {
-  var _a, _b;
+  var _a, _b, _c;
   const fatal = (_b = (_a = /fatal: .*/.exec(stderr)) == null ? void 0 : _a[0]) == null ? void 0 : _b.trim();
   const detail = fatal ? ` (${fatal})` : "";
   if (/could not read (Username|Password)|terminal prompts disabled|Authentication failed|Invalid username or password|returned error: 40[13]|redirection:[\s\S]*\/login/i.test(
@@ -2225,6 +2225,10 @@ function friendlyGitError(stderr, host) {
   }
   if (/SSL certificate problem|unable to get local issuer certificate|self.signed certificate/i.test(stderr)) {
     return `Couldn't verify ${host}'s certificate. Your network may inspect secure traffic; ask IT for its root certificate and point git at it with "git config --global http.sslCAInfo <file>".${detail}`;
+  }
+  const missingRef = (_c = /Remote branch (\S+) not found/i.exec(stderr)) == null ? void 0 : _c[1];
+  if (missingRef) {
+    return `${host} has no branch or tag named "${missingRef}". Check the "Branch or tag" field.${detail}`;
   }
   return null;
 }
@@ -2260,6 +2264,27 @@ function remoteHeadCommit(repoUrl, ref) {
   if (!sha)
     throw new Error(`No matching ref found in ${repoUrl}`);
   return sha;
+}
+function splitTreeRef(refNames, ref, subpath) {
+  const rest = subpath.split("/").filter(Boolean);
+  if (!ref || rest.length === 0 || refNames.includes(ref))
+    return { ref, subpath };
+  for (let i = rest.length; i > 0; i--) {
+    const candidate = [ref, ...rest.slice(0, i)].join("/");
+    if (refNames.includes(candidate))
+      return { ref: candidate, subpath: rest.slice(i).join("/") };
+  }
+  return { ref, subpath };
+}
+function resolveTreeRef(repoUrl, ref, subpath) {
+  if (!ref || !subpath)
+    return { ref, subpath };
+  const output = git(["ls-remote", "--heads", "--tags", repoUrl]);
+  const refNames = output.split("\n").map((line) => {
+    var _a;
+    return (_a = line.split(/\s+/)[1]) != null ? _a : "";
+  }).map((name) => name.replace(/^refs\/(heads|tags)\//, "").replace(/\^\{\}$/, "")).filter(Boolean);
+  return splitTreeRef(refNames, ref, subpath);
 }
 function removeClonePath(path, maxRetries = 5) {
   (0, import_fs7.rmSync)(path, { recursive: true, force: true, maxRetries, retryDelay: 200 });
@@ -2519,12 +2544,13 @@ var InstallFromGitHubModal = class extends import_obsidian9.Modal {
       return;
     }
     const repoUrl = (_c = (_b = parseGitHubUrl(this.repoUrlInput)) == null ? void 0 : _b.repoUrl) != null ? _c : this.repoUrlInput.trim();
-    const ref = this.ref.trim();
-    const subpath = this.subpath.trim().replace(/^\/|\/$/g, "");
+    let ref = this.ref.trim();
+    let subpath = this.subpath.trim().replace(/^\/|\/$/g, "");
     this.installing = true;
     this.setStatus("Cloning repository\u2026");
     let clone = null;
     try {
+      ({ ref, subpath } = resolveTreeRef(repoUrl, ref, subpath));
       clone = shallowCloneRepo(repoUrl, ref || void 0);
       removeGitDir(clone);
       const sourceRoot = subpath ? (0, import_path10.join)(clone.dir, subpath) : clone.dir;
@@ -2848,11 +2874,12 @@ var AddDiscoverSourceModal = class extends import_obsidian11.Modal {
       return;
     }
     const repoUrl = (_b = (_a = parseGitHubUrl(this.repoUrlInput)) == null ? void 0 : _a.repoUrl) != null ? _b : this.repoUrlInput.trim();
-    const ref = this.ref.trim();
-    const subpath = this.subpath.trim().replace(/^\/|\/$/g, "");
+    let ref = this.ref.trim();
+    let subpath = this.subpath.trim().replace(/^\/|\/$/g, "");
     this.submitting = true;
     this.setStatus("Cloning repository\u2026");
     try {
+      ({ ref, subpath } = resolveTreeRef(repoUrl, ref, subpath));
       const { foundCount, skippedCount } = await addDiscoverSource(this.settings, repoUrl, ref, subpath, this.isInstalled);
       await this.saveSettings();
       new import_obsidian11.Notice(

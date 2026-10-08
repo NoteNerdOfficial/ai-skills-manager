@@ -140,6 +140,10 @@ export function friendlyGitError(stderr: string, host: string): string | null {
   if (/SSL certificate problem|unable to get local issuer certificate|self.signed certificate/i.test(stderr)) {
     return `Couldn't verify ${host}'s certificate. Your network may inspect secure traffic; ask IT for its root certificate and point git at it with "git config --global http.sslCAInfo <file>".${detail}`;
   }
+  const missingRef = /Remote branch (\S+) not found/i.exec(stderr)?.[1];
+  if (missingRef) {
+    return `${host} has no branch or tag named "${missingRef}". Check the "Branch or tag" field.${detail}`;
+  }
   return null;
 }
 
@@ -177,6 +181,32 @@ export function remoteHeadCommit(repoUrl: string, ref?: string): string {
   const sha = output.split(/\s+/)[0];
   if (!sha) throw new Error(`No matching ref found in ${repoUrl}`);
   return sha;
+}
+
+/** A tree URL like ".../tree/feature/login/skills" can't say where the branch name ends and the
+ *  folder begins, so the URL parser takes the first segment as the branch. Given the remote's
+ *  branch and tag names, this moves leading subpath segments into the ref until it names a real
+ *  one, preferring the longest match. A ref that already exists is kept as is. */
+export function splitTreeRef(refNames: string[], ref: string, subpath: string): { ref: string; subpath: string } {
+  const rest = subpath.split("/").filter(Boolean);
+  if (!ref || rest.length === 0 || refNames.includes(ref)) return { ref, subpath };
+  for (let i = rest.length; i > 0; i--) {
+    const candidate = [ref, ...rest.slice(0, i)].join("/");
+    if (refNames.includes(candidate)) return { ref: candidate, subpath: rest.slice(i).join("/") };
+  }
+  return { ref, subpath };
+}
+
+/** Network wrapper for splitTreeRef: only asks the remote when a slash-named branch is possible. */
+export function resolveTreeRef(repoUrl: string, ref: string, subpath: string): { ref: string; subpath: string } {
+  if (!ref || !subpath) return { ref, subpath };
+  const output = git(["ls-remote", "--heads", "--tags", repoUrl]);
+  const refNames = output
+    .split("\n")
+    .map((line) => line.split(/\s+/)[1] ?? "")
+    .map((name) => name.replace(/^refs\/(heads|tags)\//, "").replace(/\^\{\}$/, ""))
+    .filter(Boolean);
+  return splitTreeRef(refNames, ref, subpath);
 }
 
 /** Deletes a path inside (or of) a fresh temp clone. On Windows, antivirus and the search indexer

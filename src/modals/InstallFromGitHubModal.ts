@@ -3,7 +3,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, statSync } f
 import { basename, join } from "path";
 import { ItemType, ProjectWorkspace, SkillManagerPluginSettings, TYPE_LABELS } from "../types";
 import { candidateTypesForTool, makeEntryId, parseSourceMeta, resolveToolDir, stableEntryPath } from "../scanners";
-import { removeGitDir, shallowCloneRepo } from "../git";
+import { removeGitDir, resolveTreeRef, shallowCloneRepo } from "../git";
 import { ShadowNoteStore } from "../store";
 import { errorMessage } from "../errors";
 import { RescanResult } from "../rescan";
@@ -256,13 +256,14 @@ export class InstallFromGitHubModal extends Modal {
     }
 
     const repoUrl = parseGitHubUrl(this.repoUrlInput)?.repoUrl ?? this.repoUrlInput.trim();
-    const ref = this.ref.trim();
-    const subpath = this.subpath.trim().replace(/^\/|\/$/g, "");
+    let ref = this.ref.trim();
+    let subpath = this.subpath.trim().replace(/^\/|\/$/g, "");
 
     this.installing = true;
     this.setStatus("Cloning repository…");
     let clone: ReturnType<typeof shallowCloneRepo> | null = null;
     try {
+      ({ ref, subpath } = resolveTreeRef(repoUrl, ref, subpath));
       clone = shallowCloneRepo(repoUrl, ref || undefined);
       removeGitDir(clone);
 

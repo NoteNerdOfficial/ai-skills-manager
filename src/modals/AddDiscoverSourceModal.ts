@@ -3,6 +3,7 @@ import { SkillManagerPluginSettings } from "../types";
 import { addDiscoverSource } from "../discover";
 import { errorMessage } from "../errors";
 import { parseGitHubUrl } from "./InstallFromGitHubModal";
+import { resolveTreeRef } from "../git";
 
 /** Clones a repo, finds every skill/agent/command/rule under the given subpath (or the whole
  *  repo), and adds them to the Discover catalog — a browsable candidate list, not an install.
@@ -108,12 +109,13 @@ export class AddDiscoverSourceModal extends Modal {
     }
 
     const repoUrl = parseGitHubUrl(this.repoUrlInput)?.repoUrl ?? this.repoUrlInput.trim();
-    const ref = this.ref.trim();
-    const subpath = this.subpath.trim().replace(/^\/|\/$/g, "");
+    let ref = this.ref.trim();
+    let subpath = this.subpath.trim().replace(/^\/|\/$/g, "");
 
     this.submitting = true;
     this.setStatus("Cloning repository…");
     try {
+      ({ ref, subpath } = resolveTreeRef(repoUrl, ref, subpath));
       const { foundCount, skippedCount } = await addDiscoverSource(this.settings, repoUrl, ref, subpath, this.isInstalled);
       await this.saveSettings();
 

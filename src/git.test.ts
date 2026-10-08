@@ -317,8 +317,38 @@ describe("friendlyGitError", () => {
     expect(git.friendlyGitError(stderr, "git.example.com")).toMatch(/needs you to sign in/);
   });
 
+  it("explains a missing branch", () => {
+    expect(git.friendlyGitError("fatal: Remote branch feature not found in upstream origin", "git.example.com")).toMatch(
+      /no branch or tag named "feature"/
+    );
+  });
+
   it("leaves unrecognised errors alone", () => {
     expect(git.friendlyGitError("fatal: something else", "github.com")).toBeNull();
+  });
+});
+
+describe("splitTreeRef", () => {
+  const refs = ["main", "feature/login", "feature/login/v2", "v1.0"];
+
+  it("moves subpath segments into a slash-named branch", () => {
+    expect(git.splitTreeRef(refs, "feature", "login/skills/foo")).toEqual({ ref: "feature/login", subpath: "skills/foo" });
+  });
+
+  it("prefers the longest matching ref", () => {
+    expect(git.splitTreeRef(refs, "feature", "login/v2/skills")).toEqual({ ref: "feature/login/v2", subpath: "skills" });
+  });
+
+  it("can consume the whole subpath", () => {
+    expect(git.splitTreeRef(refs, "feature", "login")).toEqual({ ref: "feature/login", subpath: "" });
+  });
+
+  it("keeps a ref that already exists", () => {
+    expect(git.splitTreeRef(refs, "main", "skills")).toEqual({ ref: "main", subpath: "skills" });
+  });
+
+  it("leaves things alone when nothing matches", () => {
+    expect(git.splitTreeRef(refs, "nope", "a/b")).toEqual({ ref: "nope", subpath: "a/b" });
   });
 });
 
