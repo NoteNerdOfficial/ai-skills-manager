@@ -1,7 +1,7 @@
 import { App, FileSystemAdapter } from "obsidian";
 import { dirname } from "path";
 import { BrokenSymlink, ItemMetadata, McpServerEntry, ModEntry, PluginSource, ProjectWorkspace, SkillManagerPluginSettings } from "./types";
-import { scanAllPlugins, scanAllProjects, scanMods, scanAllTools, scanBrokenSymlinks, stableEntryPath } from "./scanners";
+import { addRepoLinkTargets, scanAllPlugins, scanAllProjects, scanMods, scanAllTools, scanBrokenSymlinks, stableEntryPath } from "./scanners";
 import { scanMcpServers } from "./mcpScanners";
 import { scanAllMemories } from "./memories";
 import { ShadowNoteStore } from "./store";
@@ -64,6 +64,7 @@ export async function performRescan(
     ...scanAllMemories(settings.tools, projects),
     ...pluginScan.items,
   ];
+  discovered.push(...addRepoLinkTargets(discovered, projects));
   const brokenSymlinks = scanBrokenSymlinks(settings.tools, projects);
   // Flat files disabled before DISABLED_SUFFIX existed are still loaded by their tool; rename
   // them in place. entryId ignores the suffix, so the item's note is unaffected.

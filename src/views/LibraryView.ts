@@ -1,6 +1,6 @@
 import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, parseYaml, setIcon, setTooltip } from "obsidian";
 import { execFile, execFileSync } from "child_process";
-import { cpSync, existsSync, lstatSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { cpSync, existsSync, lstatSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, extname, join, relative, sep } from "path";
 import { homedir } from "os";
 import { COMMUNITY_PLUGIN_URL, PluginVersionStatus } from "../pluginVersion";
@@ -16,6 +16,7 @@ import {
   ItemType,
   McpServerEntry,
   ModEntry,
+  ModSource,
   MORE_HORIZONTAL_ICON_ID,
   MORE_ICON_ID,
   PLUGIN_ICON_ID,
@@ -30,10 +31,11 @@ import {
   TYPE_CATEGORY_LABELS,
   TYPE_LABELS,
 } from "../types";
-import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, isModFolder, expandHome, toProjectRelative } from "../scanners";
-import { addToProject, removeFromProject } from "../projectLink";
-import { FINISHED_MODS_DIR, deleteItem, installModFolder, disabledLocation, previewToggle, promoteDevMod, setPluginDirListed, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
+import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, isModFolder, expandHome, readModModules, resolveToolDir, toProjectRelative } from "../scanners";
+import { addModToProject, addToProject, canLinkModToProjects, modProjectLink, modSourceProject, removeFromProject, removeModFromProject } from "../projectLink";
+import { FINISHED_MODS_DIR, deleteItem, tildify, installModFolder, disabledLocation, previewToggle, promoteDevMod, setPluginDirListed, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
+import { samePathKey, unregisteredRepoFor } from "../sourceRepo";
 import { HISTORY_KEPT, HistoryEntry, ItemHistory } from "../history";
 import { createSwitch, makeActivatable } from "../a11y";
 import { MEMORY_INDEX_FILENAME, checkMemoryIndexed, forgetMemoryIndexEntry, isMemoryIndex, isMemoryItem, toggleMemoryEnabled } from "../memories";
@@ -43,7 +45,7 @@ import { CollectionEditModal } from "../modals/CollectionEditModal";
 import { AddToCollectionModal } from "../modals/AddToCollectionModal";
 import { PluginItemInfoModal } from "../modals/PluginItemInfoModal";
 import { InfoModal } from "../modals/InfoModal";
-import { ProjectPresenceModal } from "../modals/ProjectPresenceModal";
+import { ProjectPresenceModal, ProjectPresenceOptions } from "../modals/ProjectPresenceModal";
 import { ProjectEditModal } from "../modals/ProjectEditModal";
 import { InstallFromGitHubModal } from "../modals/InstallFromGitHubModal";
 import { AddDiscoverSourceModal } from "../modals/AddDiscoverSourceModal";
@@ -124,9 +126,9 @@ type ReviewState =
 /** What a mod's detail rail shows in place of its file tree: an update review (same diff as an
  *  item's) or its saved versions. Mods have their own state since their rail isn't an item's. */
 type ModRailState =
-  | { kind: "review-loading"; modId: string }
-  | { kind: "review-error"; modId: string; message: string }
-  | { kind: "review"; modId: string; files: TabsDiffFile[]; newRoot: string; newCommit: string; clone: ClonedRepo }
+  | { kind: "review-loading"; modId: string; mode: UpdateMode }
+  | { kind: "review-error"; modId: string; mode: UpdateMode; message: string }
+  | { kind: "review"; modId: string; mode: UpdateMode; files: TabsDiffFile[]; newRoot: string; newCommit: string; clone: ClonedRepo }
   | { kind: "history"; modId: string; selectedId: string | null };
 
 export const SORT_OPTIONS: { key: SortOrder; label: string }[] = [
@@ -289,9 +291,25 @@ const SOURCE_FILTER_LABELS: Record<"github" | "updates" | "builtin" | "local", s
   local: "Local",
 };
 
+/** The Filter menu's Link section: an item that is a symlink (and, nested, one whose repo isn't a
+ *  workspace yet), or one kept where it's listed. Mods use the same keys on their own page. */
+const LINK_FILTER_LABELS: Record<"symlink" | "unregistered" | "source", string> = {
+  symlink: "Symlinks",
+  unregistered: "From a repo not in your workspaces",
+  source: "Kept here (not a link)",
+};
+
+const MOD_ORIGIN_LABELS: Record<ModEntry["origin"], string> = {
+  installed: "Installed plugin",
+  "plugin-dir": "Plugin folder (env)",
+  skill: "Skills folder",
+  repo: "Source repo only",
+  dev: "In development",
+};
+
 type RuleKind = "instructions" | "granular" | "memory";
 /** A Filter-menu section (see renderFilterButton). */
-type FilterDimension = "type" | "kind" | "tool" | "scope" | "source";
+type FilterDimension = "type" | "kind" | "tool" | "scope" | "source" | "link";
 const RULE_KIND_LABELS: Record<RuleKind, string> = {
   instructions: "Instructions files",
   granular: "Individual rules",
@@ -318,6 +336,20 @@ export class LibraryView extends ItemView {
    *  you're already in, rather than being a scope of its own. Lives in the tagbar row (see
    *  renderSourceButton), not the sidebar. */
   private sourceFilter: keyof typeof SOURCE_FILTER_LABELS | null = null;
+  private linkFilter: keyof typeof LINK_FILTER_LABELS | null = null;
+  /** The Mods page's own Filter and Sort (see renderModsFilterButton), reset with the scope. */
+  private modsFilter: {
+    status: "on" | "off" | null;
+    origin: ModEntry["origin"] | null;
+    source: "github" | "local" | null;
+    link: "symlink" | "source" | null;
+  } = { status: null, origin: null, source: null, link: null };
+  private modsSort: "name-asc" | "name-desc" = "name-asc";
+  /** Search and tag filter for the MCP and Mods pages, reset with the scope like their filters. */
+  private mcpSearch = "";
+  private mcpTagFilter: string | null = null;
+  private modsSearch = "";
+  private modsTagFilter: string | null = null;
   /** Same compounding, sticks-around-across-navigation shape as sourceFilter, but scoped to
    *  ItemType "rule": "instructions" narrows to a tool's single loaded-every-session file (e.g.
    *  Claude Code's CLAUDE.md, ToolConfig.singleFileRule), "granular" to a directory of many
@@ -452,6 +484,7 @@ export class LibraryView extends ItemView {
    *  the plugin it ships in, from its owning tool. */
   private modsMode = false;
   /** The mod open in the docked rail (file tree, then a file via selectedFilePath). */
+  private unregisteredRepoCache = new Map<string, string | null>();
   private selectedMod: ModEntry | null = null;
   private modFileLoadedFor: string | null = null;
   private modFileContent = "";
@@ -605,6 +638,7 @@ export class LibraryView extends ItemView {
     this.discoveredPlugins = result.plugins;
     this.mcpServers = result.mcpServers;
     this.mods = result.mods;
+    this.unregisteredRepoCache.clear();
     this.brokenSymlinks = result.brokenSymlinks;
     const brokenKeys = new Set(this.brokenSymlinks.map((link) => link.path));
     const newBroken = this.brokenSymlinks.filter((link) => !this.knownBrokenSymlinkKeys.has(link.path));
@@ -807,6 +841,10 @@ export class LibraryView extends ItemView {
    *  files sit in its configured directories, so anything less than a real move has no effect
    *  on it. This changes the item's path, so a rescan (not an optimistic patch) follows. */
   private async toggleEnabled(item: ItemMetadata) {
+    if (this.isRepoRootItem(item)) {
+      new Notice(`"${item.name}" sits in a source repo, which no tool loads from. Turn off or unlink the copies that link to it instead.`);
+      return;
+    }
     try {
       if (this.isMemory(item)) toggleMemoryEnabled(item);
       else toggleItemEnabled(item);
@@ -893,8 +931,11 @@ export class LibraryView extends ItemView {
    *  click behavior wherever it appears, whether that's a global card or a project-scoped one
    *  resolved back to its global source. Always opens the picker; nothing here unlinks directly. */
   private renderProjectLinkButton(container: HTMLElement, globalItem: ItemMetadata) {
-    const linkedSomewhere = this.items.some(
-      (i) => i.projectId && i.projectId !== globalItem.projectId && i.realPath === globalItem.realPath
+    const linkedSomewhere = this.isSymlinkedItem(globalItem) || this.items.some(
+      (i) =>
+        samePathKey(i.realPath) === samePathKey(globalItem.realPath) &&
+        // Another project, or the global folder for an item kept in a project.
+        (i.projectId ? i.projectId !== globalItem.projectId : globalItem.projectId !== null)
     );
     const btn = container.createEl("button", {
       cls: `skillmanager-icon-btn${linkedSomewhere ? " is-present" : ""}`,
@@ -912,8 +953,38 @@ export class LibraryView extends ItemView {
     if (!tool) return;
 
     const presentIds = new Set(
-      this.items.filter((i) => i.projectId && i.realPath === item.realPath).map((i) => i.projectId as string)
+      this.items.filter((i) => i.projectId && samePathKey(i.realPath) === samePathKey(item.realPath)).map((i) => i.projectId as string)
     );
+    // Where the item really sits. One kept in a project (a repo that houses skills, say) can also
+    // be linked into the global folder, so every session sees it; links are made from it, never
+    // through another link.
+    const keptIn = this.items.find((i) => samePathKey(i.realPath) === samePathKey(item.realPath) && !this.isSymlinkedItem(i)) ?? null;
+    const source = keptIn ?? item;
+    const globalLink = () =>
+      this.items.find((i) => i.projectId === null && this.isSymlinkedItem(i) && samePathKey(i.realPath) === samePathKey(item.realPath));
+    // Kept in the global folder itself: Global is where it lives, not a link to offer. Kept
+    // somewhere no workspace covers (another tool's store, say): name the folder, and offer
+    // Global so its link there can be removed and made again, from the real folder.
+    const keptInGlobal = keptIn?.projectId === null;
+    const unscannedSource = !keptIn && !!globalLink();
+    const realUnit = { ...item, sourcePath: item.realPath };
+    const userScope: ProjectPresenceOptions["userScope"] =
+      keptIn?.projectId || unscannedSource
+        ? {
+            present: !!globalLink(),
+            onAdd: async () => {
+              addToProject(keptIn ?? realUnit, tool, null);
+              await this.rescan();
+            },
+            onRemove: async () => {
+              const link = globalLink();
+              if (link) {
+                removeFromProject(link.sourcePath);
+                await this.rescan();
+              }
+            },
+          }
+        : undefined;
 
     new ProjectPresenceModal(
       this.app,
@@ -921,15 +992,26 @@ export class LibraryView extends ItemView {
       this.getAllProjects(),
       presentIds,
       async (project) => {
-        addToProject(item, tool, project);
+        addToProject(source, tool, project);
         await this.rescan();
       },
       async (project) => {
-        const projectItem = this.items.find((i) => i.projectId === project.id && i.realPath === item.realPath);
+        const projectItem = this.items.find((i) => i.projectId === project.id && samePathKey(i.realPath) === samePathKey(item.realPath));
         if (projectItem) {
           removeFromProject(projectItem.sourcePath);
           await this.rescan();
         }
+      },
+      {
+        keptIn: keptInGlobal
+          ? { kind: "global" }
+          : keptIn?.projectId
+            ? { kind: "project", id: keptIn.projectId }
+            : unscannedSource
+              ? { kind: "folder", path: linkableUnit(item.realPath).isDirectory ? dirname(dirname(item.realPath)) : dirname(item.realPath) }
+              : undefined,
+        userScope,
+        note: unscannedSource ? `Unchecking Global removes the only link the library finds "${item.name}" through, so it drops off this list until you link it again.` : undefined,
       }
     ).open();
   }
@@ -964,8 +1046,10 @@ export class LibraryView extends ItemView {
    *  "install" card for something already sitting in the real library. */
   private isDiscoverEntryInstalled(repoUrl: string, subpath: string): boolean {
     if (this.items.some((item) => item.sourceRepo === repoUrl && item.sourceSubpath === subpath)) return true;
-    const sources = this.getSettings().modSources;
-    return this.mods.some((mod) => sources[mod.path]?.repoUrl === repoUrl && sources[mod.path]?.subpath === subpath);
+    return this.mods.some((mod) => {
+      const source = this.modSourceFor(mod);
+      return source?.repoUrl === repoUrl && source.subpath === subpath;
+    });
   }
 
   /** Discover's true empty state (no sources added at all yet, not just "no search matches") —
@@ -1050,6 +1134,11 @@ export class LibraryView extends ItemView {
     this.modsMode = false;
     this.selectedMod = null;
     this.mcpToolFilter = null;
+    this.modsFilter = { status: null, origin: null, source: null, link: null };
+    this.mcpSearch = "";
+    this.mcpTagFilter = null;
+    this.modsSearch = "";
+    this.modsTagFilter = null;
     this.selectedMcpServer = null;
     this.revealedMcpEnvKeys = new Set();
     this.cleanupReview();
@@ -1084,6 +1173,7 @@ export class LibraryView extends ItemView {
     if (this.tagFilter) labels.push(`Tag: ${this.tagFilter}`);
     if (this.untaggedOnly) labels.push("Untagged");
     if (this.sourceFilter) labels.push(SOURCE_FILTER_LABELS[this.sourceFilter]);
+    if (this.linkFilter) labels.push(LINK_FILTER_LABELS[this.linkFilter]);
     if (this.ruleKindFilter) labels.push(RULE_KIND_LABELS[this.ruleKindFilter]);
     if (this.pageToolFilter) {
       labels.push(this.getSettings().tools.find((t) => t.id === this.pageToolFilter)?.name ?? "One tool");
@@ -1098,6 +1188,7 @@ export class LibraryView extends ItemView {
     this.tagFilter = null;
     this.untaggedOnly = false;
     this.sourceFilter = null;
+    this.linkFilter = null;
     this.ruleKindFilter = null;
     this.pageToolFilter = null;
     this.pageTypeFilter = null;
@@ -1137,6 +1228,7 @@ export class LibraryView extends ItemView {
       if (this.sourceFilter === "builtin" && !this.isBuiltIn(item)) return false;
       if (this.sourceFilter === "local" && (item.sourceRepo || this.isBuiltIn(item))) return false;
     }
+    if (ignore !== "link" && this.linkFilter && !this.matchesLinkFilter(this.linkFilter, this.isSymlinkedItem(item), item.realPath)) return false;
     if (this.untaggedOnly && item.tags.length > 0) return false;
     if (this.tagFilter && !item.tags.includes(this.tagFilter)) return false;
     if (query) {
@@ -1272,6 +1364,9 @@ export class LibraryView extends ItemView {
         : `Everything found in ${tool?.name ?? "this tool"}'s configured directories.`;
     }
     if (this.projectFilter) {
+      if (this.getAllProjects().find((p) => p.id === this.projectFilter)?.sourceRepoToolId) {
+        return "A source repo: the skills and mods it holds. Tools load them through their links, set from each card's link icon.";
+      }
       return this.projectFilter === VAULT_PROJECT_ID
         ? "Skills scoped to this vault's own project-local folders, symlinked in from your shared library."
         : "Skills scoped to this project's local folders, symlinked in from your shared library.";
@@ -1329,7 +1424,7 @@ export class LibraryView extends ItemView {
     });
     const addBtn = body.createEl("button", { cls: "mod-cta skillmanager-workspace-banner-add", text: "+ Add workspace" });
     addBtn.addEventListener("click", () => {
-      new ProjectEditModal(this.app, null, (project) => this.upsertProject(project)).open();
+      new ProjectEditModal(this.app, null, (project) => this.upsertProject(project), this.getSettings().tools).open();
     });
     const closeBtn = banner.createEl("button", {
       cls: "skillmanager-icon-btn skillmanager-workspace-banner-close",
@@ -1371,7 +1466,7 @@ export class LibraryView extends ItemView {
     menu.addSeparator();
     menu.addItem((menuItem) =>
       menuItem.setTitle("Add workspace…").setIcon("plus").onClick(() => {
-        new ProjectEditModal(this.app, null, (project) => this.upsertProject(project)).open();
+        new ProjectEditModal(this.app, null, (project) => this.upsertProject(project), this.getSettings().tools).open();
       })
     );
     menu.showAtMouseEvent(evt);
@@ -1379,10 +1474,14 @@ export class LibraryView extends ItemView {
 
   private render() {
     const container = this.containerEl.children[1] as HTMLElement;
+    // The sidebar is rebuilt on every render; keep its scroll so a click low in it doesn't jump to the top.
+    const sidebarScrollTop = container.querySelector<HTMLElement>(".skillmanager-sidebar")?.scrollTop ?? 0;
     container.empty();
     container.addClass("skillmanager-view");
 
-    this.renderSidebar(container.createDiv({ cls: "skillmanager-sidebar" }));
+    const sidebar = container.createDiv({ cls: "skillmanager-sidebar" });
+    this.renderSidebar(sidebar);
+    sidebar.scrollTop = sidebarScrollTop;
     this.renderContent(container.createDiv({ cls: "skillmanager-content" }));
   }
 
@@ -1630,7 +1729,8 @@ export class LibraryView extends ItemView {
         "puzzle",
         "Mods",
         this.mods.length,
-        this.modsMode,
+        // A workspace's own mods view (see renderProjectsSection) highlights that workspace instead.
+        this.modsMode && !this.projectFilter,
         () => {
           this.clearScopeFilters();
           this.modsMode = true;
@@ -1698,7 +1798,7 @@ export class LibraryView extends ItemView {
         setIcon(addBtn, "plus");
         addBtn.addEventListener("click", (evt) => {
           evt.stopPropagation();
-          new ProjectEditModal(this.app, null, (project) => this.upsertProject(project)).open();
+          new ProjectEditModal(this.app, null, (project) => this.upsertProject(project), this.getSettings().tools).open();
         });
       },
       // Persistent signal (visible whether this section is expanded or collapsed, unlike the
@@ -1709,11 +1809,13 @@ export class LibraryView extends ItemView {
     );
     if (!expanded) return;
 
-    const showEmpty = this.getSettings().showEmptySidebarRows;
+    // Every workspace always shows, even at 0: unlike discovered tools/plugins, each one was added
+    // on purpose, and its row is where it's edited or removed.
     const projects = this.getAllProjects();
     for (const project of projects) {
-      const count = this.libraryItems().filter((i) => i.projectId === project.id).length;
-      if (!showEmpty && count === 0 && project.id !== VAULT_PROJECT_ID) continue;
+      const itemCount = this.libraryItems().filter((i) => i.projectId === project.id).length;
+      const modCount = this.modsKeptIn(project).length;
+      const count = itemCount + modCount;
 
       const row = sidebar.createDiv({ cls: "skillmanager-nav-item" });
       if (this.projectFilter === project.id) row.addClass("is-active");
@@ -1721,6 +1823,10 @@ export class LibraryView extends ItemView {
       setIcon(iconEl, projectIcon(project.id));
       row.createSpan({ text: project.name, cls: "skillmanager-nav-label" });
       row.createSpan({ text: String(count), cls: "skillmanager-nav-count" });
+      if (modCount > 0) {
+        const parts = [itemCount > 0 ? `${itemCount} item${itemCount === 1 ? "" : "s"}` : null, `${modCount} mod${modCount === 1 ? "" : "s"}`];
+        setTooltip(row, parts.filter(Boolean).join(" · "), { placement: "right" });
+      }
 
       if (project.id !== VAULT_PROJECT_ID) {
         const actions = row.createDiv({ cls: "skillmanager-nav-actions" });
@@ -1733,7 +1839,7 @@ export class LibraryView extends ItemView {
             menuItem
               .setTitle("Edit")
               .setIcon("pencil")
-              .onClick(() => new ProjectEditModal(this.app, project, (updated) => this.upsertProject(updated)).open())
+              .onClick(() => new ProjectEditModal(this.app, project, (updated) => this.upsertProject(updated), this.getSettings().tools).open())
           );
           menu.addItem((menuItem) =>
             menuItem
@@ -1749,7 +1855,7 @@ export class LibraryView extends ItemView {
       makeActivatable(row);
       row.addEventListener("click", () => {
         this.clearScopeFilters();
-        this.projectFilter = this.projectFilter === project.id ? null : project.id;
+        this.projectFilter = project.id;
         this.render();
       });
     }
@@ -2189,12 +2295,13 @@ export class LibraryView extends ItemView {
     }
 
     const items = this.filteredItems();
+    const countText = () => String(this.filteredItems().length + this.workspaceMods().length);
 
     const header = content.createDiv({ cls: "skillmanager-content-header" });
     if (this.pluginFilter) this.renderPluginLibraryBreadcrumb(header);
     const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
     titleRow.createEl("h2", { text: this.scopeTitle(), cls: "skillmanager-title" });
-    titleRow.createSpan({ text: String(items.length), cls: "skillmanager-count-pill" });
+    titleRow.createSpan({ text: countText(), cls: "skillmanager-count-pill" });
     if (!this.isScoped() && !this.showWorkspaceBanner()) this.renderWorkspaceChip(titleRow);
     header.createDiv({ text: this.scopeDescription(), cls: "skillmanager-subtitle" });
     if (!this.isScoped() && this.showWorkspaceBanner()) this.renderWorkspaceBanner(header);
@@ -2284,8 +2391,14 @@ export class LibraryView extends ItemView {
       cls: `skillmanager-items${isList ? " is-list" : ""}${this.selectedItem ? " is-docked" : ""}`,
     });
     const itemsEl = grid;
-    const renderList = (el: HTMLElement, list: ItemMetadata[]) =>
-      isList ? this.renderItemList(el, list) : this.renderItems(el, list);
+    const renderList = (el: HTMLElement, list: ItemMetadata[]) => {
+      const mods = this.workspaceMods();
+      // A workspace holding only mods isn't empty: skip the empty state and just list them.
+      if (list.length === 0 && mods.length > 0) el.empty();
+      else if (isList) this.renderItemList(el, list);
+      else this.renderItems(el, list);
+      this.renderWorkspaceModsSection(el, mods);
+    };
     renderList(grid, items);
     if (this.selectedItem) {
       if (this.wasDocked) {
@@ -2330,7 +2443,7 @@ export class LibraryView extends ItemView {
     searchInput.addEventListener("input", () => {
       this.search = searchInput.value;
       updateClearBtn();
-      header.querySelector(".skillmanager-count-pill")?.setText(String(this.filteredItems().length));
+      header.querySelector(".skillmanager-count-pill")?.setText(countText());
       if (itemsEl) renderList(itemsEl, this.filteredItems());
     });
 
@@ -2338,7 +2451,7 @@ export class LibraryView extends ItemView {
       searchInput.value = "";
       this.search = "";
       updateClearBtn();
-      header.querySelector(".skillmanager-count-pill")?.setText(String(this.filteredItems().length));
+      header.querySelector(".skillmanager-count-pill")?.setText(countText());
       if (itemsEl) renderList(itemsEl, this.filteredItems());
       searchInput.focus();
     });
@@ -3017,33 +3130,22 @@ export class LibraryView extends ItemView {
     crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
     crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: entry.name });
 
-    const header = panel.createDiv({ cls: "skillmanager-detail-header" });
+    // Same head as an item's, mod's or MCP server's preview: title and pills, a note, then the
+    // properties panel. Install and Open on GitHub sit in its Source footer, where an installed
+    // item keeps Check for updates and Restore installed.
+    const section = panel.createDiv({ cls: "skillmanager-detail-head" });
+    const header = section.createDiv({ cls: "skillmanager-detail-header" });
     header.createEl("h3", { text: entry.name, cls: "skillmanager-detail-title" });
-    header.createSpan({ text: DISCOVER_TYPE_LABEL_SINGULAR[entry.type], cls: "skillmanager-card-type" });
+    header.createSpan({ text: DISCOVER_TYPE_LABEL_SINGULAR[entry.type], cls: "skillmanager-detail-type-pill" });
     header.createSpan({ text: "Not installed", cls: "skillmanager-detail-tool-pill skillmanager-discover-pill" });
-    const actions = header.createDiv({ cls: "skillmanager-detail-actions" });
-    const linkBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Open on GitHub" } });
-    setIcon(linkBtn, "external-link");
-    linkBtn.addEventListener("click", () => window.open(this.discoverEntryUrl(entry), "_blank"));
-    const installBtn = actions.createEl("button", { cls: "mod-cta skillmanager-discover-rail-install-btn", text: "+ Install" });
-    installBtn.addEventListener("click", () => this.installDiscoverEntry(entry));
 
-    this.renderDiscoverRepoLine(panel, entry);
     if (entry.type === "mod") {
-      panel.createDiv({
+      section.createDiv({
         cls: "skillmanager-subtitle",
         text: "A mod runs its code in every new Claude Code session. Read its hooks module below before installing.",
       });
     }
-    if (entry.subpath) {
-      panel.createDiv({ cls: "skillmanager-detail-path", text: entry.subpath });
-    }
-    if (entry.tags.length > 0) {
-      const tags = panel.createDiv({ cls: "skillmanager-card-tags skillmanager-discover-rail-tags" });
-      for (const tag of entry.tags) {
-        tags.createSpan({ text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
-      }
-    }
+    this.renderDiscoverProperties(section, entry);
 
     const body = panel.createDiv({ cls: "skillmanager-detail-body" });
     const readingView = body.createDiv({
@@ -3051,6 +3153,53 @@ export class LibraryView extends ItemView {
     });
     const sizer = readingView.createDiv({ cls: "markdown-preview-sizer markdown-preview-section" });
     void MarkdownRenderer.render(this.app, stripFrontmatter(entry.manifestText), sizer, entry.name, this.markdownComponent);
+  }
+
+  /** The properties panel (same grid as renderDetailProperties) for something not installed yet:
+   *  only what the repo itself says (tags, where it sits, which branch and commit was read), with
+   *  the repo, its stars, Install and Open on GitHub as the Source footer. No Managed by or Loads,
+   *  since nothing is installed. */
+  private renderDiscoverProperties(container: HTMLElement, entry: DiscoverEntry) {
+    const panel = container.createDiv({ cls: "skillmanager-detail-props-panel" });
+    const props = panel.createDiv({ cls: "skillmanager-detail-props" });
+    const prop = (label: string, fill: (value: HTMLElement) => void, tooltip?: string, valueCls = "") => {
+      const key = props.createDiv({ cls: "skillmanager-detail-prop-key" });
+      key.createSpan({ text: label });
+      if (tooltip) {
+        setIcon(key.createSpan({ cls: "skillmanager-detail-info" }), "info");
+        setTooltip(key, tooltip, { placement: "top" });
+      }
+      fill(props.createDiv({ cls: `skillmanager-detail-prop-value${valueCls ? ` ${valueCls}` : ""}` }));
+    };
+    const text = (value: string) => (el: HTMLElement) => el.setText(value);
+
+    if (entry.tags.length > 0) {
+      prop("Tags", (el) => {
+        const row = el.createDiv({ cls: "skillmanager-card-tags" });
+        for (const tag of entry.tags) row.createSpan({ text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
+      }, "From the repo. You can add your own once it's installed.");
+    }
+    if (entry.subpath) prop("Path", text(entry.subpath), undefined, "is-mono");
+    prop("Branch", text(entry.ref || "Default branch"), entry.ref ? undefined : "Follows whichever branch the repo marks as its default.");
+    if (entry.commit) prop("Commit", text(entry.commit.slice(0, 7)), "The commit this preview was read at. Refresh the source to read it again.", "is-mono");
+
+    const footer = panel.createDiv({ cls: "skillmanager-detail-props-source" });
+    const left = footer.createDiv({ cls: "skillmanager-detail-props-source-repo" });
+    left.createSpan({ text: "Source", cls: "skillmanager-detail-prop-key" });
+    this.renderRepoLink(left, { repoUrl: entry.repoUrl, ref: entry.ref, subpath: entry.subpath, commit: entry.commit });
+    if (entry.starCount !== null) {
+      const stars = left.createDiv({ cls: "skillmanager-card-discover-stars", attr: { "aria-label": `${entry.starCount} stars` } });
+      setIcon(stars.createSpan(), "star");
+      stars.createSpan({ text: String(entry.starCount) });
+    }
+    // First button gets the accent (see .skillmanager-detail-source-btn:first-child).
+    const sourceActions = footer.createDiv({ cls: "skillmanager-detail-source-actions" });
+    const installBtn = sourceActions.createEl("button", { cls: "skillmanager-detail-source-btn" });
+    this.setSourceBtnContent(installBtn, "plus", "Install");
+    installBtn.addEventListener("click", () => this.installDiscoverEntry(entry));
+    const openBtn = sourceActions.createEl("button", { cls: "skillmanager-detail-source-btn" });
+    this.setSourceBtnContent(openBtn, "external-link", "Open on GitHub");
+    openBtn.addEventListener("click", () => window.open(this.discoverEntryUrl(entry), "_blank"));
   }
 
   // ---------- Installed plugin bundles ----------
@@ -3133,23 +3282,7 @@ export class LibraryView extends ItemView {
     this.renderPluginBundleSortButton(toolbar);
 
     const allTags = Array.from(new Set(this.discoveredPlugins.flatMap((plugin) => this.pluginBundleTags(plugin)))).sort((a, b) => a.localeCompare(b));
-    if (allTags.length > 0) {
-      const tagbar = content.createDiv({ cls: "skillmanager-tagbar" });
-      const allChip = tagbar.createEl("button", { text: "All tags", cls: "skillmanager-chip" });
-      if (!this.pluginBundleTagFilter) allChip.addClass("is-active");
-      allChip.addEventListener("click", () => {
-        this.pluginBundleTagFilter = null;
-        this.render();
-      });
-      for (const tag of allTags) {
-        const chip = tagbar.createEl("button", { text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
-        if (this.pluginBundleTagFilter === tag) chip.addClass("is-active");
-        chip.addEventListener("click", () => {
-          this.pluginBundleTagFilter = this.pluginBundleTagFilter === tag ? null : tag;
-          this.render();
-        });
-      }
-    }
+    this.renderTagFilterBar(content, allTags, this.pluginBundleTagFilter, (tag) => (this.pluginBundleTagFilter = tag));
 
     const grid = content.createDiv({ cls: "skillmanager-items" });
     if (bundles.length === 0) {
@@ -3297,30 +3430,263 @@ export class LibraryView extends ItemView {
     crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: plugin.name });
   }
 
+  // ---------- Extension pages: search and tags ----------
+
+  /** A row of tag chips that filters a listing page: "All tags", then each tag, clicking the
+   *  active one clears it. Nothing when there are no tags yet. */
+  private renderTagFilterBar(container: HTMLElement, allTags: string[], current: string | null, select: (tag: string | null) => void) {
+    if (allTags.length === 0) return;
+    const tagbar = container.createDiv({ cls: "skillmanager-tagbar" });
+    const allChip = tagbar.createEl("button", { text: "All tags", cls: "skillmanager-chip" });
+    if (!current) allChip.addClass("is-active");
+    allChip.addEventListener("click", () => {
+      select(null);
+      this.render();
+    });
+    for (const tag of allTags) {
+      const chip = tagbar.createEl("button", { text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
+      if (current === tag) chip.addClass("is-active");
+      chip.addEventListener("click", () => {
+        select(current === tag ? null : tag);
+        this.render();
+      });
+    }
+  }
+
+  /** The search field a listing page's toolbar leads with (same DOM as the library's). Typing
+   *  calls onInput, which refills the grid in place so the field keeps focus; clearing re-renders. */
+  private renderSearchField(toolbar: HTMLElement, placeholder: string, value: string, onInput: (value: string) => void) {
+    const searchWrap = toolbar.createDiv({ cls: "skillmanager-search-wrap" });
+    setIcon(searchWrap.createSpan({ cls: "skillmanager-search-icon" }), "search");
+    const searchInput = searchWrap.createEl("input", { type: "text", placeholder, cls: "skillmanager-search" });
+    searchInput.value = value;
+    const clearBtn = searchWrap.createEl("button", {
+      cls: "skillmanager-icon-btn skillmanager-search-clear",
+      attr: { "aria-label": "Clear search" },
+    });
+    setIcon(clearBtn, "x");
+    clearBtn.toggle(value.length > 0);
+    clearBtn.addEventListener("click", () => {
+      onInput("");
+      this.render();
+    });
+    searchInput.addEventListener("input", () => {
+      clearBtn.toggle(searchInput.value.length > 0);
+      onInput(searchInput.value);
+    });
+  }
+
+  /** MCP servers and mods have no shadow note, so their tags live in settings.extensionTags. */
+  private extensionTags(key: string): string[] {
+    return this.getSettings().extensionTags[key] ?? [];
+  }
+
+  private async setExtensionTags(key: string, tags: string[]) {
+    const settings = this.getSettings();
+    const { [key]: _old, ...rest } = settings.extensionTags;
+    settings.extensionTags = tags.length > 0 ? { ...rest, [key]: tags } : rest;
+    await this.saveSettings();
+    this.render();
+  }
+
+  private allExtensionTags(keys: string[]): string[] {
+    return Array.from(new Set(keys.flatMap((key) => this.extensionTags(key)))).sort((a, b) => a.localeCompare(b));
+  }
+
+  private renderExtensionCardTags(card: HTMLElement, tags: string[]) {
+    if (tags.length === 0) return;
+    const row = card.createDiv({ cls: "skillmanager-card-tags" });
+    for (const tag of tags) row.createSpan({ text: tag, cls: `skillmanager-chip skillmanager-tag-c${tagColorIndex(tag)}` });
+  }
+
   // ---------- Mods ----------
+
+  private modTagKey(mod: ModEntry): string {
+    return `mod:${mod.id}`;
+  }
+
+  private matchesModsSearch(mod: ModEntry): boolean {
+    const tags = this.extensionTags(this.modTagKey(mod));
+    if (this.modsTagFilter && !tags.includes(this.modsTagFilter)) return false;
+    const query = this.modsSearch.trim().toLowerCase();
+    if (!query) return true;
+    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId)?.name ?? "";
+    return `${mod.name} ${mod.description ?? ""} ${tool} ${this.modOriginLabel(mod).text} ${tags.join(" ")}`.toLowerCase().includes(query);
+  }
 
   private renderModsContent(content: HTMLElement) {
     const header = content.createDiv({ cls: "skillmanager-content-header" });
+    const project = this.projectFilter ? this.getAllProjects().find((p) => p.id === this.projectFilter) : undefined;
+    if (project) {
+      // Reached from a workspace's page (see renderWorkspaceModsSection): lead back to it.
+      const crumbs = header.createDiv({ cls: "skillmanager-crumbs" });
+      const back = () => {
+        this.cleanupReview();
+        this.modsMode = false;
+        this.selectedMod = null;
+        this.selectedFilePath = null;
+        this.pendingDetailAnimation = "back";
+        this.render();
+      };
+      const backBtn = crumbs.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": `Back to ${project.name}` } });
+      setIcon(backBtn, "arrow-left");
+      backBtn.addEventListener("click", back);
+      crumbs.createEl("button", { cls: "skillmanager-crumb", text: project.name }).addEventListener("click", back);
+      crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+      crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: "Mods" });
+    }
     const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
-    titleRow.createEl("h2", { text: "Mods", cls: "skillmanager-title" });
-    titleRow.createSpan({ text: String(this.mods.length), cls: "skillmanager-count-pill" });
+    const all = project ? this.modsKeptIn(project) : this.mods;
+    const visibleMods = () => all.filter((m) => this.matchesModsFilter(m) && this.matchesModsSearch(m));
+    const mods = visibleMods();
+    titleRow.createEl("h2", { text: project ? `Mods in ${project.name}` : "Mods", cls: "skillmanager-title" });
+    const countText = (shown: number) => (shown === all.length ? String(all.length) : `${shown} of ${all.length}`);
+    const countPill = titleRow.createSpan({ text: countText(mods.length), cls: "skillmanager-count-pill" });
     header.createDiv({
-      text: "Mods change the tool itself (panes, status line, slash commands, hooks on tool calls) instead of adding skills. Installed and plugin folder mods can be turned off here; promote a mod in development to load it in every session.",
+      text: "Mods change the tool itself (panes, status line, slash commands, hooks on tool calls) instead of adding skills. Installed and plugin folder mods can be turned off here, and a mod you keep can be linked into a project. Promote a mod in development to load it in every session.",
       cls: "skillmanager-subtitle",
     });
+    const toolbar = content.createDiv({ cls: "skillmanager-toolbar" });
+    this.renderSearchField(toolbar, "Search mods…", this.modsSearch, (value) => {
+      this.modsSearch = value;
+      const next = visibleMods();
+      countPill.setText(countText(next.length));
+      fill(next);
+    });
+    this.renderModsFilterButton(toolbar);
+    this.renderModsSortButton(toolbar);
+    this.renderTagFilterBar(content, this.allExtensionTags(all.map((m) => this.modTagKey(m))), this.modsTagFilter, (tag) => (this.modsTagFilter = tag));
     // A rescan rebuilds this.mods; keep the open mod by id, or close the rail if it's gone.
-    if (this.selectedMod) this.selectedMod = this.mods.find((m) => m.id === this.selectedMod?.id) ?? null;
+    if (this.selectedMod) this.selectedMod = mods.find((m) => m.id === this.selectedMod?.id) ?? null;
     const body = content.createDiv({ cls: "skillmanager-body" });
     const animation = this.pendingDetailAnimation;
     this.pendingDetailAnimation = null;
     const grid = body.createDiv({ cls: `skillmanager-items${this.selectedMod ? " is-docked" : ""}` });
-    if (this.mods.length === 0) grid.createDiv({ text: "No mods found.", cls: "skillmanager-empty" });
-    const sorted = [...this.mods].sort((a, b) => a.name.localeCompare(b.name));
-    for (const mod of sorted) this.renderModCard(grid, mod);
+    const fill = (shown: ModEntry[]) => {
+      grid.empty();
+      if (shown.length === 0) grid.createDiv({ text: all.length > 0 ? "No mods match these filters." : "No mods found.", cls: "skillmanager-empty" });
+      const sorted = [...shown].sort((a, b) => a.name.localeCompare(b.name));
+      if (this.modsSort === "name-desc") sorted.reverse();
+      for (const mod of sorted) this.renderModCard(grid, mod);
+    };
+    fill(mods);
     if (this.selectedMod) {
       const rail = body.createDiv({ cls: `skillmanager-detail${animation ? ` skillmanager-panel-enter-${animation}` : ""}` });
       this.renderModDetailRail(rail, this.selectedMod);
     }
+  }
+
+  private matchesModsFilter(mod: ModEntry, ignore?: keyof LibraryView["modsFilter"]): boolean {
+    const f = this.modsFilter;
+    if (ignore !== "status" && f.status && mod.enabled !== (f.status === "on")) return false;
+    if (ignore !== "origin" && f.origin && mod.origin !== f.origin) return false;
+    if (ignore !== "source" && f.source && !!this.getSettings().modSources[mod.path] !== (f.source === "github")) return false;
+    if (ignore !== "link" && f.link && this.matchesLinkFilter(f.link, mod.realPath !== mod.path, mod.realPath) === false) return false;
+    return true;
+  }
+
+  /** Same menu shape as the library's Filter (see renderFilterButton): a section per dimension,
+   *  each with counts, hidden when it couldn't narrow anything. */
+  private renderModsFilterButton(container: HTMLElement) {
+    const f = this.modsFilter;
+    const labels = [
+      f.status ? (f.status === "on" ? "On" : "Off") : null,
+      f.origin ? MOD_ORIGIN_LABELS[f.origin] : null,
+      f.source ? (f.source === "github" ? "GitHub" : "Local") : null,
+      f.link ? LINK_FILTER_LABELS[f.link] : null,
+    ].filter((l): l is string => !!l);
+    const group = container.createDiv({ cls: "skillmanager-filter-group" });
+    const btn = group.createEl("button", {
+      cls: `skillmanager-sort-btn${labels.length > 0 ? " is-active" : ""}`,
+      attr: { "aria-label": labels.length > 0 ? `Filters: ${labels.join(", ")}` : "Filter" },
+    });
+    setIcon(btn.createSpan({ cls: "skillmanager-sort-btn-icon" }), "filter");
+    btn.createSpan({ text: labels.length > 0 ? `Filter (${labels.length})` : "Filter", cls: "skillmanager-sort-btn-label" });
+    setIcon(btn.createSpan({ cls: "skillmanager-sort-btn-chevron" }), "chevron-down");
+    const clear = () => {
+      this.modsFilter = { status: null, origin: null, source: null, link: null };
+      this.render();
+    };
+    if (labels.length > 0) {
+      const clearBtn = group.createEl("button", { cls: "skillmanager-filter-clear", attr: { "aria-label": `Clear filters: ${labels.join(", ")}` } });
+      setIcon(clearBtn, "x");
+      clearBtn.addEventListener("click", clear);
+    }
+    btn.addEventListener("click", (evt) => {
+      const project = this.projectFilter ? this.getAllProjects().find((p) => p.id === this.projectFilter) : undefined;
+      const pool = project ? this.modsKeptIn(project) : this.mods;
+      const menu = new Menu();
+      const section = <K extends keyof LibraryView["modsFilter"]>(
+        title: string,
+        dim: K,
+        options: { key: NonNullable<LibraryView["modsFilter"][K]>; label: string; match: (m: ModEntry) => boolean }[]
+      ) => {
+        const current = this.modsFilter[dim];
+        const counted = options
+          .map((o) => ({ ...o, count: pool.filter((m) => this.matchesModsFilter(m, dim) && o.match(m)).length }))
+          .filter((o) => o.count > 0 || o.key === current);
+        if (counted.length < 2 && current === null) return;
+        menu.addItem((item) => item.setTitle(title).setIsLabel(true));
+        menu.addItem((item) =>
+          item.setTitle("All").setChecked(current === null).onClick(() => {
+            this.modsFilter = { ...this.modsFilter, [dim]: null };
+            this.render();
+          })
+        );
+        for (const o of counted) {
+          menu.addItem((item) =>
+            item.setTitle(`${o.label} (${o.count})`).setChecked(current === o.key).onClick(() => {
+              this.modsFilter = { ...this.modsFilter, [dim]: o.key };
+              this.render();
+            })
+          );
+        }
+        menu.addSeparator();
+      };
+      section("Status", "status", [
+        { key: "on", label: "On", match: (m) => m.enabled },
+        { key: "off", label: "Off or not loaded", match: (m) => !m.enabled },
+      ]);
+      section(
+        "Origin",
+        "origin",
+        (Object.keys(MOD_ORIGIN_LABELS) as ModEntry["origin"][]).map((key) => ({ key, label: MOD_ORIGIN_LABELS[key], match: (m: ModEntry) => m.origin === key }))
+      );
+      const sources = this.getSettings().modSources;
+      section("Source", "source", [
+        { key: "github", label: "Installed from GitHub", match: (m) => !!sources[m.path] },
+        { key: "local", label: "Local", match: (m) => !sources[m.path] },
+      ]);
+      section("Link", "link", [
+        { key: "symlink", label: LINK_FILTER_LABELS.symlink, match: (m) => m.realPath !== m.path },
+        { key: "source", label: LINK_FILTER_LABELS.source, match: (m) => m.realPath === m.path },
+      ]);
+      menu.addItem((item) => item.setTitle("Clear all").setIcon("x").setDisabled(labels.length === 0).onClick(clear));
+      menu.showAtMouseEvent(evt);
+    });
+  }
+
+  private renderModsSortButton(container: HTMLElement) {
+    const options: { key: LibraryView["modsSort"]; label: string }[] = [
+      { key: "name-asc", label: "Name (A to Z)" },
+      { key: "name-desc", label: "Name (Z to A)" },
+    ];
+    const btn = container.createEl("button", { cls: "skillmanager-sort-btn", attr: { "aria-label": "Sort by" } });
+    setIcon(btn.createSpan({ cls: "skillmanager-sort-btn-icon" }), "arrow-up-down");
+    btn.createSpan({ text: options.find((o) => o.key === this.modsSort)?.label ?? options[0].label, cls: "skillmanager-sort-btn-label" });
+    setIcon(btn.createSpan({ cls: "skillmanager-sort-btn-chevron" }), "chevron-down");
+    btn.addEventListener("click", (evt) => {
+      const menu = new Menu();
+      for (const o of options) {
+        menu.addItem((item) =>
+          item.setTitle(o.label).setChecked(this.modsSort === o.key).onClick(() => {
+            this.modsSort = o.key;
+            this.render();
+          })
+        );
+      }
+      menu.showAtMouseEvent(evt);
+    });
   }
 
   private selectMod(mod: ModEntry) {
@@ -3373,11 +3739,6 @@ export class LibraryView extends ItemView {
     const revealBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": this.fileManagerLabel() } });
     setIcon(revealBtn, "folder-open");
     revealBtn.addEventListener("click", () => void this.openModFolder(mod));
-    if (this.getSettings().modSources[mod.path]) {
-      const checkBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Check for updates" } });
-      setIcon(checkBtn, "refresh-cw");
-      checkBtn.addEventListener("click", () => void this.checkModForUpdates(mod));
-    }
     if (this.itemHistory() && !filePath) {
       const historyBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "History" } });
       setIcon(historyBtn, "history");
@@ -3399,19 +3760,15 @@ export class LibraryView extends ItemView {
     toolLine.createSpan({ text: [tool?.name, origin, mod.version ? `v${mod.version}` : null].filter(Boolean).join(" · ") });
     if (!filePath && mod.description) section.createDiv({ cls: "skillmanager-detail-desc", text: mod.description });
     if (!filePath) section.createDiv({ cls: "skillmanager-subtitle", text: this.modLoadNote(mod) });
+    if (this.modRail?.modId !== mod.id && this.modSyncStatusFor(mod) === "stale") this.renderModUpdateBanner(section, mod);
+    const repo = mod.realPath !== mod.path && this.modRail?.modId !== mod.id ? this.unregisteredRepo(mod.realPath) : null;
+    if (repo) this.renderRepoBanner(section, repo, mod.toolId);
 
     if (this.modRail?.modId === mod.id) {
       this.renderModRailState(panel, mod, this.modRail);
       return;
     }
-    if (!filePath) {
-      const list = panel.createDiv({ cls: "skillmanager-tree" });
-      this.renderTreeNodes(list, buildModFileTree(mod.path), 0);
-      panel.createDiv({ cls: "skillmanager-tree-hint", text: "Click a file to open it." });
-      return;
-    }
-
-    if (this.modFileLoadedFor !== filePath) {
+    if (filePath && this.modFileLoadedFor !== filePath) {
       try {
         this.modFileContent = readFileSync(filePath, "utf-8");
       } catch (e) {
@@ -3420,6 +3777,14 @@ export class LibraryView extends ItemView {
       }
       this.modFileLoadedFor = filePath;
     }
+    this.renderModProperties(section, mod, tool, filePath);
+    if (!filePath) {
+      const list = panel.createDiv({ cls: "skillmanager-tree" });
+      this.renderTreeNodes(list, buildModFileTree(mod.path), 0);
+      panel.createDiv({ cls: "skillmanager-tree-hint", text: "Click a file to open it." });
+      return;
+    }
+
     // Markdown renders as a note; anything else (the hooks module, its JSON) as a code block so
     // the theme's syntax highlighting applies instead of the source being read as prose.
     const ext = extname(filePath).slice(1).toLowerCase();
@@ -3432,15 +3797,44 @@ export class LibraryView extends ItemView {
     void MarkdownRenderer.render(this.app, source, sizer, filePath, this.markdownComponent);
   }
 
-  private renderModCard(container: HTMLElement, mod: ModEntry) {
+  private renderModCard(container: HTMLElement, mod: ModEntry, onSelect: () => void = () => this.selectMod(mod)) {
     const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
     const plugin = mod.pluginId ? this.discoveredPlugins.find((p) => p.id === mod.pluginId) : undefined;
     const card = container.createDiv({ cls: "skillmanager-card" });
     if (!mod.enabled) card.addClass("is-off");
     const head = card.createDiv({ cls: "skillmanager-card-head" });
+    // Same dot and sync icon as an item card (see renderCard), off the mod's modSources record.
+    const modSource = this.modSourceFor(mod);
+    const syncStatus = this.modSyncStatusFor(mod);
+    const dotLabel =
+      syncStatus === "current"
+        ? `Up to date with ${modSource?.repoUrl}`
+        : syncStatus === "stale"
+          ? "Update available: click the sync icon to review"
+          : modSource
+            ? 'Not checked yet this session: click "Check for updates"'
+            : "Not tracked from GitHub: install via Discover to enable update checks";
+    const dot = head.createSpan({
+      cls: `skillmanager-card-dot${syncStatus === "current" ? " is-current" : syncStatus === "stale" ? " is-stale" : ""}`,
+      attr: { "aria-label": dotLabel },
+    });
+    setTooltip(dot, dotLabel, { placement: "top" });
     head.createSpan({ text: mod.name, cls: `skillmanager-card-name${mod.version ? " skillmanager-card-name-fit" : ""}` });
     if (mod.version) head.createSpan({ text: `v${mod.version}`, cls: "skillmanager-card-meta skillmanager-card-version" });
     head.createSpan({ text: "Mod", cls: "skillmanager-card-type skillmanager-card-type-sm" });
+    if (modSource) {
+      const syncBtn = head.createEl("button", {
+        cls: "skillmanager-icon-btn skillmanager-card-sync-btn",
+        attr: { "aria-label": "Check for updates" },
+      });
+      setIcon(syncBtn, "refresh-cw");
+      syncBtn.addEventListener("pointerdown", (evt) => evt.stopPropagation());
+      syncBtn.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        void this.checkModForUpdates(mod, syncBtn);
+      });
+    }
     if (plugin) {
       createSwitch(head, {
         on: plugin.enabled,
@@ -3461,6 +3855,7 @@ export class LibraryView extends ItemView {
       toolCaption.createSpan({ text: tool.name });
     }
     card.createDiv({ text: mod.description || "No description", cls: "skillmanager-card-desc" });
+    this.renderExtensionCardTags(card, this.extensionTags(this.modTagKey(mod)));
     const footer = card.createDiv({ cls: "skillmanager-card-footer" });
     const source = footer.createDiv({ cls: "skillmanager-card-source" });
     const sourceIcon = source.createSpan({ cls: "skillmanager-card-source-icon" });
@@ -3469,7 +3864,10 @@ export class LibraryView extends ItemView {
     source.createSpan({ text: originInfo.text, cls: "skillmanager-card-source-text" });
     setTooltip(source, this.modLoadNote(mod), { placement: "top" });
     const right = footer.createDiv({ cls: "skillmanager-card-footer-right" });
-    if (!mod.enabled) right.createSpan({ text: "Disabled", cls: "skillmanager-card-meta" });
+    if (!mod.enabled) right.createSpan({ text: mod.origin === "repo" ? "Not loaded" : "Disabled", cls: "skillmanager-card-meta" });
+    const repo = mod.realPath !== mod.path ? this.unregisteredRepo(mod.realPath) : null;
+    if (repo) this.renderAddRepoButton(right, repo, mod.toolId);
+    if (canLinkModToProjects(mod, tool)) this.renderModLinkButton(right, mod, tool);
     const menuBtn = right.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More actions" } });
     setIcon(menuBtn, MORE_HORIZONTAL_ICON_ID);
     menuBtn.addEventListener("click", (evt) => {
@@ -3478,7 +3876,7 @@ export class LibraryView extends ItemView {
     });
     if (this.selectedMod?.id === mod.id) card.addClass("is-selected");
     makeActivatable(card);
-    card.addEventListener("click", () => this.selectMod(mod));
+    card.addEventListener("click", onSelect);
   }
 
   /** When the tool loads this mod, and where it's switched off: the answer differs by origin, and
@@ -3491,7 +3889,342 @@ export class LibraryView extends ItemView {
         ? "Loads in every new session through CLAUDE_CODE_PLUGIN_DIRS."
         : "Turned off: taken out of CLAUDE_CODE_PLUGIN_DIRS, so new sessions don't load it. The folder stays where it is.";
     }
+    if (mod.origin === "repo") {
+      const project = this.getAllProjects().find((p) => p.id === mod.projectId);
+      return `Kept in ${project?.name ?? "a source repo"}, which the tool doesn't load mods from. Link it Global or into a project to load it.`;
+    }
+    if (mod.projectId) {
+      const project = this.getAllProjects().find((p) => p.id === mod.projectId);
+      return `Loads only in ${project?.name ?? "its project"}, with the skills folder it sits in. Move the folder out to turn it off.`;
+    }
     return "Loads with the skills folder it sits in, in every session. Move the folder out to turn it off.";
+  }
+
+  /** Short form of modLoadNote, for the properties panel under it. */
+  private modScopeLabel(mod: ModEntry): string {
+    if (mod.origin === "repo") return "Not loaded";
+    if (!mod.enabled) return "Off";
+    if (mod.origin === "dev") return "Its dev session only";
+    if (mod.projectId) return `${this.getAllProjects().find((p) => p.id === mod.projectId)?.name ?? "One project"} only`;
+    return "Every session";
+  }
+
+  /** Projects whose skills folder holds a symlink to this mod (see projectLink's modProjectLink).
+   *  Read from disk, since scanMods lists a folder reached twice only once. */
+  private modLinkedProjects(mod: ModEntry, tool: ToolConfig): ProjectWorkspace[] {
+    return this.getAllProjects().filter((project) => project.id !== mod.projectId && modProjectLink(mod, tool, project));
+  }
+
+  /** The open workspace's mods, for its library page (see renderWorkspaceModsSection), narrowed
+   *  by the same search and Enabled/Disabled filter as its items. A tag or other filter hides
+   *  them, since mods have none of those to match. */
+  private workspaceMods(): ModEntry[] {
+    const project = this.projectFilter ? this.getAllProjects().find((p) => p.id === this.projectFilter) : undefined;
+    // Filters mods have nothing to match against (tags, a type, a rule kind, built-in, updates)
+    // hide them rather than letting them slip through.
+    if (!project || this.tagFilter || this.untaggedOnly || this.pageTypeFilter || this.ruleKindFilter) return [];
+    if (this.sourceFilter === "builtin" || this.sourceFilter === "updates") return [];
+    const query = this.search.trim().toLowerCase();
+    const sources = this.getSettings().modSources;
+    const mods = this.modsKeptIn(project)
+      .filter((m) => this.enabledFilter === "all" || m.enabled === (this.enabledFilter === "enabled"))
+      .filter((m) => !this.pageToolFilter || m.toolId === this.pageToolFilter)
+      .filter((m) => !this.sourceFilter || !!sources[m.path] === (this.sourceFilter === "github"))
+      .filter((m) => !this.linkFilter || this.matchesLinkFilter(this.linkFilter, m.realPath !== m.path, m.realPath))
+      .filter((m) => !query || `${m.name} ${m.description ?? ""}`.toLowerCase().includes(query))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    // Mods have only a name to sort by; the item sort's direction still applies.
+    return this.sortOrder === "name-desc" ? mods.reverse() : mods;
+  }
+
+  private matchesLinkFilter(key: keyof typeof LINK_FILTER_LABELS, isLink: boolean, realPath: string): boolean {
+    if (key === "source") return !isLink;
+    if (key === "symlink") return isLink;
+    return isLink && !!this.unregisteredRepo(realPath);
+  }
+
+  /** A workspace is a project like any other, so its page lists everything it holds: its items,
+   *  then its mods under their own heading. A mod opens in the Mods view, still scoped to (and
+   *  highlighting) this workspace. */
+  private renderWorkspaceModsSection(container: HTMLElement, mods: ModEntry[]) {
+    if (mods.length === 0) return;
+    container.createDiv({ cls: "skillmanager-items-section", text: "Mods" });
+    for (const mod of mods) {
+      this.renderModCard(container, mod, () => {
+        this.selectedItem = null;
+        this.selectedFilePath = null;
+        this.modsMode = true;
+        this.selectMod(mod);
+      });
+    }
+  }
+
+  /** Mods whose real folder sits in this workspace: found there, or reached through a link
+   *  (a CLAUDE_CODE_PLUGIN_DIRS entry, a skills-folder link) from a folder inside it. */
+  private modsKeptIn(project: ProjectWorkspace): ModEntry[] {
+    let root: string;
+    try {
+      root = samePathKey(realpathSync(expandHome(project.path)));
+    } catch {
+      return [];
+    }
+    return this.mods.filter((m) => m.projectId === project.id || samePathKey(m.realPath).startsWith(root + sep));
+  }
+
+  /** The project a mod is kept in: the one it was found in, or for a mod reached through a link,
+   *  the project (or source repo) holding its real folder. `loadsThere` when the tool loads it
+   *  from there too, which a source repo's root it doesn't. */
+  private modKeptIn(mod: ModEntry, tool: ToolConfig): { project: ProjectWorkspace; loadsThere: boolean } | null {
+    const projects = this.getAllProjects();
+    const foundIn = mod.projectId ? projects.find((p) => p.id === mod.projectId) : undefined;
+    return foundIn ? { project: foundIn, loadsThere: mod.origin !== "repo" } : modSourceProject(mod, tool, projects);
+  }
+
+  /** Same control as an item card's (see renderProjectLinkButton): one link icon that's tinted
+   *  once the mod is a link itself or linked somewhere, always opening the picker. */
+  private renderModLinkButton(container: HTMLElement, mod: ModEntry, tool: ToolConfig) {
+    const linkedSomewhere =
+      mod.realPath !== mod.path || this.modLinkedProjects(mod, tool).length > 0 || (!!mod.projectId && !!modProjectLink(mod, tool, null));
+    const btn = container.createEl("button", {
+      cls: `skillmanager-icon-btn${linkedSomewhere ? " is-present" : ""}`,
+      attr: { "aria-label": linkedSomewhere ? "Manage project links" : "Link into a workspace" },
+    });
+    setIcon(btn, "link");
+    btn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      this.openModProjectPresence(mod, tool);
+    });
+  }
+
+  private openModProjectPresence(mod: ModEntry, tool: ToolConfig) {
+    const keptIn = this.modKeptIn(mod, tool);
+    const present = new Set(this.modLinkedProjects(mod, tool).map((p) => p.id));
+    // Only a mod kept in a project or repo gets a Global row: a CLAUDE_CODE_PLUGIN_DIRS mod is made
+    // global by its switch, and a second, linked copy would load it twice.
+    // Found only through its link in the global skills folder, from a folder no workspace covers.
+    const unscannedSource = !keptIn && mod.origin === "skill" && !mod.projectId && this.isSymlinkPath(mod.path);
+    const offerGlobal = (!!keptIn && mod.origin !== "plugin-dir") || unscannedSource;
+    const globalLink = offerGlobal ? modProjectLink(mod, tool, null) : null;
+    // Re-linking after Global was unchecked has to start from the real folder: the link is gone.
+    const realMod = { ...mod, path: mod.realPath };
+    const loadsEverywhere = mod.enabled && !mod.projectId;
+    const notes = [
+      loadsEverywhere
+        ? `"${mod.name}" already loads in every session, so a project you link it into would load it twice.${globalLink ? "" : " Turn it off first to load it only in the projects you check."}`
+        : null,
+      offerGlobal && keptIn?.loadsThere ? `Linked as Global, it also loads twice in ${keptIn.project.name}, where it's kept.` : null,
+      unscannedSource ? `Unchecking Global removes the only link the library finds "${mod.name}" through, so it drops off this list until you link it again.` : null,
+    ].filter(Boolean);
+    new ProjectPresenceModal(
+      this.app,
+      mod.name,
+      this.getAllProjects(),
+      present,
+      async (project) => {
+        addModToProject(mod, tool, project);
+        await this.rescan();
+      },
+      async (project) => {
+        removeModFromProject(mod, tool, project);
+        await this.rescan();
+      },
+      {
+        note: notes.length > 0 ? notes.join(" ") : undefined,
+        keptIn: keptIn
+          ? { kind: "project", id: keptIn.project.id }
+          : mod.origin === "skill" && !mod.projectId && !unscannedSource
+            ? { kind: "global" }
+            : { kind: "folder", path: dirname(mod.realPath) },
+        userScope: offerGlobal
+          ? {
+              present: !!globalLink,
+              onAdd: async () => {
+                addModToProject(unscannedSource ? realMod : mod, tool, null);
+                await this.rescan();
+              },
+              onRemove: async () => {
+                removeModFromProject(mod, tool, null);
+                await this.rescan();
+              },
+            }
+          : undefined,
+      }
+    ).open();
+  }
+
+  /** The item rail's properties panel (see renderDetailProperties), carrying what a mod has: no
+   *  tags, invocation or usage, since a mod isn't a library item and the tool doesn't log it.
+   *  The mod's own facts on the tree; the open file's size and path once one is open. */
+  private renderModProperties(container: HTMLElement, mod: ModEntry, tool: ToolConfig | undefined, filePath: string | null) {
+    const panel = container.createDiv({ cls: "skillmanager-detail-props-panel" });
+    const props = panel.createDiv({ cls: "skillmanager-detail-props" });
+    const prop = (label: string, value: string, tooltip?: string, valueCls = "") => {
+      const key = props.createDiv({ cls: "skillmanager-detail-prop-key" });
+      key.createSpan({ text: label });
+      if (tooltip) {
+        setIcon(key.createSpan({ cls: "skillmanager-detail-info" }), "info");
+        setTooltip(key, tooltip, { placement: "top" });
+      }
+      props.createDiv({ cls: `skillmanager-detail-prop-value${valueCls ? ` ${valueCls}` : ""}`, text: value });
+    };
+
+    if (filePath) {
+      try {
+        const stat = statSync(filePath);
+        prop("File", `${formatBytes(stat.size)} · ${this.modFileContent.length.toLocaleString()} chars · modified ${formatDate(stat.mtimeMs)}`);
+      } catch {
+        // Moved since the tree was built; the path alone still says what was asked for.
+      }
+      prop("Path", filePath, undefined, "is-mono");
+      this.renderModSourceFooter(panel, mod);
+      return;
+    }
+
+    props.createDiv({ cls: "skillmanager-detail-prop-key" }).createSpan({ text: "Tags" });
+    const tagKey = this.modTagKey(mod);
+    this.renderTagEditor(props.createDiv({ cls: "skillmanager-detail-prop-value" }), tagKey, this.extensionTags(tagKey), (tags) => void this.setExtensionTags(tagKey, tags));
+    const managed = this.modManagedBy(mod, tool);
+    prop("Managed by", managed.label, managed.tooltip);
+    prop("Loads", this.modScopeLabel(mod));
+    if (tool && canLinkModToProjects(mod, tool)) {
+      const linked = this.modLinkedProjects(mod, tool).map((p) => p.name);
+      if (mod.projectId && modProjectLink(mod, tool, null)) linked.unshift("Global");
+      prop("Linked into", linked.length > 0 ? linked.join(", ") : "Nowhere", "Where a symlink to this mod sits: the global skills folder or a project's. Manage them from the link icon on its card.");
+    }
+    const modules = readModModules(mod.path);
+    if (modules.length > 0) prop(modules.length === 1 ? "Hooks module" : "Hooks modules", modules.join(", "), "Named in hooks/hooks.json. The tool runs these when it loads the mod.", "is-mono");
+    const files = countFiles(buildModFileTree(mod.path));
+    prop("Folder", `${files} file${files === 1 ? "" : "s"}`);
+    prop("Path", mod.path, undefined, "is-mono");
+    if (mod.realPath !== mod.path) prop("Symlinked from", mod.realPath, undefined, "is-mono");
+    this.renderModSourceFooter(panel, mod);
+  }
+
+  /** The properties panel's Source footer, as an item's (see renderDetailProperties): repo link,
+   *  Check for updates and Restore installed. */
+  private renderModSourceFooter(panel: HTMLElement, mod: ModEntry) {
+    const source = this.modSourceFor(mod);
+    if (!source) return;
+    const footer = panel.createDiv({ cls: "skillmanager-detail-props-source" });
+    const left = footer.createDiv({ cls: "skillmanager-detail-props-source-repo" });
+    left.createSpan({ text: "Source", cls: "skillmanager-detail-prop-key" });
+    this.renderRepoLink(left, source);
+    const actions = footer.createDiv({ cls: "skillmanager-detail-source-actions" });
+    const checkBtn = actions.createEl("button", { cls: "skillmanager-detail-source-btn" });
+    this.setSourceBtnContent(checkBtn, "refresh-cw", "Check for updates");
+    this.isolateReviewAction(checkBtn, () => void this.checkModForUpdates(mod, checkBtn, true));
+    const restoreBtn = actions.createEl("button", { cls: "skillmanager-detail-source-btn" });
+    this.setSourceBtnContent(restoreBtn, "history", "Restore installed");
+    this.isolateReviewAction(restoreBtn, () => void this.startModReview(mod, "restore"));
+  }
+
+  /** managedBy for a mod: its plugin, a tracked GitHub install, or the user. */
+  private modManagedBy(mod: ModEntry, tool: ToolConfig | undefined): { label: string; tooltip: string } {
+    const toolName = tool?.name ?? mod.toolId;
+    if (mod.origin === "installed") {
+      const pluginName = this.discoveredPlugins.find((p) => p.id === mod.pluginId)?.name ?? mod.pluginId ?? mod.name;
+      return { label: "Plugin", tooltip: `Installed as the ${pluginName} plugin. ${toolName} updates it with the plugin.` };
+    }
+    const source = this.modSourceFor(mod);
+    if (source) {
+      const parsed = parseOwnerRepo(source.repoUrl);
+      const repo = parsed ? `${parsed.owner}/${parsed.repo}` : source.repoUrl;
+      const minutes = this.getSettings().autoUpdateCheckMinutes;
+      const checking = minutes > 0
+        ? `New commits are checked for every ${minutes} minutes, but never applied on their own.`
+        : "New commits aren't pulled automatically.";
+      return {
+        label: "GitHub",
+        tooltip: `Installed from ${repo}. ${checking} Use Check for updates to pull them; you review the changes before anything is replaced.`,
+      };
+    }
+    return { label: "You", tooltip: "Added by you, with no tracked source. Nothing updates it." };
+  }
+
+  /** Where a mod installed from GitHub came from. Keyed by the folder it was installed to; the
+   *  real path also matches, for when that folder is first reached through a link. */
+  private modSourceFor(mod: ModEntry): ModSource | undefined {
+    const sources = this.getSettings().modSources;
+    return sources[mod.path] ?? sources[mod.realPath];
+  }
+
+  private modSourceKey(mod: ModEntry): string | null {
+    const sources = this.getSettings().modSources;
+    return sources[mod.path] ? mod.path : sources[mod.realPath] ? mod.realPath : null;
+  }
+
+  private modSyncStatusFor(mod: ModEntry): "current" | "stale" | "unknown" {
+    if (!this.modSourceFor(mod)) return "unknown";
+    return this.syncStatus.get(this.modHistoryId(mod)) ?? "unknown";
+  }
+
+  /** renderUpdateBanner for a mod. */
+  private renderModUpdateBanner(container: HTMLElement, mod: ModEntry) {
+    const source = this.modSourceFor(mod);
+    if (!source) return;
+    const banner = container.createDiv({ cls: "skillmanager-update-banner" });
+    setIcon(banner.createSpan({ cls: "skillmanager-update-banner-icon" }), "download");
+    const text = banner.createDiv({ cls: "skillmanager-update-banner-text" });
+    text.createDiv({ cls: "skillmanager-update-banner-title", text: "Update available" });
+    const parsed = parseOwnerRepo(source.repoUrl);
+    const repo = parsed ? `${parsed.owner}/${parsed.repo}` : source.repoUrl;
+    const count = this.staleFileCounts.get(this.modHistoryId(mod));
+    text.createDiv({
+      cls: "skillmanager-update-banner-meta",
+      text: count ? `${count} file${count === 1 ? "" : "s"} changed in ${repo}` : `New changes in ${repo}`,
+    });
+    const btn = banner.createEl("button", { cls: "mod-cta", text: "Review changes" });
+    this.isolateReviewAction(btn, () => void this.startModReview(mod, "update"));
+  }
+
+  /** The git repo a symlinked item or mod really lives in, when it isn't a workspace yet (see
+   *  sourceRepo.ts). Cached per rescan, since every card asks. */
+  private unregisteredRepo(realPath: string): string | null {
+    if (!this.unregisteredRepoCache.has(realPath)) {
+      const caches = this.getSettings().tools.flatMap((t) => [...(t.pluginsPaths ?? []), ...(t.pluginsRegistry ? [dirname(t.pluginsRegistry)] : [])]);
+      this.unregisteredRepoCache.set(realPath, unregisteredRepoFor(realPath, this.getAllProjects(), caches));
+    }
+    return this.unregisteredRepoCache.get(realPath) ?? null;
+  }
+
+  /** Card form of the unregistered-repo notice: one icon in the footer, beside the link icon,
+   *  that both says so and adds the repo. */
+  private renderAddRepoButton(container: HTMLElement, repo: string, toolId: string) {
+    const label = `From "${basename(repo)}", a repo that isn't in your workspaces. Click to add it.`;
+    const btn = container.createEl("button", { cls: "skillmanager-icon-btn skillmanager-add-repo-btn", attr: { "aria-label": label } });
+    setIcon(btn, "folder-plus");
+    btn.addEventListener("pointerdown", (evt) => evt.stopPropagation());
+    btn.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      void this.addRepoWorkspace(repo, toolId);
+    });
+  }
+
+  /** Preview form, built like the "Update available" banner (see renderUpdateBanner) since it's
+   *  the same kind of ask: what's going on, plus the one button that acts on it. Accent rather
+   *  than orange, as nothing is wrong. */
+  private renderRepoBanner(container: HTMLElement, repo: string, toolId: string) {
+    const banner = container.createDiv({ cls: "skillmanager-update-banner is-repo" });
+    setTooltip(banner, repo, { placement: "top" });
+    setIcon(banner.createSpan({ cls: "skillmanager-update-banner-icon" }), "folder-git-2");
+    const text = banner.createDiv({ cls: "skillmanager-update-banner-text" });
+    text.createDiv({ cls: "skillmanager-update-banner-title", text: "Repo not in your workspaces" });
+    text.createDiv({ cls: "skillmanager-update-banner-meta", text: `Add "${basename(repo)}" to see everything it holds.` });
+    const btn = banner.createEl("button", { cls: "mod-cta", text: "Add to workspaces" });
+    this.isolateReviewAction(btn, () => void this.addRepoWorkspace(repo, toolId));
+  }
+
+  /** Registers a repo as a source repo workspace, so its own skills and mods are listed under it
+   *  and links to them resolve back to it. */
+  private async addRepoWorkspace(repo: string, toolId: string) {
+    const path = tildify(repo);
+    const existing = this.getSettings().projectWorkspaces.find((p) => samePathKey(expandHome(p.path)) === samePathKey(repo));
+    await this.upsertProject(
+      existing ? { ...existing, sourceRepoToolId: existing.sourceRepoToolId ?? toolId } : { id: `proj-${Date.now()}`, name: basename(repo), path, sourceRepoToolId: toolId }
+    );
+    new Notice(`Added "${basename(repo)}" to your workspaces.`);
+    this.render();
   }
 
   private confirmPluginDirModToggle(mod: ModEntry) {
@@ -3564,7 +4297,7 @@ export class LibraryView extends ItemView {
         .setIcon("folder-open")
         .onClick(() => void this.openModFolder(mod))
     );
-    const source = this.getSettings().modSources[mod.path];
+    const source = this.modSourceFor(mod);
     if (source) {
       menu.addItem((menuItem) =>
         menuItem
@@ -3643,7 +4376,7 @@ export class LibraryView extends ItemView {
           const settings = this.getSettings();
           const remaining = (settings.disabledModDirs[tool.id] ?? []).filter((dir) => dir !== mod.path);
           settings.disabledModDirs = { ...settings.disabledModDirs, [tool.id]: remaining };
-          const { [mod.path]: _removed, ...sources } = settings.modSources;
+          const { [mod.path]: _removed, [mod.realPath]: _removedReal, ...sources } = settings.modSources;
           settings.modSources = sources;
           await this.saveSettings();
         }
@@ -3658,69 +4391,101 @@ export class LibraryView extends ItemView {
     return `mod:${mod.path}`;
   }
 
-  /** Asks GitHub for the source's latest commit; opens an update review when it moved on. */
-  private async checkModForUpdates(mod: ModEntry) {
-    const source = this.getSettings().modSources[mod.path];
+  /** Asks GitHub for the source's latest commit; opens an update review when it moved on. With
+   *  `btn` (the card's sync icon, or the Source footer's labelled button), shows progress on it
+   *  the way quickCheckForUpdate and checkForUpdate do for an item. */
+  private async checkModForUpdates(mod: ModEntry, btn?: HTMLButtonElement, labelled = false) {
+    const source = this.modSourceFor(mod);
     if (!source) return;
-    new Notice(`Checking "${mod.name}" for updates…`);
-    // Lets the notice paint before the synchronous git call blocks.
+    const reset = () => {
+      if (!btn) return;
+      btn.disabled = false;
+      btn.removeClass("is-syncing");
+      if (labelled) this.setSourceBtnContent(btn, "refresh-cw", "Check for updates");
+    };
+    if (btn) {
+      btn.disabled = true;
+      btn.addClass("is-syncing");
+      if (labelled) this.setSourceBtnContent(btn, "loader-2", "Checking…");
+    } else {
+      new Notice(`Checking "${mod.name}" for updates…`);
+    }
+    // Lets the notice or button state paint before the synchronous git call blocks.
     await new Promise((r) => window.setTimeout(r, 0));
     let latest: string;
     try {
       latest = remoteHeadCommit(source.repoUrl, source.ref || undefined);
     } catch (e) {
       new Notice(`Couldn't check for updates: ${errorMessage(e)}`);
+      reset();
       return;
     }
     if (latest === source.commit) {
+      this.syncStatus.set(this.modHistoryId(mod), "current");
+      this.staleFileCounts.delete(this.modHistoryId(mod));
       new Notice(`"${mod.name}" is up to date.`);
+      reset();
+      this.render();
       return;
     }
-    await this.startModReview(mod);
+    this.syncStatus.set(this.modHistoryId(mod), "stale");
+    // startModReview re-renders the whole view, button included.
+    await this.startModReview(mod, "update", latest);
   }
 
-  /** Same review as an item's update (see startReview): fetch the latest commit, diff it against
-   *  the folder on disk, and show it in the mod's rail before anything changes. */
-  private async startModReview(mod: ModEntry) {
-    const source = this.getSettings().modSources[mod.path];
+  /** Same review as an item's update or restore (see startReview): fetch the latest commit, or
+   *  the installed one, diff it against the folder on disk, and show it in the mod's rail before
+   *  anything changes. */
+  private async startModReview(mod: ModEntry, mode: UpdateMode, latest?: string) {
+    const source = this.modSourceFor(mod);
     if (!source) return;
     this.cleanupReview();
     this.selectedMod = mod;
     this.selectedFilePath = null;
-    this.modRail = { kind: "review-loading", modId: mod.id };
+    this.modRail = { kind: "review-loading", modId: mod.id, mode };
     this.pendingDetailAnimation = "forward";
     this.render();
     await new Promise((r) => window.setTimeout(r, 0));
 
     let clone: ClonedRepo | null = null;
     try {
-      clone = shallowCloneRepo(source.repoUrl, source.ref || undefined);
-      removeGitDir(clone);
+      if (mode === "restore") {
+        clone = shallowCloneAtCommit(source.repoUrl, source.commit);
+        removeGitDir(clone);
+      } else {
+        clone = this.latestRepoClone(source.repoUrl, source.ref, latest);
+      }
       const newRoot = source.subpath ? join(clone.dir, source.subpath) : clone.dir;
       if (!isModFolder(newRoot)) throw new Error(`"${source.subpath || "The repo root"}" is no longer a mod in this repo.`);
       const files = changedModFiles(mod.path, newRoot);
       if (files.length === 0) {
-        // The repo moved on, but nothing in this mod's folder did: just record the new commit.
         clone.cleanup();
-        await this.setModSourceCommit(mod.path, clone.commit);
         this.modRail = null;
-        new Notice(`"${mod.name}" is up to date. Newer commits in the repo don't change it.`);
+        if (mode === "update") {
+          // The repo moved on, but nothing in this mod's folder did: just record the new commit.
+          await this.setModSourceCommit(mod, clone.commit);
+          this.syncStatus.set(this.modHistoryId(mod), "current");
+          this.staleFileCounts.delete(this.modHistoryId(mod));
+          new Notice(`"${mod.name}" is up to date. Newer commits in the repo don't change it.`);
+        } else {
+          new Notice(`"${mod.name}" already matches the installed version.`);
+        }
         this.render();
         return;
       }
-      this.modRail = { kind: "review", modId: mod.id, files, newRoot, newCommit: clone.commit, clone };
+      this.modRail = { kind: "review", modId: mod.id, mode, files, newRoot, newCommit: clone.commit, clone };
     } catch (e) {
       clone?.cleanup();
-      this.modRail = { kind: "review-error", modId: mod.id, message: errorMessage(e) };
+      this.modRail = { kind: "review-error", modId: mod.id, mode, message: errorMessage(e) };
     }
     this.render();
   }
 
-  private async setModSourceCommit(modPath: string, commit: string) {
+  private async setModSourceCommit(mod: ModEntry, commit: string) {
+    const key = this.modSourceKey(mod);
+    if (!key) return;
     const settings = this.getSettings();
-    const source = settings.modSources[modPath];
-    if (!source) return;
-    settings.modSources = { ...settings.modSources, [modPath]: { ...source, commit } };
+    settings.modSources = { ...settings.modSources, [key]: { ...settings.modSources[key], commit } };
     await this.saveSettings();
   }
 
@@ -3734,23 +4499,26 @@ export class LibraryView extends ItemView {
       const status = panel.createDiv({ cls: "skillmanager-review-status" });
       status.createDiv({
         cls: "skillmanager-modal-meta",
-        text: state.kind === "review-loading" ? "Fetching upstream changes…" : `Couldn't fetch the update: ${state.message}`,
+        text: state.kind === "review-loading"
+          ? state.mode === "restore" ? "Fetching the installed version…" : "Fetching upstream changes…"
+          : `Couldn't fetch ${state.mode === "restore" ? "the installed version" : "the update"}: ${state.message}`,
       });
       if (state.kind === "review-error") {
         const actions = status.createDiv({ cls: "skillmanager-modal-actions" });
-        actions.createEl("button", { text: "Retry", cls: "mod-cta" }).addEventListener("click", () => void this.startModReview(mod));
+        actions.createEl("button", { text: "Retry", cls: "mod-cta" }).addEventListener("click", () => void this.startModReview(mod, state.mode));
         actions.createEl("button", { text: "Dismiss", cls: "skillmanager-btn-neutral" }).addEventListener("click", close);
       }
       return;
     }
     if (state.kind === "review") {
       const count = state.files.length;
+      const verb = state.mode === "restore" ? "Restore" : "Update";
       renderTabsDiff(panel, {
         files: state.files,
-        state: this.tabsDiffState(`modreview:${mod.id}:${state.newCommit}`),
+        state: this.tabsDiffState(`modreview:${mod.id}:${state.mode}:${state.newCommit}`),
         rerender: () => this.render(),
         back: { label: "Cancel", onClick: close },
-        primary: { label: count > 1 ? `Update ${count} files` : "Update", onClick: () => void this.applyModReview(mod) },
+        primary: { label: count > 1 ? `${verb} ${count} files` : verb, onClick: () => void this.applyModReview(mod) },
       });
       return;
     }
@@ -3761,23 +4529,31 @@ export class LibraryView extends ItemView {
    *  fetched copy the same way an item update does; the old folder goes to the trash. */
   private async applyModReview(mod: ModEntry) {
     const state = this.modRail;
-    const source = this.getSettings().modSources[mod.path];
+    const source = this.modSourceFor(mod);
     if (state?.kind !== "review" || !source) return;
+    const restoring = state.mode === "restore";
     try {
-      this.trySnapshot((h) => h.snapshotUnit(this.modHistoryId(mod), mod.path, true, "update", { commit: source.commit, toCommit: state.newCommit }));
+      this.trySnapshot((h) =>
+        h.snapshotUnit(this.modHistoryId(mod), mod.path, true, restoring ? "restore-installed" : "update", { commit: source.commit, toCommit: state.newCommit })
+      );
       await this.replaceUnit(state.newRoot, mod.path, true);
-      await this.setModSourceCommit(mod.path, state.newCommit);
+      await this.setModSourceCommit(mod, state.newCommit);
+      if (!restoring) {
+        this.syncStatus.set(this.modHistoryId(mod), "current");
+        this.staleFileCounts.delete(this.modHistoryId(mod));
+      }
       this.cleanupReview();
       await this.rescan();
       this.render();
-      new Notice(`Updated "${mod.name}". New sessions load the new version.`);
+      new Notice(restoring ? `Restored "${mod.name}".` : `Updated "${mod.name}". New sessions load the new version.`);
     } catch (e) {
-      new Notice(`Update failed: ${errorMessage(e)}`);
+      new Notice(`${restoring ? "Restore" : "Update"} failed: ${errorMessage(e)}`);
     }
   }
 
   private modHistoryLabel(entry: HistoryEntry): string {
     if (entry.kind === "update") return entry.toCommit ? `Before GitHub update to ${entry.toCommit.slice(0, 7)}` : "Before GitHub update";
+    if (entry.kind === "restore-installed") return "Before restoring the installed version";
     return "Before restoring an earlier version";
   }
 
@@ -3856,11 +4632,14 @@ export class LibraryView extends ItemView {
   private async restoreModVersion(mod: ModEntry, entry: HistoryEntry) {
     const history = this.itemHistory();
     if (!history) return;
-    const source = this.getSettings().modSources[mod.path];
+    const source = this.modSourceFor(mod);
     try {
       this.trySnapshot((h) => h.snapshotBeforeRestore(entry, mod.path, true, source?.commit));
       await this.replaceUnit(history.contentPath(entry), mod.path, true);
-      if (entry.commit) await this.setModSourceCommit(mod.path, entry.commit);
+      if (entry.commit) {
+        await this.setModSourceCommit(mod, entry.commit);
+        this.syncStatus.delete(this.modHistoryId(mod));
+      }
       history.prune(this.modHistoryId(mod));
       this.cleanupReview();
       await this.rescan();
@@ -3873,13 +4652,14 @@ export class LibraryView extends ItemView {
 
   private modOriginLabel(mod: ModEntry): { text: string; icon: string } {
     if (mod.origin === "dev") return { text: "In development", icon: "flask-conical" };
-    if (mod.origin === "plugin-dir") {
-      const source = this.getSettings().modSources[mod.path];
-      const parsed = source ? parseOwnerRepo(source.repoUrl) : null;
-      if (source) return { text: parsed ? `${parsed.owner}/${parsed.repo}` : "GitHub", icon: "github" };
-      return { text: "Plugin folder (env)", icon: "folder-cog" };
+    const source = mod.origin === "installed" ? undefined : this.modSourceFor(mod);
+    if (source) {
+      const parsed = parseOwnerRepo(source.repoUrl);
+      return { text: parsed ? `${parsed.owner}/${parsed.repo}` : "GitHub", icon: "github" };
     }
+    if (mod.origin === "plugin-dir") return { text: "Plugin folder (env)", icon: "folder-cog" };
     if (mod.origin === "skill") return { text: "Skills folder", icon: "sparkles" };
+    if (mod.origin === "repo") return { text: this.getAllProjects().find((p) => p.id === mod.projectId)?.name ?? "Source repo", icon: projectIcon(mod.projectId ?? "") };
     const plugin = this.discoveredPlugins.find((p) => p.id === mod.pluginId);
     return { text: plugin?.group ?? "Installed plugin", icon: "layers-3" };
   }
@@ -3906,33 +4686,65 @@ export class LibraryView extends ItemView {
     const header = content.createDiv({ cls: "skillmanager-content-header" });
     const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
     titleRow.createEl("h2", { text: "MCP servers", cls: "skillmanager-title" });
-    titleRow.createSpan({ text: String(this.mcpServers.length), cls: "skillmanager-count-pill" });
+    const total = this.mcpServers.length;
+    const countText = (shown: number) => (shown === total ? String(total) : `${shown} of ${total}`);
+    const servers = this.filteredMcpServers();
+    const countPill = titleRow.createSpan({ text: countText(servers.length), cls: "skillmanager-count-pill" });
     const showBanner = this.showWorkspaceBanner();
     if (!showBanner) this.renderWorkspaceChip(titleRow);
-    const subtitleRow = header.createDiv({ cls: "skillmanager-subtitle-row" });
-    subtitleRow.createDiv({
+    header.createDiv({
       text: "Every MCP server found in a tool's config files, across your tools and projects. Enable or disable one from its owning tool, not here.",
       cls: "skillmanager-subtitle",
     });
-    this.renderMcpToolFilterButton(subtitleRow);
     if (showBanner) this.renderWorkspaceBanner(header);
 
-    const servers = this.mcpToolFilter ? this.mcpServers.filter((s) => s.tool === this.mcpToolFilter) : this.mcpServers;
+    const toolbar = content.createDiv({ cls: "skillmanager-toolbar" });
+    this.renderSearchField(toolbar, "Search MCP servers…", this.mcpSearch, (value) => {
+      this.mcpSearch = value;
+      const next = this.filteredMcpServers();
+      countPill.setText(countText(next.length));
+      fill(next);
+    });
+    this.renderMcpToolFilterButton(toolbar);
+    this.renderTagFilterBar(content, this.allExtensionTags(this.mcpServers.map((s) => this.mcpTagKey(s))), this.mcpTagFilter, (tag) => (this.mcpTagFilter = tag));
 
     const body = content.createDiv({ cls: "skillmanager-body" });
     const animation = this.pendingDetailAnimation;
     this.pendingDetailAnimation = null;
 
     const grid = body.createDiv({ cls: `skillmanager-items${this.selectedMcpServer ? " is-docked" : ""}` });
-    if (servers.length === 0) {
-      grid.createDiv({ text: "No MCP servers found in any configured tool.", cls: "skillmanager-empty" });
-    }
-    for (const server of servers) this.renderMcpServerCard(grid, server);
+    const fill = (shown: McpServerEntry[]) => {
+      grid.empty();
+      if (shown.length === 0) {
+        grid.createDiv({ text: total > 0 ? "No MCP servers match these filters." : "No MCP servers found in any configured tool.", cls: "skillmanager-empty" });
+      }
+      for (const server of shown) this.renderMcpServerCard(grid, server);
+    };
+    fill(servers);
 
     if (this.selectedMcpServer) {
       const rail = body.createDiv({ cls: `skillmanager-detail${animation ? ` skillmanager-panel-enter-${animation}` : ""}` });
       this.renderMcpServerDetailRail(rail, this.selectedMcpServer);
     }
+  }
+
+  private mcpTagKey(server: McpServerEntry): string {
+    return `mcp:${server.entryId}`;
+  }
+
+  private filteredMcpServers(): McpServerEntry[] {
+    const query = this.mcpSearch.trim().toLowerCase();
+    const tools = this.getSettings().tools;
+    return this.mcpServers.filter((server) => {
+      if (this.mcpToolFilter && server.tool !== this.mcpToolFilter) return false;
+      const tags = this.extensionTags(this.mcpTagKey(server));
+      if (this.mcpTagFilter && !tags.includes(this.mcpTagFilter)) return false;
+      if (!query) return true;
+      const { command, args, url } = server.config;
+      const scope = server.scope === "global" ? "Global" : server.scope.projectName;
+      const tool = tools.find((t) => t.id === server.tool)?.name ?? "";
+      return `${server.name} ${command ?? ""} ${(args ?? []).join(" ")} ${url ?? ""} ${tool} ${scope} ${tags.join(" ")}`.toLowerCase().includes(query);
+    });
   }
 
   /** Mirrors renderToolStatusButton's Menu-based dropdown (same classes/shape), scoped to just
@@ -4012,6 +4824,7 @@ export class LibraryView extends ItemView {
       ? [server.config.command, ...(server.config.args ?? [])].join(" ")
       : server.config.url ?? "";
     if (detail) card.createDiv({ cls: "skillmanager-card-desc skillmanager-mcp-card-command", text: detail });
+    this.renderExtensionCardTags(card, this.extensionTags(this.mcpTagKey(server)));
 
     const footer = card.createDiv({ cls: "skillmanager-card-footer" });
     this.renderMcpScopeBadge(footer, server);
@@ -4208,70 +5021,82 @@ export class LibraryView extends ItemView {
     crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
     crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: server.name });
 
-    const header = panel.createDiv({ cls: "skillmanager-detail-header" });
-    if (tool) {
-      const headerIcon = header.createSpan({ cls: "skillmanager-tool-card-icon" });
-      this.renderIcon(headerIcon, tool.icon, tool.svgIcon);
-    }
+    // Same head as an item's or a mod's preview (see renderDetailHeader, renderModDetailRail):
+    // title, type pill and icon actions, the "Tool · Scope" line, then the properties panel.
+    const section = panel.createDiv({ cls: "skillmanager-detail-head" });
+    const header = section.createDiv({ cls: "skillmanager-detail-header" });
     header.createEl("h3", { text: server.name, cls: "skillmanager-detail-title" });
+    header.createSpan({ text: "MCP server", cls: "skillmanager-detail-type-pill" });
+    const actions = header.createDiv({ cls: "skillmanager-detail-actions" });
+    const action = (icon: string, label: string, onClick: () => void) => {
+      const btn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": label } });
+      setIcon(btn, icon);
+      btn.addEventListener("click", onClick);
+    };
+    action("folder-open", this.fileManagerLabel(), () => void this.openContainingFolder(server.sourcePath));
+    action("external-link", "Open config file", () => void this.openMcpConfigFile(server));
+    if (server.config.command) action("copy", "Copy command", () => void this.copyMcpCommand(server));
 
-    const body = panel.createDiv({ cls: "skillmanager-detail-body" });
-    this.renderMcpScopeBadge(body, server);
+    const toolLine = section.createDiv({ cls: "skillmanager-detail-tool" });
+    if (tool) this.renderIcon(toolLine.createSpan({ cls: "skillmanager-detail-tool-icon" }), tool.icon, tool.svgIcon);
+    const scope = server.scope === "global" ? "Global" : server.scope.projectName;
+    toolLine.createSpan({ text: `${tool?.name ?? server.tool} · ${scope}` });
+    section.createDiv({
+      cls: "skillmanager-subtitle",
+      text: `Read from ${tool?.name ?? server.tool}'s config file. Change or turn it off in ${tool?.name ?? "that tool"}, not here.`,
+    });
 
-    const configBox = body.createDiv({ cls: "skillmanager-detail-frontmatter" });
-    if (server.config.command) {
-      this.renderFrontmatterRow(configBox, "command", [server.config.command, ...(server.config.args ?? [])].join(" "));
-    }
-    if (server.config.url) this.renderFrontmatterRow(configBox, "url", server.config.url);
-    if (server.config.type) this.renderFrontmatterRow(configBox, "type", server.config.type);
+    this.renderMcpProperties(section, server);
+  }
 
-    const envEntries = Object.entries(server.config.env ?? {});
+  /** The properties panel (same grid as renderDetailProperties): tags, where it loads, then the
+   *  server's own config as read from its file, and that file's path last, like an item's Path.
+   *  Env vars follow in their own block below it. */
+  private renderMcpProperties(container: HTMLElement, server: McpServerEntry) {
+    const panel = container.createDiv({ cls: "skillmanager-detail-props-panel" });
+    const props = panel.createDiv({ cls: "skillmanager-detail-props" });
+    const prop = (label: string, fill: (value: HTMLElement) => void, tooltip?: string, valueCls = "") => {
+      const key = props.createDiv({ cls: "skillmanager-detail-prop-key" });
+      key.createSpan({ text: label });
+      if (tooltip) {
+        setIcon(key.createSpan({ cls: "skillmanager-detail-info" }), "info");
+        setTooltip(key, tooltip, { placement: "top" });
+      }
+      fill(props.createDiv({ cls: `skillmanager-detail-prop-value${valueCls ? ` ${valueCls}` : ""}` }));
+    };
+    const text = (value: string) => (el: HTMLElement) => el.setText(value);
+
+    const tagKey = this.mcpTagKey(server);
+    prop("Tags", (el) => this.renderTagEditor(el, tagKey, this.extensionTags(tagKey), (tags) => void this.setExtensionTags(tagKey, tags)));
+    prop(
+      "Loads",
+      text(server.scope === "global" ? "Every session" : `${server.scope.projectName} only`),
+      server.scope === "global" ? "Set in the tool's global config, so every session can use it." : "Set in this project's config, so only sessions in it can use it."
+    );
+    const { command, args, url, type, env } = server.config;
+    if (command) prop("Command", text([command, ...(args ?? [])].join(" ")), undefined, "is-mono");
+    if (url) prop("URL", text(url), undefined, "is-mono");
+    if (type) prop("Transport", text(type));
+    prop("Config file", text(server.sourcePath), undefined, "is-mono");
+
+    // Env vars get their own panel under this one, same grid and styling, rather than rows mixed
+    // in with the server's properties: a server can carry many.
+    const envEntries = Object.entries(env ?? {});
     if (envEntries.length > 0) {
-      body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Environment variables" });
-      const envBox = body.createDiv({ cls: "skillmanager-detail-frontmatter" });
-      for (const [key, value] of envEntries) this.renderMcpEnvRow(envBox, key, value);
-    }
-
-    body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Config file" });
-    body.createDiv({ cls: "skillmanager-card-desc skillmanager-mcp-card-command", text: server.sourcePath });
-
-    const actions = body.createDiv({ cls: "skillmanager-mcp-detail-actions" });
-    const openBtn = actions.createEl("button", { cls: "skillmanager-sort-btn" });
-    const openIcon = openBtn.createSpan({ cls: "skillmanager-sort-btn-icon" });
-    setIcon(openIcon, "external-link");
-    openBtn.createSpan({ cls: "skillmanager-sort-btn-label", text: "Open config file" });
-    openBtn.addEventListener("click", () => void this.openMcpConfigFile(server));
-
-    if (server.config.command) {
-      const copyBtn = actions.createEl("button", { cls: "skillmanager-sort-btn" });
-      const copyIcon = copyBtn.createSpan({ cls: "skillmanager-sort-btn-icon" });
-      setIcon(copyIcon, "copy");
-      copyBtn.createSpan({ cls: "skillmanager-sort-btn-label", text: "Copy command" });
-      copyBtn.addEventListener("click", () => void this.copyMcpCommand(server));
+      container.createDiv({ cls: "skillmanager-sidebar-heading", text: "Environment variables" });
+      const envProps = container.createDiv({ cls: "skillmanager-detail-props-panel" }).createDiv({ cls: "skillmanager-detail-props" });
+      for (const [key, value] of envEntries) this.renderMcpEnvRow(envProps, key, value);
     }
   }
 
-  /** Env values are masked by default and revealed one at a time (revealedMcpEnvKeys) — most
-   *  MCP servers carry an API key/token in here, so this follows the same "hidden until you ask"
-   *  convention as a password field rather than the plaintext frontmatter rows above it.
-   *
-   *  .skillmanager-fm-row is `display: contents` (its children become direct items of the parent
-   *  2-column grid — see renderFrontmatterRow) — so the value and its reveal toggle are wrapped
-   *  together in one .skillmanager-mcp-env-value div, kept as the row's single second child,
-   *  rather than added as a third direct child that would wrap onto its own grid row. */
-  private renderMcpEnvRow(container: HTMLElement, key: string, value: string) {
+  /** One env var as a key/value row of the properties grid, the value masked until revealed
+   *  (revealedMcpEnvKeys), the same "hidden until you ask" convention as a password field. */
+  private renderMcpEnvRow(props: HTMLElement, key: string, value: string) {
     const revealed = this.revealedMcpEnvKeys.has(key);
-    const row = container.createDiv({ cls: "skillmanager-fm-row" });
-    const label = row.createSpan({ cls: "skillmanager-fm-label" });
-    label.createSpan({ text: key, cls: "skillmanager-fm-key" });
-    label.createSpan({ text: ":", cls: "skillmanager-fm-colon" });
-
-    const valueWrap = row.createDiv({ cls: "skillmanager-mcp-env-value" });
-    valueWrap.createSpan({
-      text: revealed ? value : "••••••••",
-      cls: `skillmanager-fm-value${revealed ? "" : " is-masked"}`,
-    });
-    const toggle = valueWrap.createEl("button", {
+    props.createDiv({ cls: "skillmanager-detail-prop-key is-mono", text: key });
+    const cell = props.createDiv({ cls: "skillmanager-detail-prop-value is-mono skillmanager-mcp-env-value" });
+    cell.createSpan({ text: revealed ? value : "••••••••", cls: revealed ? "" : "is-masked" });
+    const toggle = cell.createEl("button", {
       cls: "skillmanager-icon-btn skillmanager-mcp-reveal-btn",
       attr: { "aria-label": revealed ? `Hide ${key}` : `Reveal ${key}` },
     });
@@ -4790,6 +5615,26 @@ export class LibraryView extends ItemView {
         }
       );
     }
+
+    // Only a tool that loads mods has this; it's also what turns mod scanning on (see scanMods).
+    if (tool.devModsPath !== undefined) {
+      body.createDiv({ cls: "skillmanager-sidebar-heading", text: "Mods" });
+      body.createDiv({
+        cls: "setting-item-description",
+        text: "Where sessions write mods under development, one subfolder per session. Finished mods are found through Plugin settings (CLAUDE_CODE_PLUGIN_DIRS), skills folders and source repo workspaces.",
+      });
+      this.renderToolPathField(
+        body,
+        "Dev mods folder",
+        tool.devModsPath,
+        "~/.example/dev-mods",
+        (raw) => expandHome(raw),
+        (value) => {
+          tool.devModsPath = value.trim();
+          void this.saveSettings().then(() => this.rescan());
+        }
+      );
+    }
   }
 
   /** Same row shape as renderToolPathField, minus the found/not-found status pill — for a field
@@ -4976,6 +5821,18 @@ export class LibraryView extends ItemView {
         })),
         this.sourceFilter,
         (key) => (this.sourceFilter = key)
+      );
+      section(
+        "Link",
+        "link",
+        (Object.keys(LINK_FILTER_LABELS) as (keyof typeof LINK_FILTER_LABELS)[]).map((key) => ({
+          key,
+          label: LINK_FILTER_LABELS[key],
+          match: (item: ItemMetadata) => this.matchesLinkFilter(key, this.isSymlinkedItem(item), item.realPath),
+          nested: key === "unregistered",
+        })),
+        this.linkFilter,
+        (key) => (this.linkFilter = key)
       );
       if (!this.projectFilter) {
         section(
@@ -5304,7 +6161,7 @@ export class LibraryView extends ItemView {
     }
 
     const actions = row.createDiv({ cls: "skillmanager-list-cell col-actions is-wide" });
-    createSwitch(actions, {
+    if (!this.isRepoRootItem(item)) createSwitch(actions, {
       on: item.enabled,
       label: `${item.name} enabled`,
       onClick: () => {
@@ -5368,7 +6225,8 @@ export class LibraryView extends ItemView {
       });
     }
 
-    createSwitch(head, {
+    // A source repo's own copy has no on/off: no tool loads it from there, only through its links.
+    if (!this.isRepoRootItem(item)) createSwitch(head, {
       on: item.enabled,
       label: `${item.name} enabled`,
       // A plugin-bundled item has no individual on/off — the tool only supports enabling or
@@ -5412,6 +6270,8 @@ export class LibraryView extends ItemView {
     });
 
     const rightGroup = footer.createDiv({ cls: "skillmanager-card-footer-right" });
+    const repo = this.isSymlinkedItem(item) ? this.unregisteredRepo(item.realPath) : null;
+    if (repo) this.renderAddRepoButton(rightGroup, repo, item.tool);
     if (item.projectId === null) {
       this.renderProjectLinkButton(rightGroup, item);
     } else if (isLinked || isBroken) {
@@ -5623,6 +6483,16 @@ export class LibraryView extends ItemView {
    *  actually a symlink" — regardless of scope, unlike the project-card's isLinked which also
    *  requires projectId !== null. A global item can be a symlink too (e.g. a tool's skills folder
    *  symlinked to an external store), and that's exactly the case the dashboard needs to flag. */
+  /** An item a source repo workspace lists from its own root (see scanProject), rather than from
+   *  a tool folder inside it: the tool never loads it from there, only through links to it. */
+  private isRepoRootItem(item: ItemMetadata): boolean {
+    const project = item.projectId ? this.getAllProjects().find((p) => p.id === item.projectId) : undefined;
+    if (!project?.sourceRepoToolId) return false;
+    const tool = this.getSettings().tools.find((t) => t.id === item.tool);
+    const dir = tool ? resolveToolDir(tool, item.type, project) : null;
+    return !dir || !item.sourcePath.startsWith(dir + sep);
+  }
+
   private isSymlinkedItem(item: ItemMetadata): boolean {
     return item.realPath !== item.sourcePath;
   }
@@ -5660,7 +6530,8 @@ export class LibraryView extends ItemView {
 
   private getDashboardMetrics(): DashboardMetric[] {
     if (!this.dashboardMetrics) {
-      this.dashboardMetrics = computeDashboardMetrics(this.items.filter((i) => i.enabled));
+      // A source repo's own copies aren't loaded by any tool; the links to them are what's counted.
+      this.dashboardMetrics = computeDashboardMetrics(this.items.filter((i) => i.enabled && !this.isRepoRootItem(i)));
     }
     return this.dashboardMetrics;
   }
@@ -5687,7 +6558,7 @@ export class LibraryView extends ItemView {
     if (!this.integrityIssues) {
       const issuesById = new Map<string, string[]>();
       for (const item of this.items) {
-        if (!item.enabled) continue;
+        if (!item.enabled || this.isRepoRootItem(item)) continue;
         let raw: string;
         try {
           raw = readFileSync(item.sourcePath, "utf-8");
@@ -7305,6 +8176,8 @@ export class LibraryView extends ItemView {
 
     // Any review (loading, error or ready) already answers the banner's question.
     if (!review && this.syncStatusFor(item) === "stale") this.renderUpdateBanner(section, item);
+    const repo = !review && this.isSymlinkedItem(item) ? this.unregisteredRepo(item.realPath) : null;
+    if (repo) this.renderRepoBanner(section, repo, item.tool);
 
     // A review replaces the file view with a diff (see renderDiffReview); the file-scoped stuff
     // below would either duplicate or fight with that diff, so it's suppressed while it's open.
@@ -7705,7 +8578,17 @@ export class LibraryView extends ItemView {
    *  "which tool sees this," which has nothing to do with where it came from, and every installed
    *  item has one regardless of whether it happens to also have a sourceRepo. */
   private renderSourceRepoLine(container: HTMLElement, item: ItemMetadata) {
-    const repoUrl = item.sourceRepo as string;
+    this.renderRepoLink(container, {
+      repoUrl: item.sourceRepo as string,
+      ref: item.sourceRef ?? "",
+      subpath: item.sourceSubpath ?? "",
+      commit: item.sourceCommit ?? "",
+    });
+  }
+
+  /** renderSourceRepoLine for any tracked source, a mod's included. */
+  private renderRepoLink(container: HTMLElement, source: ModSource) {
+    const repoUrl = source.repoUrl;
     // Keeps the existing skillmanager-detail-source-repo class (and everything the surrounding
     // .skillmanager-detail-source/-inline layouts already key off it for) — just turns its single
     // text node into a small flex row with an avatar in front and a link instead of plain text.
@@ -7717,7 +8600,7 @@ export class LibraryView extends ItemView {
     row.createEl("a", {
       text: parsed ? `${parsed.owner}/${parsed.repo}` : repoUrl,
       attr: {
-        href: githubSourceUrl(repoUrl, item.sourceRef ?? "", item.sourceSubpath ?? "", item.sourceCommit ?? ""),
+        href: githubSourceUrl(repoUrl, source.ref, source.subpath, source.commit),
         target: "_blank",
         rel: "noopener",
         title: repoUrl,
@@ -7963,7 +8846,11 @@ export class LibraryView extends ItemView {
   }
 
   private checkCloneKey(item: ItemMetadata): string {
-    return `${item.sourceRepo}#${item.sourceRef ?? ""}`;
+    return this.repoCloneKey(item.sourceRepo as string, item.sourceRef ?? "");
+  }
+
+  private repoCloneKey(repoUrl: string, ref: string): string {
+    return `${repoUrl}#${ref}`;
   }
 
   /** The latest-commit clone for an item's repo: reuses the one the last update check fetched
@@ -7971,12 +8858,18 @@ export class LibraryView extends ItemView {
    *  caches it. The returned copy's cleanup is a no-op, since the cache owns the temp dir and a
    *  review or bulk update finishing with it mustn't delete it out from under the next one. */
   private latestClone(item: ItemMetadata, commit?: string): ClonedRepo {
-    const key = this.checkCloneKey(item);
+    return this.latestRepoClone(item.sourceRepo as string, item.sourceRef ?? "", commit);
+  }
+
+  /** latestClone by repo and ref, shared with mods (see startModReview), which track the same
+   *  quad in modSources instead of an item's fields. */
+  private latestRepoClone(repoUrl: string, ref: string, commit?: string): ClonedRepo {
+    const key = this.repoCloneKey(repoUrl, ref);
     let clone = this.checkClones.get(key);
     if (!clone || (commit && clone.commit !== commit)) {
       clone?.cleanup();
       this.checkClones.delete(key);
-      clone = shallowCloneRepo(item.sourceRepo as string, item.sourceRef || undefined);
+      clone = shallowCloneRepo(repoUrl, ref || undefined);
       removeGitDir(clone);
       this.checkClones.set(key, clone);
     }
@@ -7993,17 +8886,19 @@ export class LibraryView extends ItemView {
    *  progress can paint. */
   private async checkTrackedItems(onProgress?: (done: number, total: number) => void): Promise<{
     checked: number;
-    stale: ItemMetadata[];
+    stale: { name: string }[];
     errors: number;
   }> {
     const tracked = this.items.filter((i) => i.sourceRepo);
+    const trackedMods = this.mods.filter((m) => this.modSourceFor(m));
+    const total = tracked.length + trackedMods.length;
     const heads = new Map<string, string>();
-    const stale: ItemMetadata[] = [];
+    const stale: { name: string }[] = [];
     let errors = 0;
     let advanced = false;
     for (let i = 0; i < tracked.length; i++) {
       const item = tracked[i];
-      onProgress?.(i + 1, tracked.length);
+      onProgress?.(i + 1, total);
       await new Promise((resolve) => window.setTimeout(resolve, 0));
       try {
         const key = this.checkCloneKey(item);
@@ -8038,9 +8933,45 @@ export class LibraryView extends ItemView {
         errors++;
       }
     }
+    // Mods installed from GitHub, the same way, off their modSources record.
+    for (let i = 0; i < trackedMods.length; i++) {
+      const mod = trackedMods[i];
+      const source = this.modSourceFor(mod) as ModSource;
+      const id = this.modHistoryId(mod);
+      onProgress?.(tracked.length + i + 1, total);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      try {
+        const key = this.repoCloneKey(source.repoUrl, source.ref);
+        let latest = heads.get(key);
+        if (latest === undefined) {
+          latest = remoteHeadCommit(source.repoUrl, source.ref || undefined);
+          heads.set(key, latest);
+        }
+        if (latest === source.commit) {
+          this.syncStatus.set(id, "current");
+          this.staleFileCounts.delete(id);
+          continue;
+        }
+        const clone = this.latestRepoClone(source.repoUrl, source.ref, latest);
+        const newRoot = source.subpath ? join(clone.dir, source.subpath) : clone.dir;
+        const changed = isModFolder(newRoot) ? changedModFiles(mod.path, newRoot).length : -1;
+        if (changed === 0) {
+          await this.setModSourceCommit(mod, clone.commit);
+          this.syncStatus.set(id, "current");
+          this.staleFileCounts.delete(id);
+        } else {
+          this.syncStatus.set(id, "stale");
+          if (changed > 0) this.staleFileCounts.set(id, changed);
+          else this.staleFileCounts.delete(id);
+          stale.push(mod);
+        }
+      } catch {
+        errors++;
+      }
+    }
     // Picks up the advanced sourceCommits, so the next check compares against them.
     if (advanced) await this.rescan();
-    return { checked: tracked.length, stale, errors };
+    return { checked: total, stale, errors };
   }
 
   private async bulkCheckForUpdates(btn: HTMLButtonElement) {
@@ -8056,7 +8987,8 @@ export class LibraryView extends ItemView {
         : `${stale.length} update${stale.length === 1 ? "" : "s"} available${stale.length <= 3 ? `: ${names.join(", ")}` : ""}.`;
     new Notice(errors > 0 ? `${found} ${errors} of ${checked} couldn't be reached.` : found);
     // Put what was found on screen right away, rather than hidden among everything else.
-    if (stale.length > 0) this.sourceFilter = "updates";
+    // The filter lists items only, so stale mods alone (flagged on the Mods page) don't set it.
+    if (stale.some((s) => "entryId" in s)) this.sourceFilter = "updates";
     this.render();
   }
 
@@ -8070,7 +9002,7 @@ export class LibraryView extends ItemView {
     const { checked, stale, errors } = await this.checkTrackedItems();
     this.bulkCheckInProgress = false;
     if (stale.length > 0) {
-      new Notice(`${stale.length} skill${stale.length === 1 ? "" : "s"} ${stale.length === 1 ? "has" : "have"} an update available.`);
+      new Notice(`${stale.length} update${stale.length === 1 ? "" : "s"} available.`);
     } else if (errors > 0 && checked === errors) {
       new Notice(`Auto update check: couldn't reach ${errors} source${errors === 1 ? "" : "s"}.`);
     }
@@ -8269,24 +9201,19 @@ export class LibraryView extends ItemView {
     }
   }
 
-  /** Renders one "key: value" row styled like a syntax-highlighted YAML block. Values across
-   *  rows share a fixed-width label column so they left-align with each other regardless of
-   *  the key's length (e.g. "name" vs "description"). */
-  private renderFrontmatterRow(container: HTMLElement, key: string, value: string) {
-    const row = container.createDiv({ cls: "skillmanager-fm-row" });
-    const label = row.createSpan({ cls: "skillmanager-fm-label" });
-    label.createSpan({ text: key, cls: "skillmanager-fm-key" });
-    label.createSpan({ text: ":", cls: "skillmanager-fm-colon" });
-    row.createSpan({ text: value, cls: "skillmanager-fm-value" });
-  }
-
   /** Tag chips, each with its own remove button, plus a "+ tag" affordance that swaps itself for
    *  an inline input. Shown in the properties panel (see renderDetailProperties) rather than the old
    *  comma-separated text field at the very bottom of the panel. */
   private renderTagChips(container: HTMLElement, item: ItemMetadata) {
+    this.renderTagEditor(container, item.entryId, item.tags, (tags) => void this.applyItemUpdate(item.entryId, { tags }));
+  }
+
+  /** renderTagChips' chips and "+ tag" input for anything with tags: `key` marks which one has the
+   *  input open (addingTagFor), `save` stores the new list and re-renders. */
+  private renderTagEditor(container: HTMLElement, key: string, tags: string[], save: (tags: string[]) => void) {
     const row = container.createDiv({ cls: "skillmanager-detail-tags-row" });
 
-    for (const tag of item.tags) {
+    for (const tag of tags) {
       const chip = row.createDiv({ cls: "skillmanager-tag-chip" });
       chip.createSpan({ text: tag });
       const removeBtn = chip.createEl("button", {
@@ -8294,15 +9221,13 @@ export class LibraryView extends ItemView {
         text: "×",
         attr: { "aria-label": `Remove tag "${tag}"` },
       });
-      removeBtn.addEventListener("click", () => {
-        void this.applyItemUpdate(item.entryId, { tags: item.tags.filter((t) => t !== tag) });
-      });
+      removeBtn.addEventListener("click", () => save(tags.filter((t) => t !== tag)));
     }
 
-    if (this.addingTagFor !== item.entryId) {
+    if (this.addingTagFor !== key) {
       const addBtn = row.createEl("button", { cls: "skillmanager-tag-add-btn", text: "+ tag" });
       addBtn.addEventListener("click", () => {
-        this.addingTagFor = item.entryId;
+        this.addingTagFor = key;
         this.render();
       });
       return;
@@ -8317,13 +9242,13 @@ export class LibraryView extends ItemView {
     // should actually act — re-rendering on the first one detaches this element, which fires a
     // trailing "blur" the others didn't ask for.
     let settled = false;
-    const finish = (save: boolean) => {
+    const finish = (keep: boolean) => {
       if (settled) return;
       settled = true;
       this.addingTagFor = null;
       const value = input.value.trim();
-      if (save && value && !item.tags.includes(value)) {
-        void this.applyItemUpdate(item.entryId, { tags: [...item.tags, value] });
+      if (keep && value && !tags.includes(value)) {
+        save([...tags, value]);
       } else {
         this.render();
       }

@@ -244,7 +244,7 @@ export const FINISHED_MODS_DIR = "~/mods";
 const PLUGIN_DIRS_ENV = "CLAUDE_CODE_PLUGIN_DIRS";
 
 /** `~/...` for a path under the home folder, the form people write in settings.json by hand. */
-function tildify(path: string): string {
+export function tildify(path: string): string {
   const home = homedir();
   return path === home || path.startsWith(home + sep) ? "~" + path.slice(home.length) : path;
 }

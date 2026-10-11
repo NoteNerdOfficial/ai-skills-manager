@@ -1,12 +1,13 @@
-import { existsSync, lstatSync, mkdirSync, symlinkSync, unlinkSync } from "fs";
-import { join } from "path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, symlinkSync, unlinkSync } from "fs";
+import { basename, dirname, join } from "path";
 import { linkableUnit } from "./fsUnit";
-import { resolveToolDir } from "./scanners";
-import { ItemMetadata, ProjectWorkspace, ToolConfig } from "./types";
+import { expandHome, resolveToolDir } from "./scanners";
+import { ItemMetadata, ModEntry, ProjectWorkspace, ToolConfig } from "./types";
 
-/** Symlinks a global item into a project's local tool folder — never copies, so it can never
+/** Symlinks an item into a project's local tool folder, or with `project` null into the tool's
+ *  global (user) folder, for an item kept in a project or repo — never copies, so it can never
  *  drift out of sync with the source. */
-export function addToProject(item: ItemMetadata, tool: ToolConfig, project: ProjectWorkspace): void {
+export function addToProject(item: ItemMetadata, tool: ToolConfig, project: ProjectWorkspace | null): void {
   const targetDir = resolveToolDir(tool, item.type, project);
   if (!targetDir) throw new Error(`${tool.name} has no configured ${item.type} path`);
 
@@ -26,4 +27,85 @@ export function removeFromProject(projectItemSourcePath: string): void {
     throw new Error("This item isn't a symlink, so it won't be deleted as a real file or folder.");
   }
   unlinkSync(unit.path);
+}
+
+/** Mod origins that can be linked into a project: a folder the person keeps (a CLAUDE_CODE_PLUGIN_DIRS
+ *  folder, or one in a skills folder). An installed mod belongs to the tool's plugin manager and a
+ *  dev mod to the session developing it, so neither is linked from here. */
+export function canLinkModToProjects(mod: ModEntry, tool: ToolConfig | undefined): tool is ToolConfig {
+  return !!(tool?.projectPaths?.skill ?? tool?.paths.skill) && (mod.origin === "plugin-dir" || mod.origin === "skill" || mod.origin === "repo");
+}
+
+/** The symlink in a project's skills folder (or with `project` null, the global one) that points
+ *  at this mod, if any. The tool loads a plugin it finds there, followed through the link, in that
+ *  project only, or in every session from the global folder. */
+export function modProjectLink(mod: ModEntry, tool: ToolConfig, project: ProjectWorkspace | null): string | null {
+  const dir = resolveToolDir(tool, "skill", project);
+  if (!dir) return null;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    const path = join(dir, name);
+    try {
+      if (lstatSync(path).isSymbolicLink() && realpathSync(path) === mod.realPath) return path;
+    } catch {
+      // A broken link points at nothing, so it isn't this mod.
+    }
+  }
+  return null;
+}
+
+/** Symlinks a mod folder into a project's skills folder (or with `project` null, the global one),
+ *  named after the folder it points at. Refuses rather than replace anything already there. */
+export function addModToProject(mod: ModEntry, tool: ToolConfig, project: ProjectWorkspace | null): void {
+  const dir = resolveToolDir(tool, "skill", project);
+  if (!dir) throw new Error(`${tool.name} has no configured skill path`);
+  if (modProjectLink(mod, tool, project)) return;
+  const linkPath = join(dir, basename(mod.realPath));
+  if (existsSync(linkPath) || isLink(linkPath)) throw new Error(`${linkPath} already exists.`);
+  mkdirSync(dir, { recursive: true });
+  // A project's own mod links from its real folder, never through that project's symlink.
+  symlinkSync(mod.projectId ? mod.realPath : mod.path, linkPath, "dir");
+}
+
+/** Removes the mod's symlink from a project's (or the global) skills folder. The folder it points
+ *  at is untouched. */
+export function removeModFromProject(mod: ModEntry, tool: ToolConfig, project: ProjectWorkspace | null): void {
+  const linkPath = modProjectLink(mod, tool, project);
+  if (linkPath) unlinkSync(linkPath);
+}
+
+/** The project holding the mod's real folder (not a link to it): where it's kept, so it can't be
+ *  linked into or unlinked from there. `loadsThere` is set when that's the project's skills folder,
+ *  which the tool loads it from, rather than a source repo's root, which it doesn't. */
+export function modSourceProject(
+  mod: ModEntry,
+  tool: ToolConfig,
+  projects: ProjectWorkspace[]
+): { project: ProjectWorkspace; loadsThere: boolean } | null {
+  const home = dirname(mod.realPath);
+  const same = (dir: string | null) => {
+    try {
+      return !!dir && realpathSync(dir) === home;
+    } catch {
+      return false;
+    }
+  };
+  for (const project of projects) {
+    if (same(resolveToolDir(tool, "skill", project))) return { project, loadsThere: true };
+    if (project.sourceRepoToolId && same(expandHome(project.path))) return { project, loadsThere: false };
+  }
+  return null;
+}
+
+function isLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }

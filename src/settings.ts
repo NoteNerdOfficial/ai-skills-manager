@@ -184,8 +184,8 @@ export class SkillManagerSettingTab extends PluginSettingTab {
             },
           },
           {
-            name: "Show every tool and project in the sidebar",
-            desc: "Show configured tools and workspaces even when they have no discovered items.",
+            name: "Show every tool and plugin in the sidebar",
+            desc: "Show configured tools and plugins even when they have no discovered items.",
             control: {
               type: "toggle",
               key: "showEmptySidebarRows",
@@ -397,9 +397,9 @@ export class SkillManagerSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Show every tool and project in the sidebar")
+      .setName("Show every tool and plugin in the sidebar")
       .setDesc(
-        "Off by default: the sidebar's \"Tools\" and \"Workspaces\" lists only show rows with at least one discovered item, so they don't fill up with rows that always read 0. Turn on to see every configured tool and registered project, whether or not anything's been found for it yet."
+        "Off by default: the sidebar's \"Tools\" and \"Plugins\" lists only show rows with at least one discovered item, so they don't fill up with rows that always read 0. Turn on to see every configured tool and plugin, whether or not anything's been found for it yet. Workspaces always show."
       )
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.showEmptySidebarRows).onChange(async (value) => {

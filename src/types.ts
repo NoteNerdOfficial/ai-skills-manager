@@ -179,6 +179,10 @@ export interface ProjectWorkspace {
   id: string;
   name: string;
   path: string;
+  /** Set for a source repo: a folder that houses skills and mods at its own top level (or in
+   *  category folders under it) rather than in a tool's project folders. Its root is scanned too,
+   *  for skill folders (listed as this tool's) and mod folders. */
+  sourceRepoToolId?: string;
 }
 
 /** An installed tool plugin (e.g. a Claude Code or Codex plugin) — auto-discovered from that tool's
@@ -218,10 +222,15 @@ export interface ModEntry {
   description?: string;
   version?: string;
   path: string;
+  /** `path` with symlinks resolved: where the mod's files really live (a repo checkout, say). */
+  realPath: string;
   toolId: string;
+  /** Set for a mod found in a project's skills folder, which only loads in that project. */
+  projectId?: string;
   /** "installed" through the tool's plugin registry, "dev" from devModsPath, "plugin-dir" from
-   *  CLAUDE_CODE_PLUGIN_DIRS, or "skill" for a plugin auto-loaded from a skills folder. */
-  origin: "installed" | "dev" | "plugin-dir" | "skill";
+   *  CLAUDE_CODE_PLUGIN_DIRS, "skill" for a plugin auto-loaded from a skills folder, or "repo" for
+   *  one only found in a source repo workspace, which the tool doesn't load from there. */
+  origin: "installed" | "dev" | "plugin-dir" | "skill" | "repo";
   /** Set for an installed mod: the PluginSource it was found as, for its enable/disable state. */
   pluginId?: string;
   enabled: boolean;
@@ -441,6 +450,9 @@ export interface SkillManagerPluginSettings {
   /** Mod folder path -> the GitHub source it was installed from through Discover. Lets Discover
    *  hide a mod that's already installed and a mod card say where it came from. */
   modSources: Record<string, ModSource>;
+  /** "mcp:<entryId>" or "mod:<mod id>" -> user tags. MCP servers and mods have no shadow note, so
+   *  their tags live here instead of in the metadata store. */
+  extensionTags: Record<string, string[]>;
   /** Per-day session counts for each skill/agent, merged in from every usage scan — see
    *  usage-history.ts. Kept here because the tools delete their own transcripts over time. */
   usageHistory: UsageHistory;
@@ -843,6 +855,7 @@ export const DEFAULT_SETTINGS: SkillManagerPluginSettings = {
   confirmBeforeToggle: true,
   disabledModDirs: {},
   modSources: {},
+  extensionTags: {},
   usageHistory: {},
   libraryLayout: "grid",
 };

@@ -34,7 +34,7 @@ describe("mod checks", () => {
     if (withModule) writeFileSync(join(dir, "hooks", "register.tsx"), "");
   }
 
-  const mod = (name: string, path: string, origin: ModEntry["origin"], enabled = true): ModEntry => ({ id: path, name, path, toolId: "claude-code", origin, enabled });
+  const mod = (name: string, path: string, origin: ModEntry["origin"], enabled = true): ModEntry => ({ id: path, name, path, realPath: path, toolId: "claude-code", origin, enabled });
 
   it("flags env folders that are gone or aren't plugins", () => {
     const plain = join(root, "plain");

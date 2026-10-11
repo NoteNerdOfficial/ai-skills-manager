@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { realpathSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { delimiter, join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DISABLED_DIRNAME, DISABLED_SUFFIX, installModFolder, promoteDevMod, setPluginDirListed, toggleItemEnabled } from "./itemToggle";
-import { makeEntryId, scanAllPlugins, scanMods, scanAllTools, scanBrokenSymlinks, scanProject, scanTool, stableEntryPath } from "./scanners";
+import { addRepoLinkTargets, makeEntryId, scanAllPlugins, scanMods, scanAllTools, scanBrokenSymlinks, scanProject, scanTool, stableEntryPath } from "./scanners";
 import { PluginSource, ProjectWorkspace, ToolConfig, DEFAULT_TOOLS } from "./types";
 
 function makeTool(pluginsRegistry: string, pluginsSettingsPath: string): ToolConfig {
@@ -457,6 +457,63 @@ describe("Antigravity scanning", () => {
 });
 
 
+describe("source repo workspaces", () => {
+  it("lists a repo's own skill folders (nested too) and its mods, but not its loose docs", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "skillmanager-repo-scan-")));
+    try {
+      const repo = join(root, "skills-repo");
+      mkdirSync(join(repo, "alpha"), { recursive: true });
+      writeFileSync(join(repo, "alpha", "SKILL.md"), "---\nname: alpha\ndescription: A\n---\n");
+      mkdirSync(join(repo, "group", "beta"), { recursive: true });
+      writeFileSync(join(repo, "group", "beta", "SKILL.md"), "---\nname: beta\ndescription: B\n---\n");
+      writeFileSync(join(repo, "CONTRIBUTING.md"), "# docs");
+      const mod = join(repo, "pane");
+      mkdirSync(join(mod, ".claude-plugin"), { recursive: true });
+      mkdirSync(join(mod, "hooks"), { recursive: true });
+      writeFileSync(join(mod, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "pane" }));
+      writeFileSync(join(mod, "hooks", "hooks.json"), JSON.stringify({ modules: ["./register.tsx"] }));
+      const tool: ToolConfig = { id: "claude-code", name: "Claude Code", icon: "asterisk", paths: { skill: join(root, "global") }, devModsPath: join(root, "dev"), pluginsSettingsPath: join(root, "missing.json") };
+      const project = { id: "r", name: "skills-repo", path: repo, sourceRepoToolId: "claude-code" };
+
+      expect(scanProject([tool], project).map((i) => i.name).sort()).toEqual(["alpha", "beta"]);
+      expect(scanProject([tool], { ...project, sourceRepoToolId: undefined })).toEqual([]);
+      expect(scanMods([tool], [], [project]).filter((m) => m.origin === "repo")).toMatchObject([{ name: "pane", projectId: "r", enabled: false }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("source repo agents, commands and link targets", () => {
+  it("lists agents and commands from a repo's plugin-style folders, and a linked file kept elsewhere in it", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "skillmanager-repo-types-")));
+    try {
+      const repo = join(root, "repo");
+      mkdirSync(join(repo, "agents"), { recursive: true });
+      writeFileSync(join(repo, "agents", "reviewer.md"), "---\nname: reviewer\ndescription: R\n---\n");
+      mkdirSync(join(repo, "commands"), { recursive: true });
+      writeFileSync(join(repo, "commands", "ship.md"), "---\ndescription: S\n---\n");
+      writeFileSync(join(repo, "loose-agent.md"), "---\nname: loose\ndescription: L\n---\n");
+      writeFileSync(join(repo, "README.md"), "# docs");
+      const globalAgents = join(root, "home", "agents");
+      mkdirSync(globalAgents, { recursive: true });
+      symlinkSync(join(repo, "loose-agent.md"), join(globalAgents, "loose-agent.md"));
+      const tool: ToolConfig = { id: "claude-code", name: "Claude Code", icon: "asterisk", paths: { agent: globalAgents, command: join(root, "home", "commands") } };
+      const project = { id: "r", name: "repo", path: repo, sourceRepoToolId: "claude-code" };
+
+      const repoItems = scanProject([tool], project);
+      expect(repoItems.map((i) => [i.type, i.name]).sort()).toEqual([["agent", "reviewer"], ["command", "ship"]]);
+
+      const globalItems = scanTool(tool);
+      const added = addRepoLinkTargets([...globalItems, ...repoItems], [project]);
+      expect(added).toMatchObject([{ type: "agent", name: "loose", projectId: "r", sourcePath: join(repo, "loose-agent.md") }]);
+      expect(addRepoLinkTargets([...globalItems, ...repoItems, ...added], [project])).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("scanMods", () => {
   let root: string;
   // A Claude Code shell exports CLAUDE_CODE_PLUGIN_DIRS from its settings, which scanMods falls
@@ -609,5 +666,7 @@ describe("scanMods", () => {
     const tool: ToolConfig = { id: "claude-code", name: "Claude Code", icon: "asterisk", paths: { skill: skills }, projectPaths: { skill: ".claude/skills" }, devModsPath: devRoot, pluginsSettingsPath: join(root, "missing.json") };
     const mods = scanMods([tool], [], [{ id: "p", name: "proj", path: project }]);
     expect(mods.map((m) => [m.name, m.origin]).sort()).toEqual([["proj-mod", "skill"], ["skill-mod", "dev"]]);
+    expect(mods.find((m) => m.name === "proj-mod")?.projectId).toBe("p");
+    expect(mods.find((m) => m.name === "skill-mod")).toMatchObject({ realPath: realpathSync(join(skills, "skill-mod")) });
   });
 });

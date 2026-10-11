@@ -455,12 +455,72 @@ export function scanProject(tools: ToolConfig[], project: ProjectWorkspace): Dis
       if (!entry.path.trim()) continue;
       items.push(...scanRuleEntry(entry, join(expandHome(project.path), entry.path), tool, project.id));
     }
+    // A source repo's own items. Skills: folders with a SKILL.md anywhere under its root. Agents
+    // and commands: flat files in the folders a plugin uses for them (agents/, commands/), since a
+    // loose .md at the root is the repo's docs, not an item. Rules are left out: a repo's
+    // CLAUDE.md/AGENTS.md instructs work on the repo itself. Files kept elsewhere in the repo are
+    // still listed when something links to them (see addRepoLinkTargets).
+    if (project.sourceRepoToolId === tool.id) {
+      const root = expandHome(project.path);
+      const seen = new Set(items.map((item) => item.realPath));
+      const add = (found: DiscoveredItem[]) => {
+        for (const item of found) {
+          if (seen.has(item.realPath)) continue;
+          seen.add(item.realPath);
+          items.push(item);
+        }
+      };
+      add(scanDirectory(root, tool, "skill", project.id, null).filter((item) => basename(item.sourcePath) === "SKILL.md"));
+      for (const type of ["agent", "command"] as const) {
+        const rawPath = tool.paths[type];
+        if (!rawPath) continue;
+        const folder = join(root, tool.pluginPaths?.[type] ?? toPluginRelative(rawPath));
+        add(scanDirectory(folder, tool, type, project.id, null).filter((item) => basename(item.sourcePath) !== "SKILL.md"));
+      }
+    }
   }
   return items;
 }
 
 export function scanAllProjects(tools: ToolConfig[], projects: ProjectWorkspace[]): DiscoveredItem[] {
   return projects.flatMap((project) => scanProject(tools, project));
+}
+
+/** Lists, under its source repo, any file in that repo something links to but the repo scan
+ *  didn't find (an agent at the repo's top level, say): the link says what type it is. Each gets
+ *  the linking item's tool and type, read from where it really is. */
+export function addRepoLinkTargets(items: DiscoveredItem[], projects: ProjectWorkspace[]): DiscoveredItem[] {
+  const repos = projects
+    .filter((p) => p.sourceRepoToolId)
+    .map((p) => ({ project: p, root: samePathKey(resolveRealPath(expandHome(p.path))) }));
+  if (repos.length === 0) return [];
+  // Files already listed where they really are; a link to one doesn't count.
+  const known = new Set(items.filter((item) => item.realPath === item.sourcePath).map((item) => samePathKey(item.realPath)));
+  const added: DiscoveredItem[] = [];
+  for (const item of items) {
+    if (item.realPath === item.sourcePath || item.pluginId) continue;
+    const key = samePathKey(item.realPath);
+    if (known.has(key)) continue;
+    const repo = repos.find((r) => key.startsWith(r.root + sep));
+    if (!repo) continue;
+    known.add(key);
+    const name = basename(item.realPath) === "SKILL.md" ? basename(dirname(item.realPath)) : basename(item.realPath).replace(/\.md$/, "");
+    added.push({
+      ...item,
+      entryId: makeEntryId(item.tool, item.type, repo.project.id, null, name, stableEntryPath(item.realPath)),
+      sourcePath: item.realPath,
+      projectId: repo.project.id,
+      pluginId: null,
+      enabled: true,
+    });
+  }
+  return added;
+}
+
+/** macOS and Windows file systems ignore case by default, and realpath keeps whatever case a
+ *  link was written with, so ~/Documents/repos and ~/Documents/Repos are one folder there. */
+export function samePathKey(path: string): string {
+  return process.platform === "darwin" || process.platform === "win32" ? path.toLowerCase() : path;
 }
 
 /** Reads the tool's own "is this installed plugin actually loaded" map (e.g. Claude Code's
@@ -666,6 +726,16 @@ export function isModFolder(pluginPath: string): boolean {
   }
 }
 
+/** The hooks module paths a mod's hooks/hooks.json names, as written there. */
+export function readModModules(pluginPath: string): string[] {
+  try {
+    const raw = JSON.parse(readFileSync(join(pluginPath, "hooks", "hooks.json"), "utf-8")) as { modules?: unknown };
+    return Array.isArray(raw.modules) ? raw.modules.filter((m): m is string => typeof m === "string" && m.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
 function readModDescription(pluginPath: string): string | undefined {
   try {
     const raw = JSON.parse(readFileSync(join(pluginPath, ".claude-plugin", "plugin.json"), "utf-8")) as { description?: unknown };
@@ -707,7 +777,7 @@ export function scanMods(
 ): ModEntry[] {
   const mods: ModEntry[] = [];
   const seen = new Set<string>();
-  const addFolder = (modPath: string, tool: ToolConfig, origin: ModEntry["origin"], enabled = true) => {
+  const addFolder = (modPath: string, tool: ToolConfig, origin: ModEntry["origin"], enabled = true, projectId?: string) => {
     if (!isModFolder(modPath)) return;
     const real = resolveRealPath(modPath);
     if (seen.has(real)) return;
@@ -719,7 +789,9 @@ export function scanMods(
       description: readModDescription(modPath),
       version: manifest.version,
       path: modPath,
+      realPath: real,
       toolId: tool.id,
+      ...(projectId ? { projectId } : {}),
       origin,
       enabled,
     });
@@ -733,13 +805,15 @@ export function scanMods(
   };
   for (const plugin of plugins) {
     if (!isModFolder(plugin.path)) continue;
-    seen.add(resolveRealPath(plugin.path));
+    const real = resolveRealPath(plugin.path);
+    seen.add(real);
     mods.push({
       id: plugin.id,
       name: plugin.name,
       description: readModDescription(plugin.path),
       version: plugin.version,
       path: plugin.path,
+      realPath: real,
       toolId: plugin.toolId,
       origin: "installed",
       pluginId: plugin.id,
@@ -759,8 +833,13 @@ export function scanMods(
       const skillsDir = resolveToolDir(tool, "skill", project);
       if (!skillsDir) continue;
       for (const folder of childDirs(skillsDir)) {
-        if (existsSync(join(folder, ".claude-plugin", "plugin.json"))) addFolder(folder, tool, "skill");
+        if (existsSync(join(folder, ".claude-plugin", "plugin.json"))) addFolder(folder, tool, "skill", true, project?.id);
       }
+    }
+    // Last, so a repo's mod that also loads some other way is listed as that.
+    for (const project of projects) {
+      if (project.sourceRepoToolId !== tool.id) continue;
+      for (const folder of childDirs(expandHome(project.path))) addFolder(folder, tool, "repo", false, project.id);
     }
   }
   return mods;

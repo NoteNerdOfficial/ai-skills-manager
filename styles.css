@@ -109,17 +109,6 @@
   color: var(--text-on-accent);
 }
 
-/* Text variant of the install action, used on the Discover rail (renderDiscoverRail) where the
-   icon-only button reads as too small/unlabeled for the main action on the page. Sized close to
-   mod-cta's default (rather than shrunk to match the icon buttons next to it) and squared off a
-   bit more than Obsidian's default button-radius so it reads as a firmer, more deliberate CTA. */
-.skillmanager-discover-rail-install-btn {
-  height: 30px;
-  padding: 0 14px;
-  border-radius: var(--radius-m);
-  font-size: var(--font-ui-small);
-}
-
 .skillmanager-sidebar-heading {
   display: flex;
   align-items: center;
@@ -1384,42 +1373,27 @@ input.skillmanager-search {
   font-size: var(--font-ui-smaller);
 }
 
-/* Env var values in the MCP detail rail are hidden by default (see renderMcpEnvRow) — wider
-   letter-spacing on the dot placeholder keeps it readable as "a masked value", not a typo. */
-.skillmanager-fm-value.is-masked {
-  letter-spacing: 2px;
-  color: var(--text-faint);
+/* The MCP preview's "Environment variables" panel (see renderMcpEnvRow): the shared properties
+   grid, with the value and its reveal toggle in one cell. Wider letter-spacing on the masked
+   placeholder keeps it reading as "a hidden value", not a typo. */
+.skillmanager-detail-prop-key.is-mono {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
 }
 
-/* Wraps the value + its reveal toggle as one grid cell — see renderMcpEnvRow's comment on why
-   this can't just be a third child of .skillmanager-fm-row. */
 .skillmanager-mcp-env-value {
   display: flex;
   align-items: center;
   gap: 4px;
-  min-width: 0;
+}
+
+.skillmanager-mcp-env-value .is-masked {
+  letter-spacing: 2px;
+  color: var(--text-faint);
 }
 
 .skillmanager-mcp-reveal-btn {
   flex-shrink: 0;
-}
-
-/* Deliberately its own class rather than reusing .skillmanager-tool-actions (that one's
-   margin-left: auto is for pushing right inside a stats row, not what a standalone action row
-   below the config-file path needs) — the missing margin-top there was crowding these buttons
-   right up against the path text above them. */
-.skillmanager-mcp-detail-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 14px;
-}
-
-/* .skillmanager-sort-btn's own margin-left: auto still applies per-button regardless of the
-   container above (that rule lives on the button, not something a plain container swap avoids)
-   — without this override each button pulls independently toward the right, spreading them
-   across the full row instead of sitting together under the path. */
-.skillmanager-mcp-detail-actions .skillmanager-sort-btn {
-  margin-left: 0;
 }
 
 .skillmanager-card-footer-right {
@@ -1487,19 +1461,6 @@ input.skillmanager-search {
 .skillmanager-discover-pill {
   background: rgba(var(--color-purple-rgb), 0.16) !important;
   color: var(--interactive-accent) !important;
-}
-
-.skillmanager-discover-rail-tags {
-  margin-bottom: 14px;
-}
-
-.skillmanager-discover-rail .skillmanager-card-discover-repo {
-  margin-bottom: 10px;
-}
-
-.skillmanager-discover-rail .skillmanager-card-discover-repo img {
-  width: 20px;
-  height: 20px;
 }
 
 /* ---------- toggle switch ---------- */
@@ -1685,57 +1646,8 @@ input.skillmanager-search {
   margin: 14px 0 0;
 }
 
-.skillmanager-detail-path {
-  margin-bottom: 8px;
-  font-family: var(--font-monospace);
-  font-size: var(--font-ui-smaller);
-  color: var(--text-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .skillmanager-detail-path-target {
   color: var(--text-accent);
-}
-
-.skillmanager-detail-frontmatter {
-  display: grid;
-  /* max-content sizes the key column to the widest key across ALL rows (e.g.
-     "disable-model-invocation"), so every value still lines up rather than each
-     row aligning to its own label width. */
-  grid-template-columns: max-content minmax(0, 1fr);
-  column-gap: 8px;
-  row-gap: 2px;
-  padding: 10px 12px;
-  border-radius: var(--radius-m);
-  background: var(--code-background, var(--background-secondary));
-  font-family: var(--font-monospace);
-  font-size: var(--font-ui-smaller);
-  margin-top: 6px;
-}
-
-.skillmanager-fm-row {
-  /* Dissolves the row's own box so its label/value children become direct
-     items of the parent grid and share its columns. */
-  display: contents;
-}
-
-.skillmanager-fm-label {
-  white-space: nowrap;
-}
-
-.skillmanager-fm-key {
-  color: var(--text-accent);
-}
-
-.skillmanager-fm-colon {
-  color: var(--text-faint);
-}
-
-.skillmanager-fm-value {
-  color: var(--text-muted);
-  word-break: break-word;
 }
 
 /* Tag chips at the top of the band's left column — each with its own remove button, plus a
@@ -2374,6 +2286,51 @@ input.skillmanager-tag-add-input {
   align-items: center;
   gap: 8px;
   padding: 4px 0;
+}
+
+/* Workspaces picker: the "Kept in" and "Linked into" groups, and the source row, which is
+   stated rather than offered (a lock in the checkbox's place). */
+.skillmanager-picker-section {
+  margin-top: var(--size-4-3);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.skillmanager-collection-picker-row.is-source {
+  color: var(--text-muted);
+}
+
+.skillmanager-picker-path {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
+.skillmanager-picker-lock {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+}
+
+.skillmanager-picker-lock input {
+  visibility: hidden;
+}
+
+.skillmanager-picker-lock-icon {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+
+.skillmanager-picker-lock-icon .svg-icon {
+  width: 13px;
+  height: 13px;
 }
 
 .skillmanager-path-status {
@@ -3588,6 +3545,22 @@ input.skillmanager-tag-add-input {
   gap: 8px;
 }
 
+/* A workspace page's "Mods" heading under its items (see renderWorkspaceModsSection): spans the
+   whole grid row so the mod cards start on a line of their own. */
+.skillmanager-items-section {
+  grid-column: 1 / -1;
+  margin-top: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.skillmanager-items-section:first-child {
+  margin-top: 0;
+}
+
 .skillmanager-list-row {
   display: flex;
   align-items: center;
@@ -3851,4 +3824,15 @@ input.skillmanager-tag-add-input {
 
 .skillmanager-update-banner button {
   flex-shrink: 0;
+}
+
+/* Same banner for a symlinked item whose repo isn't a workspace yet (see renderRepoBanner): an
+   invitation, not a problem, so it takes the accent instead of orange. */
+.skillmanager-update-banner.is-repo {
+  border-color: color-mix(in srgb, var(--interactive-accent) 35%, transparent);
+  background: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
+}
+
+.skillmanager-update-banner.is-repo .skillmanager-update-banner-icon {
+  color: var(--interactive-accent);
 }
