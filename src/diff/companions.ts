@@ -87,3 +87,13 @@ export function changedUnitFiles(unitPath: string, otherPath: string, isDirector
   }
   return files;
 }
+
+/** Folder inside a mod that Claude Code writes its own type declarations into once the mod has
+ *  loaded. Never part of a mod's source, and rewritten on the next load. */
+export const MOD_GENERATED_DIR = ".claude-plugin/types/";
+
+/** changedUnitFiles for a mod folder, minus the engine's generated types, so a diff shows only
+ *  the mod's own files. */
+export function changedModFiles(modPath: string, otherPath: string): TabsDiffFile[] {
+  return changedUnitFiles(modPath, otherPath, true).filter((f) => !f.file.startsWith(MOD_GENERATED_DIR));
+}

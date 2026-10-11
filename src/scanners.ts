@@ -694,14 +694,20 @@ export function readPluginDirsEnv(settingsPath: string | undefined): string[] {
 
 /** Installed mods (any already-discovered plugin that is one), mods under development in each
  *  tool's devModsPath/<session>/<mod>/, folders named in CLAUDE_CODE_PLUGIN_DIRS, and plugins the
- *  tool auto-loads from a skills folder (global or a project's). Only installed mods carry an
- *  enabled state of their own; the rest load whenever the tool sees them, so they count as enabled.
+ *  tool auto-loads from a skills folder (global or a project's). Installed mods carry their
+ *  plugin's enabled state; a plugin-dir mod turned off here (taken out of the env var) is listed
+ *  from `disabledModDirs` as off; the rest load whenever the tool sees them, so they count as on.
  *  The same folder reached two ways (a symlinked skill, a dev mod also named in the env var) is
  *  listed once, first source wins. */
-export function scanMods(tools: ToolConfig[], plugins: PluginSource[], projects: ProjectWorkspace[] = []): ModEntry[] {
+export function scanMods(
+  tools: ToolConfig[],
+  plugins: PluginSource[],
+  projects: ProjectWorkspace[] = [],
+  disabledModDirs: Record<string, string[]> = {}
+): ModEntry[] {
   const mods: ModEntry[] = [];
   const seen = new Set<string>();
-  const addFolder = (modPath: string, tool: ToolConfig, origin: ModEntry["origin"]) => {
+  const addFolder = (modPath: string, tool: ToolConfig, origin: ModEntry["origin"], enabled = true) => {
     if (!isModFolder(modPath)) return;
     const real = resolveRealPath(modPath);
     if (seen.has(real)) return;
@@ -715,7 +721,7 @@ export function scanMods(tools: ToolConfig[], plugins: PluginSource[], projects:
       path: modPath,
       toolId: tool.id,
       origin,
-      enabled: true,
+      enabled,
     });
   };
   const childDirs = (dir: string): string[] => {
@@ -746,6 +752,9 @@ export function scanMods(tools: ToolConfig[], plugins: PluginSource[], projects:
       for (const modPath of childDirs(session)) addFolder(modPath, tool, "dev");
     }
     for (const dir of readPluginDirsEnv(tool.pluginsSettingsPath)) addFolder(dir, tool, "plugin-dir");
+    // Turned off here: no longer in the env var, so only this record still knows the folder. One
+    // listed there again by hand was already added above as on.
+    for (const dir of disabledModDirs[tool.id] ?? []) addFolder(dir, tool, "plugin-dir", false);
     for (const project of [null, ...projects]) {
       const skillsDir = resolveToolDir(tool, "skill", project);
       if (!skillsDir) continue;

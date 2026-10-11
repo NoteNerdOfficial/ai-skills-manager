@@ -1,12 +1,12 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
-import { basename, dirname, join, relative, sep } from "path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "path";
 import { createHash } from "crypto";
 import { requestUrl } from "obsidian";
 import { shallowCloneRepo } from "./git";
-import { parseFrontmatter } from "./scanners";
+import { isModFolder, parseFrontmatter } from "./scanners";
 import { slug } from "./format";
 import { errorMessage } from "./errors";
-import { DiscoverEntry, ItemType, SkillManagerPluginSettings } from "./types";
+import { DiscoverEntry, DiscoverType, ItemType, SkillManagerPluginSettings } from "./types";
 
 /** slug() truncates to 80 chars — fine for makeEntryId's short tool/type/project/name tuple, but
  *  a repo URL alone can eat most of that budget, so hashing the full repoUrl+subpath+name through
@@ -69,14 +69,15 @@ const TYPE_DIRNAMES: Record<string, ItemType> = {
 };
 
 interface FoundManifest {
-  type: ItemType;
-  /** For a skill: the SKILL.md path. For agent/command/rule: the .md file itself. */
+  type: DiscoverType;
+  /** For a mod: its folder. For a skill: the SKILL.md path. For agent/command/rule: the .md file itself. */
   path: string;
 }
 
 /** Walks `rootDir` for every skill (a SKILL.md-holding folder, found regardless of the folder's
  *  own name — never descending past one, since its own reference/scripts/ subfolders aren't
- *  further skills) and every agent/command/rule (a .md file sitting directly inside a folder
+ *  further skills), every mod (a plugin folder isModFolder accepts, likewise not descended into)
+ *  and every agent/command/rule (a .md file sitting directly inside a folder
  *  named agents/commands/rules, per TYPE_DIRNAMES above — a type, once matched, carries into
  *  nested category subfolders the same way scanEntries lets a configured type directory nest
  *  category folders for skills). Not coupled to a configured ToolConfig — it just walks a plain
@@ -85,6 +86,12 @@ export function findRepoManifests(rootDir: string): FoundManifest[] {
   const results: FoundManifest[] = [];
 
   function walk(dir: string, depth: number, typeHint: ItemType | null) {
+    // A mod is one unit: skills or agents bundled inside it load with it, so they aren't listed
+    // on their own.
+    if (isModFolder(dir)) {
+      results.push({ type: "mod", path: dir });
+      return;
+    }
     const skillManifest = join(dir, "SKILL.md");
     if (existsSync(skillManifest)) {
       results.push({ type: "skill", path: skillManifest });
@@ -125,6 +132,52 @@ export function findRepoManifests(rootDir: string): FoundManifest[] {
   return results;
 }
 
+/** Longest preview kept per hooks module file; the catalog is saved in the plugin's settings. */
+const MAX_MODULE_PREVIEW_CHARS = 100_000;
+
+/** A Markdown code block that a backtick run inside `text` can't close early. */
+function fence(text: string, lang: string): string {
+  const longest = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+  const ticks = "`".repeat(Math.max(3, longest + 1));
+  return `${ticks}${lang}\n${text}\n${ticks}`;
+}
+
+/** A mod's Discover fields, read from its folder: name, description and keywords from
+ *  .claude-plugin/plugin.json, and a preview made of its README followed by each hooks module
+ *  hooks/hooks.json names, so the code it would run can be read before installing. A module
+ *  path pointing outside the folder is left out. */
+export function readModPreview(modDir: string): Pick<DiscoverEntry, "name" | "description" | "tags" | "manifestText"> {
+  const root = resolve(modDir);
+  const readJson = (path: string): Record<string, unknown> => {
+    try {
+      return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  };
+  const manifest = readJson(join(root, ".claude-plugin", "plugin.json"));
+  const hooks = readJson(join(root, "hooks", "hooks.json"));
+  const modules = Array.isArray(hooks.modules) ? hooks.modules.filter((m): m is string => typeof m === "string" && m.length > 0) : [];
+
+  const parts: string[] = [];
+  const readme = join(root, "README.md");
+  if (existsSync(readme)) parts.push(readFileSync(readme, "utf-8").trim());
+  for (const module of modules) {
+    const file = resolve(root, "hooks", module);
+    if (!file.startsWith(root + sep) || !existsSync(file)) continue;
+    let source = readFileSync(file, "utf-8");
+    if (source.length > MAX_MODULE_PREVIEW_CHARS) source = source.slice(0, MAX_MODULE_PREVIEW_CHARS) + "\n// (preview cut off here)";
+    parts.push(`## ${relative(root, file).split(sep).join("/")}\n\n${fence(source, extname(file).slice(1))}`);
+  }
+
+  return {
+    name: typeof manifest.name === "string" && manifest.name ? manifest.name : basename(root),
+    description: typeof manifest.description === "string" ? manifest.description : "",
+    tags: Array.isArray(manifest.keywords) ? manifest.keywords.filter((k): k is string => typeof k === "string") : [],
+    manifestText: parts.join("\n\n"),
+  };
+}
+
 /** Clones `repoUrl` (same shallow clone InstallFromGitHubModal uses), finds every skill, agent,
  *  command, and rule under `subpath` (or the whole repo, if none given), and returns one
  *  DiscoverEntry per item found — cached manifest text and parsed frontmatter only, no companion
@@ -145,6 +198,23 @@ export async function discoverGitSkills(repoUrl: string, ref: string, subpath: s
 
     const discoveredAt = Date.now();
     return found.map(({ type, path: manifestPath }) => {
+      if (type === "mod") {
+        const relFromSourceRoot = relative(sourceRoot, manifestPath).split(sep).join("/");
+        const entrySubpath = [subpath, relFromSourceRoot].filter((s) => s && s !== ".").join("/");
+        const preview = readModPreview(manifestPath);
+        return {
+          id: discoverEntryId(repoUrl, entrySubpath, preview.name),
+          repoUrl,
+          ref,
+          subpath: entrySubpath,
+          type,
+          commit: clone.commit,
+          ...preview,
+          starCount: null,
+          starsFetchedAt: null,
+          discoveredAt,
+        };
+      }
       const manifestText = readFileSync(manifestPath, "utf-8");
       const fields = parseFrontmatter(manifestText);
       const find = (key: string) => fields.find((f) => f.key === key)?.value ?? "";
@@ -230,6 +300,13 @@ export async function addDiscoverSource(
 export async function refetchDiscoverEntry(entry: DiscoverEntry): Promise<DiscoverEntry> {
   const clone = shallowCloneRepo(entry.repoUrl, entry.ref || undefined);
   try {
+    if (entry.type === "mod") {
+      const modDir = join(clone.dir, entry.subpath);
+      if (!isModFolder(modDir)) {
+        throw new Error(`"${entry.subpath || "The repo root"}" is no longer a mod in this repo${entry.ref ? ` at ${entry.ref}` : ""}.`);
+      }
+      return { ...entry, commit: clone.commit, ...readModPreview(modDir) };
+    }
     const manifestPath = entry.type === "skill" ? join(clone.dir, entry.subpath, "SKILL.md") : join(clone.dir, entry.subpath);
     if (!existsSync(manifestPath)) {
       throw new Error(`"${entry.subpath}" no longer exists in this repo${entry.ref ? ` at ${entry.ref}` : ""}.`);

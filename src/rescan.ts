@@ -98,7 +98,7 @@ export async function performRescan(
     // Filtered here too: the metadata cache may not have caught up with a just-marked missing note.
     items: (await store.list()).filter((item) => validIds.has(item.entryId)),
     plugins: pluginScan.plugins,
-    mods: scanMods(settings.tools, pluginScan.plugins, projects),
+    mods: scanMods(settings.tools, pluginScan.plugins, projects, settings.disabledModDirs),
     mcpServers: includeMcpServers ? scanMcpServers(settings.tools, projects) : [],
     brokenSymlinks,
   };

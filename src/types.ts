@@ -44,6 +44,13 @@ export const TYPE_LABEL_SINGULAR: Record<ItemType, string> = {
   rule: "Rule",
 };
 
+/** What Discover can list: the four library types, plus a mod (see ModEntry). A mod isn't an
+ *  ItemType because it isn't a library item: no shadow note, tags or scan path of its own. */
+export type DiscoverType = ItemType | "mod";
+
+export const DISCOVER_TYPE_LABELS: Record<DiscoverType, string> = { ...TYPE_LABELS, mod: "Mods" };
+export const DISCOVER_TYPE_LABEL_SINGULAR: Record<DiscoverType, string> = { ...TYPE_LABEL_SINGULAR, mod: "Mod" };
+
 export interface ToolConfig {
   id: string;
   name: string;
@@ -315,6 +322,14 @@ export interface Collection {
  *  its own cached preview content instead of pointing at a real file on disk. Only becomes a real
  *  item once its card's install button is used, which hands its repoUrl/ref/subpath/type to
  *  InstallFromGitHubModal. */
+/** Where a mod installed from GitHub came from, same quad a tracked library item records. */
+export interface ModSource {
+  repoUrl: string;
+  ref: string;
+  subpath: string;
+  commit: string;
+}
+
 export interface DiscoverEntry {
   /** Stable id derived from repoUrl + subpath + name — used to dedupe re-discovering the same
    *  item and to find/replace it in place on refresh. */
@@ -326,17 +341,19 @@ export interface DiscoverEntry {
   /** This item's own file or folder within the repo — a skill's own folder (containing its
    *  SKILL.md) for type "skill", or the .md file itself for agent/command/rule. */
   subpath: string;
-  /** "skill" is only ever set from finding a SKILL.md — unambiguous. Agent/command/rule are
+  /** "mod" is set from a plugin folder whose hooks/hooks.json names a hooks module (isModFolder);
+   *  its subpath is that folder. "skill" is only ever set from finding a SKILL.md — unambiguous. Agent/command/rule are
    *  inferred from the enclosing folder's name (agents/commands/rules), the same convention
    *  scanAllPlugins already trusts for a Claude Code plugin bundle's own skills/agents/commands
    *  folders — best-effort for an arbitrary repo, unlike the real scanner's configured paths. */
-  type: ItemType;
+  type: DiscoverType;
   /** Commit the manifest text below was captured at — refreshed by the card's "Refresh" action. */
   commit: string;
   name: string;
   description: string;
   tags: string[];
-  /** Raw cached SKILL.md content — this one file only. Companion files (references/, scripts/,
+  /** For a mod: its README (if any) followed by its hooks module source, so it can be read
+   *  before installing. Otherwise the raw cached SKILL.md content — this one file only. Companion files (references/, scripts/,
    *  …) are deliberately not fetched or cached; they're pulled fresh, once, at actual install
    *  time via the normal clone-and-copy path, same as any other GitHub install. */
   manifestText: string;
@@ -418,6 +435,12 @@ export interface SkillManagerPluginSettings {
    *  Turning this off skips straight to the move, for anyone who finds the prompt gets in the
    *  way of a workflow that toggles items often. */
   confirmBeforeToggle: boolean;
+  /** Tool id -> CLAUDE_CODE_PLUGIN_DIRS folders turned off from a mod card. Taking a folder out of
+   *  the env var is what turns it off, so this is the only record left that it exists. */
+  disabledModDirs: Record<string, string[]>;
+  /** Mod folder path -> the GitHub source it was installed from through Discover. Lets Discover
+   *  hide a mod that's already installed and a mod card say where it came from. */
+  modSources: Record<string, ModSource>;
   /** Per-day session counts for each skill/agent, merged in from every usage scan — see
    *  usage-history.ts. Kept here because the tools delete their own transcripts over time. */
   usageHistory: UsageHistory;
@@ -818,6 +841,8 @@ export const DEFAULT_SETTINGS: SkillManagerPluginSettings = {
   mcpConfigEditorApp: "",
   gitProxy: "",
   confirmBeforeToggle: true,
+  disabledModDirs: {},
+  modSources: {},
   usageHistory: {},
   libraryLayout: "grid",
 };

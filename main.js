@@ -49,6 +49,8 @@ var TYPE_LABEL_SINGULAR = {
   command: "Command",
   rule: "Rule"
 };
+var DISCOVER_TYPE_LABELS = { ...TYPE_LABELS, mod: "Mods" };
+var DISCOVER_TYPE_LABEL_SINGULAR = { ...TYPE_LABEL_SINGULAR, mod: "Mod" };
 var DEFAULT_SECTION_ORDER = ["types", "extensions", "tools", "projects", "collections"];
 var DEFAULT_TOOLS = [
   {
@@ -423,6 +425,8 @@ var DEFAULT_SETTINGS = {
   mcpConfigEditorApp: "",
   gitProxy: "",
   confirmBeforeToggle: true,
+  disabledModDirs: {},
+  modSources: {},
   usageHistory: {},
   libraryLayout: "grid"
 };
@@ -433,8 +437,8 @@ var import_obsidian17 = require("obsidian");
 // src/views/LibraryView.ts
 var import_obsidian16 = require("obsidian");
 var import_child_process2 = require("child_process");
-var import_fs18 = require("fs");
-var import_path18 = require("path");
+var import_fs19 = require("fs");
+var import_path19 = require("path");
 var import_os4 = require("os");
 
 // src/pluginVersion.ts
@@ -652,6 +656,72 @@ async function deleteItem(item, trash) {
     return;
   }
   await trash(unit.path);
+}
+var FINISHED_MODS_DIR = "~/mods";
+var PLUGIN_DIRS_ENV = "CLAUDE_CODE_PLUGIN_DIRS";
+function tildify(path) {
+  const home = (0, import_os.homedir)();
+  return path === home || path.startsWith(home + import_path2.sep) ? "~" + path.slice(home.length) : path;
+}
+function setPluginDirListed(tool, dir, listed) {
+  var _a, _b, _c;
+  if (!tool.pluginsSettingsPath)
+    throw new Error(`${tool.name} has no known settings file.`);
+  const settingsPath = expandHome(tool.pluginsSettingsPath);
+  if (!(0, import_fs.existsSync)(settingsPath))
+    throw new Error(`${tool.name}'s settings file wasn't found at ${settingsPath}.`);
+  const raw = JSON.parse((0, import_fs.readFileSync)(settingsPath, "utf-8"));
+  const fromSettings = (_a = raw.env) == null ? void 0 : _a[PLUGIN_DIRS_ENV];
+  if (fromSettings !== void 0 && typeof fromSettings !== "string")
+    throw new Error(`${PLUGIN_DIRS_ENV} in ${settingsPath} isn't a string.`);
+  const current = (_b = fromSettings != null ? fromSettings : process.env[PLUGIN_DIRS_ENV]) != null ? _b : "";
+  const entries = current.split(import_path2.delimiter).map((p) => p.trim()).filter(Boolean);
+  const target = (0, import_path2.resolve)(expandHome(dir));
+  const others = entries.filter((p) => (0, import_path2.resolve)(expandHome(p)) !== target);
+  if (others.length !== entries.length === listed)
+    return;
+  if (!listed && fromSettings === void 0) {
+    throw new Error(`${PLUGIN_DIRS_ENV} is set in your shell environment, not ${settingsPath}. Remove the folder there.`);
+  }
+  backupSettingsFile(settingsPath);
+  const next = listed ? [...entries, tildify(target)] : others;
+  const env = { ...(_c = raw.env) != null ? _c : {} };
+  if (next.length > 0)
+    env[PLUGIN_DIRS_ENV] = next.join(import_path2.delimiter);
+  else
+    delete env[PLUGIN_DIRS_ENV];
+  raw.env = env;
+  (0, import_fs.writeFileSync)(settingsPath, JSON.stringify(raw, null, 2) + "\n");
+}
+function promoteDevMod(tool, modPath) {
+  const target = (0, import_path2.join)(expandHome(FINISHED_MODS_DIR), (0, import_path2.basename)(modPath));
+  if ((0, import_fs.existsSync)(target))
+    throw new Error(`${target} already exists.`);
+  (0, import_fs.mkdirSync)((0, import_path2.dirname)(target), { recursive: true });
+  (0, import_fs.renameSync)(modPath, target);
+  try {
+    setPluginDirListed(tool, target, true);
+  } catch (e) {
+    (0, import_fs.renameSync)(target, modPath);
+    throw e;
+  }
+  return target;
+}
+function installModFolder(tool, sourceDir, name) {
+  if (!name || name !== (0, import_path2.basename)(name) || name === "." || name === "..")
+    throw new Error(`"${name}" can't be used as a folder name.`);
+  const target = (0, import_path2.join)(expandHome(FINISHED_MODS_DIR), name);
+  if ((0, import_fs.existsSync)(target))
+    throw new Error(`${target} already exists.`);
+  (0, import_fs.mkdirSync)((0, import_path2.dirname)(target), { recursive: true });
+  (0, import_fs.cpSync)(sourceDir, target, { recursive: true, filter: (src) => (0, import_path2.basename)(src) !== ".git" });
+  try {
+    setPluginDirListed(tool, target, true);
+  } catch (e) {
+    (0, import_fs.rmSync)(target, { recursive: true, force: true });
+    throw e;
+  }
+  return target;
 }
 
 // src/scanners.ts
@@ -1170,10 +1240,11 @@ function readPluginDirsEnv(settingsPath) {
   value != null ? value : value = process.env.CLAUDE_CODE_PLUGIN_DIRS;
   return (value != null ? value : "").split(import_path3.delimiter).map((p) => p.trim()).filter(Boolean).map(expandHome2);
 }
-function scanMods(tools, plugins, projects = []) {
+function scanMods(tools, plugins, projects = [], disabledModDirs = {}) {
+  var _a;
   const mods = [];
   const seen = /* @__PURE__ */ new Set();
-  const addFolder = (modPath, tool, origin) => {
+  const addFolder = (modPath, tool, origin, enabled = true) => {
     if (!isModFolder(modPath))
       return;
     const real = resolveRealPath(modPath);
@@ -1189,7 +1260,7 @@ function scanMods(tools, plugins, projects = []) {
       path: modPath,
       toolId: tool.id,
       origin,
-      enabled: true
+      enabled
     });
   };
   const childDirs2 = (dir) => {
@@ -1224,6 +1295,8 @@ function scanMods(tools, plugins, projects = []) {
     }
     for (const dir of readPluginDirsEnv(tool.pluginsSettingsPath))
       addFolder(dir, tool, "plugin-dir");
+    for (const dir of (_a = disabledModDirs[tool.id]) != null ? _a : [])
+      addFolder(dir, tool, "plugin-dir", false);
     for (const project of [null, ...projects]) {
       const skillsDir = resolveToolDir(tool, "skill", project);
       if (!skillsDir)
@@ -2091,7 +2164,7 @@ async function performRescan(app, settings, store, includeMcpServers = true) {
     // Filtered here too: the metadata cache may not have caught up with a just-marked missing note.
     items: (await store.list()).filter((item) => validIds.has(item.entryId)),
     plugins: pluginScan.plugins,
-    mods: scanMods(settings.tools, pluginScan.plugins, projects),
+    mods: scanMods(settings.tools, pluginScan.plugins, projects, settings.disabledModDirs),
     mcpServers: includeMcpServers ? scanMcpServers(settings.tools, projects) : [],
     brokenSymlinks
   };
@@ -2742,6 +2815,10 @@ function findRepoManifests(rootDir) {
   const results = [];
   function walk2(dir, depth, typeHint) {
     var _a;
+    if (isModFolder(dir)) {
+      results.push({ type: "mod", path: dir });
+      return;
+    }
     const skillManifest = (0, import_path11.join)(dir, "SKILL.md");
     if ((0, import_fs9.existsSync)(skillManifest)) {
       results.push({ type: "skill", path: skillManifest });
@@ -2772,6 +2849,49 @@ function findRepoManifests(rootDir) {
   walk2(rootDir, 0, null);
   return results;
 }
+var MAX_MODULE_PREVIEW_CHARS = 1e5;
+function fence(text, lang) {
+  var _a;
+  const longest = Math.max(0, ...((_a = text.match(/`+/g)) != null ? _a : []).map((run) => run.length));
+  const ticks = "`".repeat(Math.max(3, longest + 1));
+  return `${ticks}${lang}
+${text}
+${ticks}`;
+}
+function readModPreview(modDir) {
+  const root = (0, import_path11.resolve)(modDir);
+  const readJson = (path) => {
+    try {
+      return JSON.parse((0, import_fs9.readFileSync)(path, "utf-8"));
+    } catch (e) {
+      return {};
+    }
+  };
+  const manifest = readJson((0, import_path11.join)(root, ".claude-plugin", "plugin.json"));
+  const hooks = readJson((0, import_path11.join)(root, "hooks", "hooks.json"));
+  const modules = Array.isArray(hooks.modules) ? hooks.modules.filter((m) => typeof m === "string" && m.length > 0) : [];
+  const parts = [];
+  const readme = (0, import_path11.join)(root, "README.md");
+  if ((0, import_fs9.existsSync)(readme))
+    parts.push((0, import_fs9.readFileSync)(readme, "utf-8").trim());
+  for (const module2 of modules) {
+    const file = (0, import_path11.resolve)(root, "hooks", module2);
+    if (!file.startsWith(root + import_path11.sep) || !(0, import_fs9.existsSync)(file))
+      continue;
+    let source = (0, import_fs9.readFileSync)(file, "utf-8");
+    if (source.length > MAX_MODULE_PREVIEW_CHARS)
+      source = source.slice(0, MAX_MODULE_PREVIEW_CHARS) + "\n// (preview cut off here)";
+    parts.push(`## ${(0, import_path11.relative)(root, file).split(import_path11.sep).join("/")}
+
+${fence(source, (0, import_path11.extname)(file).slice(1))}`);
+  }
+  return {
+    name: typeof manifest.name === "string" && manifest.name ? manifest.name : (0, import_path11.basename)(root),
+    description: typeof manifest.description === "string" ? manifest.description : "",
+    tags: Array.isArray(manifest.keywords) ? manifest.keywords.filter((k) => typeof k === "string") : [],
+    manifestText: parts.join("\n\n")
+  };
+}
 async function discoverGitSkills(repoUrl, ref, subpath) {
   const clone = shallowCloneRepo(repoUrl, ref || void 0);
   try {
@@ -2785,6 +2905,23 @@ async function discoverGitSkills(repoUrl, ref, subpath) {
     }
     const discoveredAt = Date.now();
     return found.map(({ type, path: manifestPath }) => {
+      if (type === "mod") {
+        const relFromSourceRoot2 = (0, import_path11.relative)(sourceRoot, manifestPath).split(import_path11.sep).join("/");
+        const entrySubpath2 = [subpath, relFromSourceRoot2].filter((s) => s && s !== ".").join("/");
+        const preview = readModPreview(manifestPath);
+        return {
+          id: discoverEntryId(repoUrl, entrySubpath2, preview.name),
+          repoUrl,
+          ref,
+          subpath: entrySubpath2,
+          type,
+          commit: clone.commit,
+          ...preview,
+          starCount: null,
+          starsFetchedAt: null,
+          discoveredAt
+        };
+      }
       const manifestText = (0, import_fs9.readFileSync)(manifestPath, "utf-8");
       const fields = parseFrontmatter(manifestText);
       const find = (key) => {
@@ -2839,6 +2976,13 @@ async function addDiscoverSource(settings, repoUrl, ref, subpath, isInstalled) {
 async function refetchDiscoverEntry(entry) {
   const clone = shallowCloneRepo(entry.repoUrl, entry.ref || void 0);
   try {
+    if (entry.type === "mod") {
+      const modDir = (0, import_path11.join)(clone.dir, entry.subpath);
+      if (!isModFolder(modDir)) {
+        throw new Error(`"${entry.subpath || "The repo root"}" is no longer a mod in this repo${entry.ref ? ` at ${entry.ref}` : ""}.`);
+      }
+      return { ...entry, commit: clone.commit, ...readModPreview(modDir) };
+    }
     const manifestPath = entry.type === "skill" ? (0, import_path11.join)(clone.dir, entry.subpath, "SKILL.md") : (0, import_path11.join)(clone.dir, entry.subpath);
     if (!(0, import_fs9.existsSync)(manifestPath)) {
       throw new Error(`"${entry.subpath}" no longer exists in this repo${entry.ref ? ` at ${entry.ref}` : ""}.`);
@@ -2921,7 +3065,7 @@ var AddDiscoverSourceModal = class extends import_obsidian11.Modal {
     this.setTitle("Add a GitHub source to Discover");
     contentEl.createDiv({
       cls: "skillmanager-modal-meta",
-      text: "Finds every skill, agent, command, and rule in the repo (or just the given folder) and adds them to Discover to browse and install later. Nothing is installed yet."
+      text: "Finds every skill, agent, command, rule, and mod in the repo (or just the given folder) and adds them to Discover to browse and install later. Nothing is installed yet."
     });
     let refText;
     let subpathText;
@@ -3668,23 +3812,112 @@ function findBrokenLinks(raw, baseDir) {
   return [...broken].map((path) => `Broken link: ${path}`);
 }
 
-// src/fileTree.ts
+// src/modChecks.ts
 var import_fs15 = require("fs");
 var import_path15 = require("path");
+var EMPTY_SESSION_MIN_AGE_MS = 24 * 60 * 60 * 1e3;
+function missingModules(modPath) {
+  let modules;
+  try {
+    modules = JSON.parse((0, import_fs15.readFileSync)((0, import_path15.join)(modPath, "hooks", "hooks.json"), "utf-8")).modules;
+  } catch (e) {
+    return [];
+  }
+  if (!Array.isArray(modules))
+    return [];
+  const root = (0, import_path15.resolve)(modPath);
+  return modules.filter((m) => {
+    if (typeof m !== "string" || !m)
+      return false;
+    const file = (0, import_path15.resolve)(root, "hooks", m);
+    return !file.startsWith(root + import_path15.sep) || !(0, import_fs15.existsSync)(file);
+  });
+}
+function findModHealthIssues(tools, mods) {
+  var _a;
+  const issues = [];
+  for (const tool of tools) {
+    if (!tool.devModsPath)
+      continue;
+    for (const dir of readPluginDirsEnv(tool.pluginsSettingsPath)) {
+      if (!(0, import_fs15.existsSync)(dir))
+        issues.push({ kind: "missing-dir", toolId: tool.id, path: dir });
+      else if (!(0, import_fs15.existsSync)((0, import_path15.join)(dir, ".claude-plugin", "plugin.json")))
+        issues.push({ kind: "not-a-plugin", toolId: tool.id, path: dir });
+    }
+  }
+  for (const mod of mods) {
+    if (!mod.enabled)
+      continue;
+    const missing = missingModules(mod.path);
+    if (missing.length > 0)
+      issues.push({ kind: "missing-module", mod, modules: missing });
+  }
+  const global = /* @__PURE__ */ new Map();
+  for (const mod of mods) {
+    if (!mod.enabled || mod.origin === "dev")
+      continue;
+    const key = `${mod.toolId}\0${mod.name}`;
+    global.set(key, [...(_a = global.get(key)) != null ? _a : [], mod]);
+  }
+  for (const group of global.values()) {
+    if (group.length > 1)
+      issues.push({ kind: "duplicate", name: group[0].name, mods: group });
+  }
+  return issues;
+}
+function findModCleanup(tools, mods, now = Date.now()) {
+  const items = [];
+  for (const dev of mods) {
+    if (dev.origin !== "dev")
+      continue;
+    const finished = mods.find((m) => m.origin !== "dev" && m.toolId === dev.toolId && m.name === dev.name);
+    if (finished)
+      items.push({ kind: "promoted-copy", dev, finished });
+  }
+  for (const tool of tools) {
+    if (!tool.devModsPath)
+      continue;
+    const root = expandHome2(tool.devModsPath);
+    let sessions;
+    try {
+      sessions = (0, import_fs15.readdirSync)(root).filter((name) => !name.startsWith("."));
+    } catch (e) {
+      continue;
+    }
+    const empty = sessions.map((name) => (0, import_path15.join)(root, name)).filter((dir) => {
+      try {
+        const stat = (0, import_fs15.statSync)(dir);
+        if (!stat.isDirectory() || now - stat.mtimeMs < EMPTY_SESSION_MIN_AGE_MS)
+          return false;
+        return (0, import_fs15.readdirSync)(dir).every((name) => name.startsWith("."));
+      } catch (e) {
+        return false;
+      }
+    });
+    if (empty.length > 0)
+      items.push({ kind: "empty-sessions", toolId: tool.id, paths: empty });
+  }
+  return items;
+}
+
+// src/fileTree.ts
+var import_fs16 = require("fs");
+var import_path16 = require("path");
 var SKIP_ENTRIES = /* @__PURE__ */ new Set(["node_modules", ".git", ".DS_Store"]);
 var MAX_DEPTH = 4;
 function isFolderItem(item) {
-  return (0, import_path15.basename)(item.sourcePath) === "SKILL.md";
+  return (0, import_path16.basename)(item.sourcePath) === "SKILL.md";
 }
 function skillFolder(item) {
-  return (0, import_path15.dirname)(item.sourcePath);
+  return (0, import_path16.dirname)(item.sourcePath);
 }
 function walk(dir, prefix, depth, keepDotEntry) {
   if (depth > MAX_DEPTH)
     return [];
   let entries;
   try {
-    entries = (0, import_fs15.readdirSync)(dir);
+    entries = (0, import_fs16.readdirSync)(dir);
   } catch (e) {
     return [];
   }
@@ -3692,13 +3925,13 @@ function walk(dir, prefix, depth, keepDotEntry) {
   for (const entry of entries) {
     if (SKIP_ENTRIES.has(entry))
       continue;
-    const absPath = (0, import_path15.join)(dir, entry);
+    const absPath = (0, import_path16.join)(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
     if (entry.startsWith(".") && !(keepDotEntry == null ? void 0 : keepDotEntry(relPath)))
       continue;
     let isDir = false;
     try {
-      isDir = (0, import_fs15.statSync)(absPath).isDirectory();
+      isDir = (0, import_fs16.statSync)(absPath).isDirectory();
     } catch (e) {
       continue;
     }
@@ -3755,18 +3988,18 @@ function sourceLabel(item, settings, projects, plugins) {
 }
 
 // src/diff/companions.ts
-var import_fs16 = require("fs");
-var import_path16 = require("path");
+var import_fs17 = require("fs");
+var import_path17 = require("path");
 function listFilesRecursive(dir, prefix = "") {
-  if (!(0, import_fs16.existsSync)(dir))
+  if (!(0, import_fs17.existsSync)(dir))
     return [];
   const files = [];
-  for (const entry of (0, import_fs16.readdirSync)(dir)) {
+  for (const entry of (0, import_fs17.readdirSync)(dir)) {
     if (entry === ".git")
       continue;
-    const entryPath = (0, import_path16.join)(dir, entry);
+    const entryPath = (0, import_path17.join)(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
-    if ((0, import_fs16.statSync)(entryPath).isDirectory()) {
+    if ((0, import_fs17.statSync)(entryPath).isDirectory()) {
       files.push(...listFilesRecursive(entryPath, relPath));
     } else {
       files.push(relPath);
@@ -3776,7 +4009,7 @@ function listFilesRecursive(dir, prefix = "") {
 }
 function filesEqual(a, b) {
   try {
-    return (0, import_fs16.readFileSync)(a).equals((0, import_fs16.readFileSync)(b));
+    return (0, import_fs17.readFileSync)(a).equals((0, import_fs17.readFileSync)(b));
   } catch (e) {
     return false;
   }
@@ -3788,7 +4021,7 @@ function computeCompanionChanges(oldDir, newDir) {
   for (const file of newFiles) {
     if (!oldFiles.has(file))
       rows.push({ file, status: "added" });
-    else if (!filesEqual((0, import_path16.join)(oldDir, file), (0, import_path16.join)(newDir, file)))
+    else if (!filesEqual((0, import_path17.join)(oldDir, file), (0, import_path17.join)(newDir, file)))
       rows.push({ file, status: "modified" });
   }
   for (const file of oldFiles) {
@@ -3798,30 +4031,34 @@ function computeCompanionChanges(oldDir, newDir) {
   return rows.sort((a, b) => a.file.localeCompare(b.file));
 }
 function changedUnitFiles(unitPath, otherPath, isDirectory) {
-  const differs = (a, b) => (0, import_fs16.existsSync)(a) !== (0, import_fs16.existsSync)(b) || (0, import_fs16.existsSync)(a) && !(0, import_fs16.readFileSync)(a).equals((0, import_fs16.readFileSync)(b));
+  const differs = (a, b) => (0, import_fs17.existsSync)(a) !== (0, import_fs17.existsSync)(b) || (0, import_fs17.existsSync)(a) && !(0, import_fs17.readFileSync)(a).equals((0, import_fs17.readFileSync)(b));
   if (!isDirectory) {
-    return differs(unitPath, otherPath) ? [{ file: (0, import_path16.basename)(unitPath), status: (0, import_fs16.existsSync)(unitPath) ? "modified" : "added", oldPath: unitPath, newPath: otherPath }] : [];
+    return differs(unitPath, otherPath) ? [{ file: (0, import_path17.basename)(unitPath), status: (0, import_fs17.existsSync)(unitPath) ? "modified" : "added", oldPath: unitPath, newPath: otherPath }] : [];
   }
   const files = [];
-  const manifest = (root) => (0, import_path16.join)(root, "SKILL.md");
+  const manifest = (root) => (0, import_path17.join)(root, "SKILL.md");
   if (differs(manifest(unitPath), manifest(otherPath))) {
     files.push({
       file: "SKILL.md",
-      status: !(0, import_fs16.existsSync)(manifest(unitPath)) ? "added" : !(0, import_fs16.existsSync)(manifest(otherPath)) ? "removed" : "modified",
+      status: !(0, import_fs17.existsSync)(manifest(unitPath)) ? "added" : !(0, import_fs17.existsSync)(manifest(otherPath)) ? "removed" : "modified",
       oldPath: manifest(unitPath),
       newPath: manifest(otherPath)
     });
   }
   for (const row of computeCompanionChanges(unitPath, otherPath)) {
-    files.push({ file: row.file, status: row.status, oldPath: (0, import_path16.join)(unitPath, row.file), newPath: (0, import_path16.join)(otherPath, row.file) });
+    files.push({ file: row.file, status: row.status, oldPath: (0, import_path17.join)(unitPath, row.file), newPath: (0, import_path17.join)(otherPath, row.file) });
   }
   return files;
+}
+var MOD_GENERATED_DIR = ".claude-plugin/types/";
+function changedModFiles(modPath, otherPath) {
+  return changedUnitFiles(modPath, otherPath, true).filter((f) => !f.file.startsWith(MOD_GENERATED_DIR));
 }
 
 // src/diff/tabsDiff.ts
 var import_obsidian14 = require("obsidian");
-var import_fs17 = require("fs");
-var import_path17 = require("path");
+var import_fs18 = require("fs");
+var import_path18 = require("path");
 
 // node_modules/diff/libesm/diff/base.js
 var Diff = class {
@@ -4516,7 +4753,7 @@ function prepare(state, f) {
   const cached = state.prepared.get(f.file);
   if (cached)
     return cached;
-  const read = (path) => (0, import_fs17.existsSync)(path) ? (0, import_fs17.readFileSync)(path) : Buffer.alloc(0);
+  const read = (path) => (0, import_fs18.existsSync)(path) ? (0, import_fs18.readFileSync)(path) : Buffer.alloc(0);
   const oldBuf = read(f.oldPath);
   const newBuf = read(f.newPath);
   const binary = oldBuf.includes(0) || newBuf.includes(0);
@@ -4568,7 +4805,7 @@ function renderTabsDiff(panel, opts) {
       attr: { role: "tab", "aria-selected": String(i === index), title: `${f.file} (${f.status})` }
     });
     tab.createSpan({ cls: `skillmanager-vtab-dot is-${f.status}` });
-    tab.createSpan({ cls: "skillmanager-vtab-name", text: (0, import_path17.basename)(f.file) });
+    tab.createSpan({ cls: "skillmanager-vtab-name", text: (0, import_path18.basename)(f.file) });
     renderStats(tab, prepare(state, f));
     tab.addEventListener("click", () => goToFile(i));
   });
@@ -4754,7 +4991,7 @@ var DASHBOARD_TYPE_COLORS = {
 var DASHBOARD_RANKED_COLLAPSED_COUNT = 5;
 function tildePath(path) {
   const home = (0, import_os4.homedir)();
-  return path === home || path.startsWith(home + import_path18.sep) ? "~" + path.slice(home.length) : path;
+  return path === home || path.startsWith(home + import_path19.sep) ? "~" + path.slice(home.length) : path;
 }
 var DASHBOARD_COST_COLLAPSED_COUNT = 10;
 var DASHBOARD_COST_SUMMARY_COUNT = 5;
@@ -5031,6 +5268,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     this.pendingDetailAnimation = null;
     this.markdownComponent = new import_obsidian16.Component();
     this.review = null;
+    this.modRail = null;
     /** The version history panel, shown in the detail rail in place of the file (see
      *  renderHistory). `selectedId` is the version being previewed, or null for the list. Cleared
      *  on every navigation, same as a review (see cleanupReview). */
@@ -5069,10 +5307,13 @@ var LibraryView = class extends import_obsidian16.ItemView {
    *  the file it's reviewing (a review only ever makes sense for the exact file it was started
    *  against), and before starting a new one. */
   cleanupReview() {
-    var _a;
+    var _a, _b;
     if (((_a = this.review) == null ? void 0 : _a.status) === "ready")
       this.review.clone.cleanup();
     this.review = null;
+    if (((_b = this.modRail) == null ? void 0 : _b.kind) === "review")
+      this.modRail.clone.cleanup();
+    this.modRail = null;
     this.historyView = null;
     this.tabsDiff = null;
   }
@@ -5084,7 +5325,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
   }
   itemHistory() {
     const base = this.vaultPath();
-    return base && this.pluginDir ? new ItemHistory((0, import_path18.join)(base, this.pluginDir, "history")) : null;
+    return base && this.pluginDir ? new ItemHistory((0, import_path19.join)(base, this.pluginDir, "history")) : null;
   }
   /** Best effort: a failed snapshot warns but never blocks the edit/update it was taken for. */
   trySnapshot(take) {
@@ -5121,9 +5362,9 @@ var LibraryView = class extends import_obsidian16.ItemView {
         if (this.selectedFilePath === previousSourcePath) {
           this.selectedFilePath = updated.sourcePath;
         } else {
-          const previousDir = (0, import_path18.dirname)(previousSourcePath);
-          if (this.selectedFilePath.startsWith(previousDir + import_path18.sep)) {
-            const updatedDir = (0, import_path18.dirname)(updated.sourcePath);
+          const previousDir = (0, import_path19.dirname)(previousSourcePath);
+          if (this.selectedFilePath.startsWith(previousDir + import_path19.sep)) {
+            const updatedDir = (0, import_path19.dirname)(updated.sourcePath);
             this.selectedFilePath = updatedDir + this.selectedFilePath.slice(previousDir.length);
           }
         }
@@ -5194,7 +5435,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
       const days = /* @__PURE__ */ new Map();
       for (const f of files) {
         scanTranscriptFile(f, raw, sinceMs, days);
-        await new Promise((resolve4) => window.setTimeout(resolve4, 0));
+        await new Promise((resolve6) => window.setTimeout(resolve6, 0));
       }
       this.claudeUsage = computeClaudeUsage(this.items, raw);
       await this.saveUsageHistory("claude-code", days);
@@ -5216,7 +5457,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
       const days = /* @__PURE__ */ new Map();
       for (const file of files) {
         scanCodexSessionFile(file, codexItems, raw, sinceMs, days);
-        await new Promise((resolve4) => window.setTimeout(resolve4, 0));
+        await new Promise((resolve6) => window.setTimeout(resolve6, 0));
       }
       this.codexUsage = computeCodexUsage(this.items, raw);
       await this.saveUsageHistory("codex", days);
@@ -5415,7 +5656,13 @@ var LibraryView = class extends import_obsidian16.ItemView {
    *  records at install time (sourceRepo + sourceSubpath) — used to keep Discover from showing an
    *  "install" card for something already sitting in the real library. */
   isDiscoverEntryInstalled(repoUrl, subpath) {
-    return this.items.some((item) => item.sourceRepo === repoUrl && item.sourceSubpath === subpath);
+    if (this.items.some((item) => item.sourceRepo === repoUrl && item.sourceSubpath === subpath))
+      return true;
+    const sources = this.getSettings().modSources;
+    return this.mods.some((mod) => {
+      var _a, _b;
+      return ((_a = sources[mod.path]) == null ? void 0 : _a.repoUrl) === repoUrl && ((_b = sources[mod.path]) == null ? void 0 : _b.subpath) === subpath;
+    });
   }
   /** Discover's true empty state (no sources added at all yet, not just "no search matches") —
    *  a real heading/description instead of one line of muted text, plus one-click "starter"
@@ -5428,7 +5675,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     empty.createEl("h3", { text: "Nothing here yet", cls: "skillmanager-empty-state-title" });
     empty.createEl("p", {
       cls: "skillmanager-empty-state-desc",
-      text: "Add a GitHub repo to find the skills, agents, commands, and rules inside it."
+      text: "Add a GitHub repo to find the skills, agents, commands, rules, and mods inside it."
     });
     const addBtn = empty.createEl("button", { text: "Add your own repo", cls: "mod-cta" });
     addBtn.addEventListener("click", () => this.openAddDiscoverSource());
@@ -5688,7 +5935,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
   }
   itemModifiedMs(item) {
     try {
-      return (0, import_fs18.statSync)(item.sourcePath).mtimeMs;
+      return (0, import_fs19.statSync)(item.sourcePath).mtimeMs;
     } catch (e) {
       return 0;
     }
@@ -6292,7 +6539,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     if (!plugin.repoUrl)
       return;
     const unitPath = linkableUnit(item.sourcePath).path;
-    const subpath = (0, import_path18.relative)(plugin.path, unitPath).split(import_path18.sep).join("/");
+    const subpath = (0, import_path19.relative)(plugin.path, unitPath).split(import_path19.sep).join("/");
     new InstallFromGitHubModal(
       this.app,
       this.getSettings(),
@@ -6752,7 +6999,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
       cls: "skillmanager-count-pill"
     });
     header.createDiv({
-      text: "Skills, agents, commands, and rules found in GitHub repos you've pointed at. Browse the real content, install whenever.",
+      text: "Skills, agents, commands, rules, and mods found in GitHub repos you've pointed at. Browse the real content, install whenever.",
       cls: "skillmanager-subtitle"
     });
     const toolbar = content.createDiv({ cls: "skillmanager-toolbar" });
@@ -6854,11 +7101,11 @@ var LibraryView = class extends import_obsidian16.ItemView {
       this.discoverTypeFilter = null;
       this.render();
     });
-    for (const type of Object.keys(TYPE_LABELS)) {
+    for (const type of Object.keys(DISCOVER_TYPE_LABELS)) {
       const count = catalog.filter((e) => e.type === type).length;
       if (count === 0)
         continue;
-      const chip = bar.createEl("button", { text: `${TYPE_LABELS[type]} (${count})`, cls: "skillmanager-chip" });
+      const chip = bar.createEl("button", { text: `${DISCOVER_TYPE_LABELS[type]} (${count})`, cls: "skillmanager-chip" });
       if (this.discoverTypeFilter === type)
         chip.addClass("is-active");
       chip.addEventListener("click", () => {
@@ -7107,6 +7354,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
       card.addClass("is-selected");
     const head = card.createDiv({ cls: "skillmanager-card-head" });
     head.createSpan({ text: entry.name, cls: "skillmanager-card-name" });
+    head.createSpan({ text: DISCOVER_TYPE_LABEL_SINGULAR[entry.type], cls: "skillmanager-card-type skillmanager-card-type-sm" });
     const actions = head.createDiv({ cls: "skillmanager-card-discover-actions" });
     const linkBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Open on GitHub" } });
     (0, import_obsidian16.setIcon)(linkBtn, "external-link");
@@ -7135,7 +7383,6 @@ var LibraryView = class extends import_obsidian16.ItemView {
     const footer = card.createDiv({ cls: "skillmanager-card-footer" });
     this.renderDiscoverRepoLine(footer, entry);
     const rightGroup = footer.createDiv({ cls: "skillmanager-card-footer-right" });
-    rightGroup.createSpan({ text: TYPE_LABEL_SINGULAR[entry.type], cls: "skillmanager-card-type" });
     const menuBtn = rightGroup.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More actions" } });
     (0, import_obsidian16.setIcon)(menuBtn, MORE_HORIZONTAL_ICON_ID);
     menuBtn.addEventListener("click", (evt) => {
@@ -7184,6 +7431,10 @@ var LibraryView = class extends import_obsidian16.ItemView {
    *  register pipeline (InstallFromGitHubModal.install()) stays the single source of truth for
    *  actually installing something — Discover only ever hands it a repoUrl/ref/subpath/type. */
   installDiscoverEntry(entry) {
+    if (entry.type === "mod") {
+      this.confirmInstallDiscoverMod(entry);
+      return;
+    }
     new InstallFromGitHubModal(
       this.app,
       this.getSettings(),
@@ -7192,6 +7443,54 @@ var LibraryView = class extends import_obsidian16.ItemView {
       () => this.rescan(),
       { repoUrl: entry.repoUrl, ref: entry.ref, subpath: entry.subpath, type: entry.type },
       () => void this.removeDiscoverEntry(entry, { silent: true })
+    ).open();
+  }
+  /** The tool mods install into: the first enabled one that loads mods and has a settings file
+   *  to list them in (Claude Code). */
+  modTool() {
+    return this.getSettings().tools.find((t) => !t.disabled && t.devModsPath && t.pluginsSettingsPath);
+  }
+  /** A mod installs the way Promote leaves one: its folder in FINISHED_MODS_DIR, listed in
+   *  CLAUDE_CODE_PLUGIN_DIRS. Fetched at the commit the catalog shows, so what gets installed is
+   *  the code that was previewed. Always confirms: it's code every new session will run. */
+  confirmInstallDiscoverMod(entry) {
+    const tool = this.modTool();
+    if (!(tool == null ? void 0 : tool.pluginsSettingsPath)) {
+      new import_obsidian16.Notice("No enabled tool loads mods.");
+      return;
+    }
+    const target = (0, import_path19.join)(expandHome2(FINISHED_MODS_DIR), entry.name);
+    new ConfirmModal(
+      this.app,
+      `Install "${entry.name}"?`,
+      `This copies the mod to ${target} and adds it to CLAUDE_CODE_PLUGIN_DIRS in ${expandHome2(tool.pluginsSettingsPath)}. Every new ${tool.name} session then runs its code, so only install mods you trust.`,
+      "Install",
+      async () => {
+        new import_obsidian16.Notice(`Installing "${entry.name}"\u2026`);
+        await new Promise((r) => window.setTimeout(r, 0));
+        let installedPath;
+        try {
+          const clone = shallowCloneAtCommit(entry.repoUrl, entry.commit);
+          try {
+            installedPath = installModFolder(tool, entry.subpath ? (0, import_path19.join)(clone.dir, entry.subpath) : clone.dir, entry.name);
+          } finally {
+            clone.cleanup();
+          }
+        } catch (e) {
+          new import_obsidian16.Notice(`Couldn't install ${entry.name}: ${errorMessage(e)}`);
+          return;
+        }
+        const settings = this.getSettings();
+        settings.modSources = {
+          ...settings.modSources,
+          [installedPath]: { repoUrl: entry.repoUrl, ref: entry.ref, subpath: entry.subpath, commit: entry.commit }
+        };
+        await this.saveSettings();
+        await this.rescan();
+        new import_obsidian16.Notice(`Installed ${entry.name}. New ${tool.name} sessions load it.`);
+        await this.removeDiscoverEntry(entry, { silent: true });
+      },
+      "cta"
     ).open();
   }
   /** Nothing on disk to clean up — a catalog entry never had a filesystem footprint, so removing
@@ -7249,7 +7548,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: entry.name });
     const header = panel.createDiv({ cls: "skillmanager-detail-header" });
     header.createEl("h3", { text: entry.name, cls: "skillmanager-detail-title" });
-    header.createSpan({ text: TYPE_LABEL_SINGULAR[entry.type], cls: "skillmanager-card-type" });
+    header.createSpan({ text: DISCOVER_TYPE_LABEL_SINGULAR[entry.type], cls: "skillmanager-card-type" });
     header.createSpan({ text: "Not installed", cls: "skillmanager-detail-tool-pill skillmanager-discover-pill" });
     const actions = header.createDiv({ cls: "skillmanager-detail-actions" });
     const linkBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Open on GitHub" } });
@@ -7258,6 +7557,12 @@ var LibraryView = class extends import_obsidian16.ItemView {
     const installBtn = actions.createEl("button", { cls: "mod-cta skillmanager-discover-rail-install-btn", text: "+ Install" });
     installBtn.addEventListener("click", () => this.installDiscoverEntry(entry));
     this.renderDiscoverRepoLine(panel, entry);
+    if (entry.type === "mod") {
+      panel.createDiv({
+        cls: "skillmanager-subtitle",
+        text: "A mod runs its code in every new Claude Code session. Read its hooks module below before installing."
+      });
+    }
     if (entry.subpath) {
       panel.createDiv({ cls: "skillmanager-detail-path", text: entry.subpath });
     }
@@ -7536,7 +7841,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     titleRow.createEl("h2", { text: "Mods", cls: "skillmanager-title" });
     titleRow.createSpan({ text: String(this.mods.length), cls: "skillmanager-count-pill" });
     header.createDiv({
-      text: "Mods change the tool itself (panes, status line, slash commands, hooks on tool calls) instead of adding skills. Installed mods are toggled as the plugin they ship in.",
+      text: "Mods change the tool itself (panes, status line, slash commands, hooks on tool calls) instead of adding skills. Installed and plugin folder mods can be turned off here; promote a mod in development to load it in every session.",
       cls: "skillmanager-subtitle"
     });
     if (this.selectedMod)
@@ -7559,6 +7864,9 @@ var LibraryView = class extends import_obsidian16.ItemView {
     }
   }
   selectMod(mod) {
+    var _a;
+    if (((_a = this.selectedMod) == null ? void 0 : _a.id) !== mod.id)
+      this.cleanupReview();
     this.selectedMod = mod;
     this.selectedFilePath = null;
     this.collapsedTreeFolders = /* @__PURE__ */ new Set();
@@ -7566,12 +7874,15 @@ var LibraryView = class extends import_obsidian16.ItemView {
     this.render();
   }
   /** Same shape as an item's rail (Mods / mod / file breadcrumbs, a file tree, then a read-only
-   *  preview), minus the item-only parts: no edit, history, tags or usage, since a mod isn't a
-   *  library item and its files are the engine's to load. */
+   *  preview), minus the item-only parts: no edit, tags or usage, since a mod isn't a library item
+   *  and its files are the engine's to load. Its update review and history take the tree's place
+   *  (see renderModRailState). */
   renderModDetailRail(panel, mod) {
+    var _a;
     const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
     const filePath = this.selectedFilePath;
     const backToMods = () => {
+      this.cleanupReview();
       this.selectedMod = null;
       this.selectedFilePath = null;
       this.pendingDetailAnimation = "back";
@@ -7592,16 +7903,36 @@ var LibraryView = class extends import_obsidian16.ItemView {
     if (filePath) {
       modCrumb.addEventListener("click", backToTree);
       crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
-      crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: (0, import_path18.basename)(filePath) });
+      crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: (0, import_path19.basename)(filePath) });
     }
     const section = panel.createDiv({ cls: "skillmanager-detail-head" });
     const header = section.createDiv({ cls: "skillmanager-detail-header" });
-    header.createEl("h3", { text: filePath ? (0, import_path18.basename)(filePath) : mod.name, cls: "skillmanager-detail-title" });
+    header.createEl("h3", { text: filePath ? (0, import_path19.basename)(filePath) : mod.name, cls: "skillmanager-detail-title" });
     header.createSpan({ text: "Mod", cls: "skillmanager-detail-type-pill" });
     const actions = header.createDiv({ cls: "skillmanager-detail-actions" });
     const revealBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": this.fileManagerLabel() } });
     (0, import_obsidian16.setIcon)(revealBtn, "folder-open");
     revealBtn.addEventListener("click", () => void this.openModFolder(mod));
+    if (this.getSettings().modSources[mod.path]) {
+      const checkBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Check for updates" } });
+      (0, import_obsidian16.setIcon)(checkBtn, "refresh-cw");
+      checkBtn.addEventListener("click", () => void this.checkModForUpdates(mod));
+    }
+    if (this.itemHistory() && !filePath) {
+      const historyBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "History" } });
+      (0, import_obsidian16.setIcon)(historyBtn, "history");
+      historyBtn.addEventListener("click", () => {
+        this.cleanupReview();
+        this.modRail = { kind: "history", modId: mod.id, selectedId: null };
+        this.pendingDetailAnimation = "forward";
+        this.render();
+      });
+    }
+    if (mod.origin === "dev" && (tool == null ? void 0 : tool.pluginsSettingsPath)) {
+      const promoteBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Promote to finished mod" } });
+      (0, import_obsidian16.setIcon)(promoteBtn, "rocket");
+      promoteBtn.addEventListener("click", () => this.confirmPromoteMod(mod));
+    }
     const toolLine = section.createDiv({ cls: "skillmanager-detail-tool" });
     if (tool)
       this.renderIcon(toolLine.createSpan({ cls: "skillmanager-detail-tool-icon" }), tool.icon, tool.svgIcon);
@@ -7609,6 +7940,12 @@ var LibraryView = class extends import_obsidian16.ItemView {
     toolLine.createSpan({ text: [tool == null ? void 0 : tool.name, origin, mod.version ? `v${mod.version}` : null].filter(Boolean).join(" \xB7 ") });
     if (!filePath && mod.description)
       section.createDiv({ cls: "skillmanager-detail-desc", text: mod.description });
+    if (!filePath)
+      section.createDiv({ cls: "skillmanager-subtitle", text: this.modLoadNote(mod) });
+    if (((_a = this.modRail) == null ? void 0 : _a.modId) === mod.id) {
+      this.renderModRailState(panel, mod, this.modRail);
+      return;
+    }
     if (!filePath) {
       const list = panel.createDiv({ cls: "skillmanager-tree" });
       this.renderTreeNodes(list, buildModFileTree(mod.path), 0);
@@ -7617,14 +7954,14 @@ var LibraryView = class extends import_obsidian16.ItemView {
     }
     if (this.modFileLoadedFor !== filePath) {
       try {
-        this.modFileContent = (0, import_fs18.readFileSync)(filePath, "utf-8");
+        this.modFileContent = (0, import_fs19.readFileSync)(filePath, "utf-8");
       } catch (e) {
         this.modFileContent = "";
         new import_obsidian16.Notice("Could not read file: " + errorMessage(e));
       }
       this.modFileLoadedFor = filePath;
     }
-    const ext = (0, import_path18.extname)(filePath).slice(1).toLowerCase();
+    const ext = (0, import_path19.extname)(filePath).slice(1).toLowerCase();
     const source = ext === "md" ? stripFrontmatter(this.modFileContent) : codeFence(this.modFileContent, ext);
     const body = panel.createDiv({ cls: "skillmanager-detail-body" });
     const readingView = body.createDiv({
@@ -7641,13 +7978,21 @@ var LibraryView = class extends import_obsidian16.ItemView {
     if (!mod.enabled)
       card.addClass("is-off");
     const head = card.createDiv({ cls: "skillmanager-card-head" });
-    head.createSpan({ text: mod.name, cls: "skillmanager-card-name" });
+    head.createSpan({ text: mod.name, cls: `skillmanager-card-name${mod.version ? " skillmanager-card-name-fit" : ""}` });
+    if (mod.version)
+      head.createSpan({ text: `v${mod.version}`, cls: "skillmanager-card-meta skillmanager-card-version" });
     head.createSpan({ text: "Mod", cls: "skillmanager-card-type skillmanager-card-type-sm" });
     if (plugin) {
       createSwitch(head, {
         on: plugin.enabled,
         label: `${mod.name} mod enabled`,
         onClick: () => this.explainPluginBundleToggle(plugin)
+      });
+    } else if (mod.origin === "plugin-dir" && (tool == null ? void 0 : tool.pluginsSettingsPath)) {
+      createSwitch(head, {
+        on: mod.enabled,
+        label: `${mod.name} mod enabled`,
+        onClick: () => this.confirmPluginDirModToggle(mod)
       });
     }
     if (tool) {
@@ -7663,22 +8008,397 @@ var LibraryView = class extends import_obsidian16.ItemView {
     const originInfo = this.modOriginLabel(mod);
     (0, import_obsidian16.setIcon)(sourceIcon, originInfo.icon);
     source.createSpan({ text: originInfo.text, cls: "skillmanager-card-source-text" });
+    (0, import_obsidian16.setTooltip)(source, this.modLoadNote(mod), { placement: "top" });
     const right = footer.createDiv({ cls: "skillmanager-card-footer-right" });
-    if (mod.version)
-      right.createSpan({ text: `v${mod.version}`, cls: "skillmanager-card-meta" });
     if (!mod.enabled)
       right.createSpan({ text: "Disabled", cls: "skillmanager-card-meta" });
+    const menuBtn = right.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "More actions" } });
+    (0, import_obsidian16.setIcon)(menuBtn, MORE_HORIZONTAL_ICON_ID);
+    menuBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      this.openModCardMenu(evt, mod);
+    });
     if (((_a = this.selectedMod) == null ? void 0 : _a.id) === mod.id)
       card.addClass("is-selected");
     makeActivatable(card);
     card.addEventListener("click", () => this.selectMod(mod));
   }
+  /** When the tool loads this mod, and where it's switched off: the answer differs by origin, and
+   *  only installed and plugin-dir mods get a switch here. */
+  modLoadNote(mod) {
+    if (mod.origin === "installed")
+      return "Loads in every session while its plugin is enabled. Running sessions pick up a change after /reload-plugins.";
+    if (mod.origin === "dev")
+      return "Loads only in the Claude Code session that created it. Promote it to load it in every new session.";
+    if (mod.origin === "plugin-dir") {
+      return mod.enabled ? "Loads in every new session through CLAUDE_CODE_PLUGIN_DIRS." : "Turned off: taken out of CLAUDE_CODE_PLUGIN_DIRS, so new sessions don't load it. The folder stays where it is.";
+    }
+    return "Loads with the skills folder it sits in, in every session. Move the folder out to turn it off.";
+  }
+  confirmPluginDirModToggle(mod) {
+    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
+    if (!(tool == null ? void 0 : tool.pluginsSettingsPath))
+      return;
+    const perform = async () => {
+      var _a;
+      try {
+        setPluginDirListed(tool, mod.path, !mod.enabled);
+      } catch (e) {
+        new import_obsidian16.Notice(`Couldn't ${mod.enabled ? "turn off" : "turn on"} ${mod.name}: ${errorMessage(e)}`);
+        return;
+      }
+      const settings = this.getSettings();
+      const others = ((_a = settings.disabledModDirs[tool.id]) != null ? _a : []).filter((dir) => dir !== mod.path);
+      settings.disabledModDirs = { ...settings.disabledModDirs, [tool.id]: mod.enabled ? [...others, mod.path] : others };
+      await this.saveSettings();
+      await this.rescan();
+      this.render();
+    };
+    if (!this.getSettings().confirmBeforeToggle) {
+      void perform();
+      return;
+    }
+    const settingsPath = expandHome2(tool.pluginsSettingsPath);
+    new ConfirmModal(
+      this.app,
+      mod.enabled ? `Turn off "${mod.name}"?` : `Turn on "${mod.name}"?`,
+      mod.enabled ? `This takes ${mod.path} out of CLAUDE_CODE_PLUGIN_DIRS in ${settingsPath}. The folder stays where it is. New sessions stop loading it; running ones keep it until they restart.` : `This adds ${mod.path} back to CLAUDE_CODE_PLUGIN_DIRS in ${settingsPath}. New sessions load it.`,
+      mod.enabled ? "Turn off" : "Turn on",
+      perform,
+      mod.enabled ? "warning" : "cta"
+    ).open();
+  }
+  /** Always confirms, toggle setting or not: it moves the folder out from under the session that
+   *  is developing it. */
+  confirmPromoteMod(mod) {
+    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
+    if (!(tool == null ? void 0 : tool.pluginsSettingsPath))
+      return;
+    const target = (0, import_path19.join)(expandHome2(FINISHED_MODS_DIR), (0, import_path19.basename)(mod.path));
+    new ConfirmModal(
+      this.app,
+      `Promote "${mod.name}"?`,
+      `This moves it to ${target} and adds that folder to CLAUDE_CODE_PLUGIN_DIRS in ${expandHome2(tool.pluginsSettingsPath)}, so every new session loads it. The session that created it stops seeing the dev copy.`,
+      "Promote",
+      async () => {
+        var _a;
+        let newPath;
+        try {
+          newPath = promoteDevMod(tool, mod.path);
+        } catch (e) {
+          new import_obsidian16.Notice(`Couldn't promote ${mod.name}: ${errorMessage(e)}`);
+          return;
+        }
+        await this.rescan();
+        this.selectedMod = (_a = this.mods.find((m) => m.id === newPath)) != null ? _a : null;
+        this.render();
+      },
+      "cta"
+    ).open();
+  }
+  openModCardMenu(evt, mod) {
+    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
+    const menu = new import_obsidian16.Menu();
+    menu.addItem(
+      (menuItem) => menuItem.setTitle(this.fileManagerLabel()).setIcon("folder-open").onClick(() => void this.openModFolder(mod))
+    );
+    const source = this.getSettings().modSources[mod.path];
+    if (source) {
+      menu.addItem(
+        (menuItem) => menuItem.setTitle("Open on GitHub").setIcon("external-link").onClick(() => window.open(githubSourceUrl(source.repoUrl, source.ref, source.subpath, source.commit), "_blank"))
+      );
+      menu.addItem(
+        (menuItem) => menuItem.setTitle("Check for updates").setIcon("refresh-cw").onClick(() => void this.checkModForUpdates(mod))
+      );
+    }
+    if (mod.origin === "dev" && (tool == null ? void 0 : tool.pluginsSettingsPath)) {
+      menu.addItem(
+        (menuItem) => menuItem.setTitle("Promote to finished mod").setIcon("rocket").onClick(() => this.confirmPromoteMod(mod))
+      );
+    }
+    if (mod.origin !== "installed") {
+      menu.addSeparator();
+      menu.addItem(
+        (menuItem) => menuItem.setTitle(this.isSymlinkPath(mod.path) ? "Unlink" : "Delete").setIcon(this.isSymlinkPath(mod.path) ? "unlink" : "trash-2").setWarning(true).onClick(() => this.confirmDeleteMod(mod))
+      );
+    }
+    menu.showAtMouseEvent(evt);
+  }
+  isSymlinkPath(path) {
+    try {
+      return (0, import_fs19.lstatSync)(path).isSymbolicLink();
+    } catch (e) {
+      return false;
+    }
+  }
+  /** Same shape as confirmDelete: a real folder goes to the OS trash, a symlink is only unlinked.
+   *  A plugin-dir mod still listed in CLAUDE_CODE_PLUGIN_DIRS is taken out of it first, so the
+   *  setting never names a folder that's gone; if the trash then fails, it's put back. */
+  confirmDeleteMod(mod) {
+    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
+    const isSymlink = this.isSymlinkPath(mod.path);
+    const listed = mod.origin === "plugin-dir" && mod.enabled && (tool == null ? void 0 : tool.pluginsSettingsPath);
+    const envNote = listed ? " It's also taken out of CLAUDE_CODE_PLUGIN_DIRS." : "";
+    new ConfirmModal(
+      this.app,
+      isSymlink ? `Unlink "${mod.name}"?` : `Delete "${mod.name}"?`,
+      isSymlink ? `This removes the symlink at ${mod.path}. The folder it points to isn't touched.${envNote}` : `This moves "${mod.name}" to the Recycle Bin/Trash from ${mod.path}. You can restore it from there if this was a mistake.${envNote}`,
+      isSymlink ? "Unlink" : "Delete",
+      async () => {
+        var _a;
+        try {
+          if (listed && tool)
+            setPluginDirListed(tool, mod.path, false);
+          try {
+            if (isSymlink)
+              (0, import_fs19.unlinkSync)(mod.path);
+            else
+              await this.trashPath(mod.path);
+          } catch (e) {
+            if (listed && tool)
+              setPluginDirListed(tool, mod.path, true);
+            throw e;
+          }
+        } catch (e) {
+          new import_obsidian16.Notice(`Couldn't ${isSymlink ? "unlink" : "delete"} ${mod.name}: ${errorMessage(e)}`);
+          return;
+        }
+        if (tool && mod.origin === "plugin-dir") {
+          const settings = this.getSettings();
+          const remaining = ((_a = settings.disabledModDirs[tool.id]) != null ? _a : []).filter((dir) => dir !== mod.path);
+          settings.disabledModDirs = { ...settings.disabledModDirs, [tool.id]: remaining };
+          const { [mod.path]: _removed, ...sources } = settings.modSources;
+          settings.modSources = sources;
+          await this.saveSettings();
+        }
+        await this.rescan();
+        this.render();
+      }
+    ).open();
+  }
+  /** History key for a mod: its folder, which stays put while it's turned off or updated. */
+  modHistoryId(mod) {
+    return `mod:${mod.path}`;
+  }
+  /** Asks GitHub for the source's latest commit; opens an update review when it moved on. */
+  async checkModForUpdates(mod) {
+    const source = this.getSettings().modSources[mod.path];
+    if (!source)
+      return;
+    new import_obsidian16.Notice(`Checking "${mod.name}" for updates\u2026`);
+    await new Promise((r) => window.setTimeout(r, 0));
+    let latest;
+    try {
+      latest = remoteHeadCommit(source.repoUrl, source.ref || void 0);
+    } catch (e) {
+      new import_obsidian16.Notice(`Couldn't check for updates: ${errorMessage(e)}`);
+      return;
+    }
+    if (latest === source.commit) {
+      new import_obsidian16.Notice(`"${mod.name}" is up to date.`);
+      return;
+    }
+    await this.startModReview(mod);
+  }
+  /** Same review as an item's update (see startReview): fetch the latest commit, diff it against
+   *  the folder on disk, and show it in the mod's rail before anything changes. */
+  async startModReview(mod) {
+    const source = this.getSettings().modSources[mod.path];
+    if (!source)
+      return;
+    this.cleanupReview();
+    this.selectedMod = mod;
+    this.selectedFilePath = null;
+    this.modRail = { kind: "review-loading", modId: mod.id };
+    this.pendingDetailAnimation = "forward";
+    this.render();
+    await new Promise((r) => window.setTimeout(r, 0));
+    let clone = null;
+    try {
+      clone = shallowCloneRepo(source.repoUrl, source.ref || void 0);
+      removeGitDir(clone);
+      const newRoot = source.subpath ? (0, import_path19.join)(clone.dir, source.subpath) : clone.dir;
+      if (!isModFolder(newRoot))
+        throw new Error(`"${source.subpath || "The repo root"}" is no longer a mod in this repo.`);
+      const files = changedModFiles(mod.path, newRoot);
+      if (files.length === 0) {
+        clone.cleanup();
+        await this.setModSourceCommit(mod.path, clone.commit);
+        this.modRail = null;
+        new import_obsidian16.Notice(`"${mod.name}" is up to date. Newer commits in the repo don't change it.`);
+        this.render();
+        return;
+      }
+      this.modRail = { kind: "review", modId: mod.id, files, newRoot, newCommit: clone.commit, clone };
+    } catch (e) {
+      clone == null ? void 0 : clone.cleanup();
+      this.modRail = { kind: "review-error", modId: mod.id, message: errorMessage(e) };
+    }
+    this.render();
+  }
+  async setModSourceCommit(modPath, commit) {
+    const settings = this.getSettings();
+    const source = settings.modSources[modPath];
+    if (!source)
+      return;
+    settings.modSources = { ...settings.modSources, [modPath]: { ...source, commit } };
+    await this.saveSettings();
+  }
+  renderModRailState(panel, mod, state) {
+    const close = () => {
+      this.cleanupReview();
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    if (state.kind === "review-loading" || state.kind === "review-error") {
+      const status = panel.createDiv({ cls: "skillmanager-review-status" });
+      status.createDiv({
+        cls: "skillmanager-modal-meta",
+        text: state.kind === "review-loading" ? "Fetching upstream changes\u2026" : `Couldn't fetch the update: ${state.message}`
+      });
+      if (state.kind === "review-error") {
+        const actions = status.createDiv({ cls: "skillmanager-modal-actions" });
+        actions.createEl("button", { text: "Retry", cls: "mod-cta" }).addEventListener("click", () => void this.startModReview(mod));
+        actions.createEl("button", { text: "Dismiss", cls: "skillmanager-btn-neutral" }).addEventListener("click", close);
+      }
+      return;
+    }
+    if (state.kind === "review") {
+      const count = state.files.length;
+      renderTabsDiff(panel, {
+        files: state.files,
+        state: this.tabsDiffState(`modreview:${mod.id}:${state.newCommit}`),
+        rerender: () => this.render(),
+        back: { label: "Cancel", onClick: close },
+        primary: { label: count > 1 ? `Update ${count} files` : "Update", onClick: () => void this.applyModReview(mod) }
+      });
+      return;
+    }
+    this.renderModHistory(panel, mod, state, close);
+  }
+  /** Saves the folder as it is (so the update can be undone from History), then swaps in the
+   *  fetched copy the same way an item update does; the old folder goes to the trash. */
+  async applyModReview(mod) {
+    const state = this.modRail;
+    const source = this.getSettings().modSources[mod.path];
+    if ((state == null ? void 0 : state.kind) !== "review" || !source)
+      return;
+    try {
+      this.trySnapshot((h) => h.snapshotUnit(this.modHistoryId(mod), mod.path, true, "update", { commit: source.commit, toCommit: state.newCommit }));
+      await this.replaceUnit(state.newRoot, mod.path, true);
+      await this.setModSourceCommit(mod.path, state.newCommit);
+      this.cleanupReview();
+      await this.rescan();
+      this.render();
+      new import_obsidian16.Notice(`Updated "${mod.name}". New sessions load the new version.`);
+    } catch (e) {
+      new import_obsidian16.Notice(`Update failed: ${errorMessage(e)}`);
+    }
+  }
+  modHistoryLabel(entry) {
+    if (entry.kind === "update")
+      return entry.toCommit ? `Before GitHub update to ${entry.toCommit.slice(0, 7)}` : "Before GitHub update";
+    return "Before restoring an earlier version";
+  }
+  /** Same list-then-diff flow as an item's history (see renderHistory), over whole-folder
+   *  versions only: mods aren't edited here, so every version comes from an update or restore. */
+  renderModHistory(panel, mod, state, close) {
+    const history = this.itemHistory();
+    if (!history)
+      return;
+    const entries = history.list(this.modHistoryId(mod)).filter((e) => e.scope === "unit");
+    const selected = state.selectedId ? entries.find((e) => e.id === state.selectedId) : void 0;
+    const head = panel.createDiv({ cls: "skillmanager-detail-head" });
+    const header = head.createDiv({ cls: "skillmanager-detail-header" });
+    header.createEl("h3", { text: selected ? this.modHistoryLabel(selected) : "History", cls: "skillmanager-detail-title" });
+    const closeBtn = header.createDiv({ cls: "skillmanager-detail-actions" }).createEl("button", {
+      cls: "skillmanager-icon-btn",
+      attr: { "aria-label": "Close history" }
+    });
+    (0, import_obsidian16.setIcon)(closeBtn, "x");
+    closeBtn.addEventListener("click", close);
+    head.createDiv({
+      cls: "skillmanager-detail-tool",
+      text: selected ? this.historyMeta(selected) : `A version is saved before each GitHub update or restore. The last ${HISTORY_KEPT} are kept.`
+    });
+    if (!selected) {
+      if (entries.length === 0) {
+        panel.createDiv({ cls: "skillmanager-tree-hint", text: "No saved versions yet." });
+        return;
+      }
+      const list = panel.createDiv({ cls: "skillmanager-history-list" });
+      for (const entry of entries) {
+        const row = list.createDiv({ cls: "skillmanager-history-row" });
+        (0, import_obsidian16.setIcon)(row.createSpan({ cls: "skillmanager-history-icon" }), entry.kind === "update" ? "download" : "history");
+        const text = row.createDiv({ cls: "skillmanager-history-text" });
+        text.createDiv({ cls: "skillmanager-history-label", text: this.modHistoryLabel(entry) });
+        text.createDiv({ cls: "skillmanager-history-meta", text: this.historyMeta(entry) });
+        makeActivatable(row);
+        row.addEventListener("click", () => {
+          state.selectedId = entry.id;
+          this.tabsDiff = null;
+          this.pendingDetailAnimation = "forward";
+          this.render();
+        });
+      }
+      return;
+    }
+    const backToVersions = () => {
+      state.selectedId = null;
+      this.tabsDiff = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    const files = changedModFiles(mod.path, history.contentPath(selected));
+    if (files.length === 0) {
+      panel.createDiv({ cls: "skillmanager-tree-hint", text: "This version matches what's on disk now." });
+      const actions = panel.createDiv({ cls: "skillmanager-modal-actions" });
+      actions.createEl("button", { cls: "skillmanager-btn-neutral", text: "Versions" }).addEventListener("click", backToVersions);
+      return;
+    }
+    renderTabsDiff(panel, {
+      files,
+      state: this.tabsDiffState(`modhistory:${selected.id}`),
+      rerender: () => this.render(),
+      back: { label: "Versions", icon: "arrow-left", onClick: backToVersions },
+      primary: {
+        label: files.length > 1 ? `Restore ${files.length} files` : "Restore this version",
+        onClick: () => void this.restoreModVersion(mod, selected)
+      }
+    });
+  }
+  /** Saves the current folder first (so a restore can be undone too), writes the version back,
+   *  and puts the tracked commit back so "Check for updates" compares against the right one. */
+  async restoreModVersion(mod, entry) {
+    const history = this.itemHistory();
+    if (!history)
+      return;
+    const source = this.getSettings().modSources[mod.path];
+    try {
+      this.trySnapshot((h) => h.snapshotBeforeRestore(entry, mod.path, true, source == null ? void 0 : source.commit));
+      await this.replaceUnit(history.contentPath(entry), mod.path, true);
+      if (entry.commit)
+        await this.setModSourceCommit(mod.path, entry.commit);
+      history.prune(this.modHistoryId(mod));
+      this.cleanupReview();
+      await this.rescan();
+      this.render();
+      new import_obsidian16.Notice(`Restored "${mod.name}".`);
+    } catch (e) {
+      new import_obsidian16.Notice(`Restore failed: ${errorMessage(e)}`);
+    }
+  }
   modOriginLabel(mod) {
     var _a;
     if (mod.origin === "dev")
       return { text: "In development", icon: "flask-conical" };
-    if (mod.origin === "plugin-dir")
+    if (mod.origin === "plugin-dir") {
+      const source = this.getSettings().modSources[mod.path];
+      const parsed = source ? parseOwnerRepo(source.repoUrl) : null;
+      if (source)
+        return { text: parsed ? `${parsed.owner}/${parsed.repo}` : "GitHub", icon: "github" };
       return { text: "Plugin folder (env)", icon: "folder-cog" };
+    }
     if (mod.origin === "skill")
       return { text: "Skills folder", icon: "sparkles" };
     const plugin = this.discoveredPlugins.find((p) => p.id === mod.pluginId);
@@ -7860,7 +8580,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
           return;
       } catch (e) {
       }
-      if (!(0, import_fs18.existsSync)(path))
+      if (!(0, import_fs19.existsSync)(path))
         return;
     }
     const shell = this.electronShell();
@@ -7874,15 +8594,15 @@ var LibraryView = class extends import_obsidian16.ItemView {
    *  link anyway), and a symlinked flat file is overwritten in place, same as before. Throws
    *  without touching anything if the trash isn't reachable. */
   async replaceUnit(source, target, isDirectory) {
-    if ((0, import_fs18.existsSync)(target)) {
-      const isLink = (0, import_fs18.lstatSync)(target).isSymbolicLink();
+    if ((0, import_fs19.existsSync)(target)) {
+      const isLink = (0, import_fs19.lstatSync)(target).isSymbolicLink();
       if (isLink && isDirectory) {
-        (0, import_fs18.unlinkSync)(target);
+        (0, import_fs19.unlinkSync)(target);
       } else if (!isLink) {
         await this.trashPath(target);
       }
     }
-    (0, import_fs18.cpSync)(source, target, isDirectory ? { recursive: true } : void 0);
+    (0, import_fs19.cpSync)(source, target, isDirectory ? { recursive: true } : void 0);
   }
   fileManagerLabel() {
     if (process.platform === "darwin")
@@ -7922,7 +8642,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
       new import_obsidian16.Notice("Can't open files from this device, try Obsidian's desktop app.");
       return;
     }
-    const folderPath = (0, import_path18.dirname)(filePath);
+    const folderPath = (0, import_path19.dirname)(filePath);
     const errorText = await shell.openPath(folderPath);
     if (errorText)
       new import_obsidian16.Notice(`Couldn't open ${folderPath}: ${errorText}`);
@@ -8092,7 +8812,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
    *  correctly-configured tool with zero skills yet is still "detected." */
   toolIsDetected(tool) {
     var _a, _b, _c;
-    return Object.values(tool.paths).some((p) => p && (0, import_fs18.existsSync)(expandHome2(p))) || ((_a = tool.ruleAdditionalPaths) != null ? _a : []).some((e) => e.path.trim() && (0, import_fs18.existsSync)(expandHome2(e.path.trim()))) || (tool.mcpConfigPath ? (0, import_fs18.existsSync)(expandHome2(tool.mcpConfigPath)) : false) || (tool.pluginsRegistry ? (0, import_fs18.existsSync)(expandHome2(tool.pluginsRegistry)) : false) || ((_b = tool.pluginsPaths) != null ? _b : []).some((p) => p && (0, import_fs18.existsSync)(expandHome2(p))) || (((_c = tool.memoryPath) == null ? void 0 : _c.trim()) ? (0, import_fs18.existsSync)(expandHome2(tool.memoryPath.trim())) : false);
+    return Object.values(tool.paths).some((p) => p && (0, import_fs19.existsSync)(expandHome2(p))) || ((_a = tool.ruleAdditionalPaths) != null ? _a : []).some((e) => e.path.trim() && (0, import_fs19.existsSync)(expandHome2(e.path.trim()))) || (tool.mcpConfigPath ? (0, import_fs19.existsSync)(expandHome2(tool.mcpConfigPath)) : false) || (tool.pluginsRegistry ? (0, import_fs19.existsSync)(expandHome2(tool.pluginsRegistry)) : false) || ((_b = tool.pluginsPaths) != null ? _b : []).some((p) => p && (0, import_fs19.existsSync)(expandHome2(p))) || (((_c = tool.memoryPath) == null ? void 0 : _c.trim()) ? (0, import_fs19.existsSync)(expandHome2(tool.memoryPath.trim())) : false);
   }
   toolMatchesStatusFilter(tool) {
     switch (this.toolStatusFilter) {
@@ -8216,7 +8936,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
    *  typed value into the absolute path to check; return null to skip checking. Fires on blur
    *  (the "change" event), not per keystroke — a rescan() follows every edit, and that's real
    *  filesystem work, not something to trigger on every character typed. */
-  renderToolPathField(container, label, value, placeholder, resolve4, onChange) {
+  renderToolPathField(container, label, value, placeholder, resolve6, onChange) {
     const row = container.createDiv({ cls: "skillmanager-toolpath-row" });
     row.createSpan({ text: label, cls: "skillmanager-toolpath-label" });
     const input = row.createEl("input", { type: "text", cls: "skillmanager-toolpath-input", attr: { placeholder } });
@@ -8230,8 +8950,8 @@ var LibraryView = class extends import_obsidian16.ItemView {
         status.className = "skillmanager-path-status";
         return;
       }
-      const resolved = resolve4(trimmed);
-      const found = resolved !== null && (0, import_fs18.existsSync)(resolved);
+      const resolved = resolve6(trimmed);
+      const found = resolved !== null && (0, import_fs19.existsSync)(resolved);
       status.setText(found ? "found" : "not found");
       status.title = resolved != null ? resolved : "";
       status.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
@@ -8253,7 +8973,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     var _a;
     const entries = (_a = scope === "global" ? tool.ruleAdditionalPaths : tool.ruleAdditionalProjectPaths) != null ? _a : [];
     const vaultPath = this.vaultPath();
-    const resolve4 = (raw) => scope === "global" ? expandHome2(raw) : vaultPath ? (0, import_path18.join)(vaultPath, raw) : null;
+    const resolve6 = (raw) => scope === "global" ? expandHome2(raw) : vaultPath ? (0, import_path19.join)(vaultPath, raw) : null;
     const commit = (next) => {
       const trimmed = next.filter((e) => e.path.trim());
       if (scope === "global") {
@@ -8290,8 +9010,8 @@ var LibraryView = class extends import_obsidian16.ItemView {
           status.className = "skillmanager-path-status";
           return;
         }
-        const resolved = resolve4(trimmedVal);
-        const found = resolved !== null && (0, import_fs18.existsSync)(resolved);
+        const resolved = resolve6(trimmedVal);
+        const found = resolved !== null && (0, import_fs19.existsSync)(resolved);
         status.setText(found ? "found" : "not found");
         status.title = resolved != null ? resolved : "";
         status.className = `skillmanager-path-status ${found ? "is-found" : "is-missing"}`;
@@ -8402,7 +9122,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
         TYPE_LABELS[type],
         (_f = (_e = tool.projectPaths) == null ? void 0 : _e[type]) != null ? _f : "",
         globalPath ? toProjectRelative(globalPath) : "(not scanned globally)",
-        (raw) => vaultPath ? (0, import_path18.join)(vaultPath, raw) : null,
+        (raw) => vaultPath ? (0, import_path19.join)(vaultPath, raw) : null,
         (value) => {
           var _a2;
           if (value.trim()) {
@@ -8424,7 +9144,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
       "Memories",
       (_g = tool.projectMemoryPath) != null ? _g : "",
       ".example/memory",
-      (raw) => vaultPath ? (0, import_path18.join)(vaultPath, raw) : null,
+      (raw) => vaultPath ? (0, import_path19.join)(vaultPath, raw) : null,
       (value) => {
         if (value.trim())
           tool.projectMemoryPath = value.trim();
@@ -8457,7 +9177,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
       "Project config",
       (_i = tool.projectMcpConfigPath) != null ? _i : "",
       ".example/mcp.json",
-      (raw) => vaultPath ? (0, import_path18.join)(vaultPath, raw) : null,
+      (raw) => vaultPath ? (0, import_path19.join)(vaultPath, raw) : null,
       (value) => {
         if (value.trim())
           tool.projectMcpConfigPath = value.trim();
@@ -9127,7 +9847,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
   async quickCheckForUpdate(item, btn) {
     btn.disabled = true;
     btn.addClass("is-syncing");
-    await new Promise((resolve4) => window.setTimeout(resolve4, 0));
+    await new Promise((resolve6) => window.setTimeout(resolve6, 0));
     try {
       const latest = remoteHeadCommit(item.sourceRepo, item.sourceRef || void 0);
       if (latest === item.sourceCommit) {
@@ -9263,7 +9983,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
   isBrokenSymlink(item) {
     if (item.projectId === null)
       return false;
-    return this.brokenSymlinks.some((link) => link.path === item.sourcePath || link.path === (0, import_path18.dirname)(item.sourcePath));
+    return this.brokenSymlinks.some((link) => link.path === item.sourcePath || link.path === (0, import_path19.dirname)(item.sourcePath));
   }
   /** A small inline "link" icon for a dashboard row's name, only rendered when the item is a
    *  symlink — lets Prune/Overlap rows (and an overlap's open panel) tell two identically-named
@@ -9304,8 +10024,8 @@ var LibraryView = class extends import_obsidian16.ItemView {
       const { usagePrune, mtimePrune } = this.getDashboardPruneSplit(metrics, false);
       const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
       this.insightsCounts = {
-        health: this.getBrokenSymlinkRows().length + this.getIntegrityRows().length,
-        cleanup: usagePrune.length + mtimePrune.length + overlapPairs.length
+        health: this.getBrokenSymlinkRows().length + this.getIntegrityRows().length + this.getModHealthRows().length,
+        cleanup: usagePrune.length + mtimePrune.length + overlapPairs.length + this.getModCleanupRows().length
       };
     }
     return this.insightsCounts;
@@ -9318,7 +10038,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
           continue;
         let raw;
         try {
-          raw = (0, import_fs18.readFileSync)(item.sourcePath, "utf-8");
+          raw = (0, import_fs19.readFileSync)(item.sourcePath, "utf-8");
         } catch (e) {
           continue;
         }
@@ -9346,7 +10066,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
    *  project card retained for the dangling link itself (see rescan's retainedBrokenIds). */
   itemForBrokenLink(link, disabledSource) {
     var _a;
-    return (_a = disabledSource != null ? disabledSource : this.items.find((item) => item.sourcePath === link.path || (0, import_path18.dirname)(item.sourcePath) === link.path)) != null ? _a : null;
+    return (_a = disabledSource != null ? disabledSource : this.items.find((item) => item.sourcePath === link.path || (0, import_path19.dirname)(item.sourcePath) === link.path)) != null ? _a : null;
   }
   integrityDisregardKey(item, issues) {
     return `integrity:${item.entryId}:${issues.join("|")}`;
@@ -9634,6 +10354,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
   }
   renderInsightsHealth(content) {
     const integrityRows = this.getIntegrityRows();
+    const modRows = this.getModHealthRows();
     const brokenRows = this.getBrokenSymlinkRows();
     const body = this.renderInsightsShell(
       content,
@@ -9642,6 +10363,8 @@ var LibraryView = class extends import_obsidian16.ItemView {
       (stats) => {
         this.renderDashboardStat(stats, "Broken links", String(brokenRows.length), brokenRows.length ? "skillmanager-dash-stat-danger" : "");
         this.renderDashboardStat(stats, "Issues", String(integrityRows.length), integrityRows.length ? "skillmanager-dash-stat-danger" : "");
+        if (modRows.length)
+          this.renderDashboardStat(stats, "Mods", String(modRows.length), "skillmanager-dash-stat-danger");
       }
     );
     const brokenSection = this.renderDashboardBrokenSymlinks(body, brokenRows);
@@ -9652,7 +10375,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
         key: this.brokenSymlinkDisregardKey(link),
         renderName: (nameRow) => {
           (0, import_obsidian16.setIcon)(nameRow.createSpan({ cls: "skillmanager-dash-row-icon" }), TYPE_ICONS[link.type]);
-          nameRow.createSpan({ text: (0, import_path18.basename)(link.path).replace(/\.md$/i, "") });
+          nameRow.createSpan({ text: (0, import_path19.basename)(link.path).replace(/\.md$/i, "") });
         },
         meta: `\u2192 ${tildePath(link.targetPath)}`
       }))
@@ -9670,6 +10393,18 @@ var LibraryView = class extends import_obsidian16.ItemView {
         meta: issues.length === 1 ? issues[0] : `${issues.length} issues`
       }))
     );
+    if (this.mods.length > 0 || modRows.length > 0) {
+      const modSection = this.renderDashboardModHealth(body, modRows);
+      this.renderDashboardDisregarded(
+        modSection,
+        "modhealth",
+        this.getModHealthRows(true).map((issue) => ({
+          key: this.modHealthKey(issue),
+          renderName: (nameRow) => this.renderModIssueName(nameRow, this.modHealthName(issue)),
+          meta: this.modHealthProblem(issue)
+        }))
+      );
+    }
     return body;
   }
   renderInsightsCleanup(content) {
@@ -9678,6 +10413,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     const overlapPairs = this.overlapPairsFor(metrics.map((m) => m.item));
     const pruneCount = usagePrune.length + mtimePrune.length;
     const restoreCount = this.getDashboardRestoreRows().length;
+    const modCleanupRows = this.getModCleanupRows();
     const body = this.renderInsightsShell(
       content,
       "Cleanup",
@@ -9687,10 +10423,13 @@ var LibraryView = class extends import_obsidian16.ItemView {
         this.renderDashboardStat(stats, "Overlaps", String(overlapPairs.length), overlapPairs.length ? "skillmanager-dash-stat-accent" : "");
         if (restoreCount)
           this.renderDashboardStat(stats, "Recently disabled", String(restoreCount));
+        if (modCleanupRows.length)
+          this.renderDashboardStat(stats, "Mods", String(modCleanupRows.length), "skillmanager-dash-stat-accent");
       }
     );
     if (metrics.length === 0 && restoreCount === 0) {
       body.createDiv({ text: "No enabled items yet.", cls: "skillmanager-empty" });
+      this.renderModCleanupSection(body, modCleanupRows);
       return body;
     }
     const pruneSection = this.renderDashboardPruneCandidates(body, usagePrune, mtimePrune, metrics);
@@ -9716,7 +10455,219 @@ var LibraryView = class extends import_obsidian16.ItemView {
         meta: pair.sameName ? "Same name" : `${Math.round(pair.score * 100)}% description overlap`
       }))
     );
+    this.renderModCleanupSection(body, modCleanupRows);
     return body;
+  }
+  renderModCleanupSection(body, rows) {
+    if (this.mods.length === 0 && rows.length === 0)
+      return;
+    const section = this.renderDashboardModCleanup(body, rows);
+    this.renderDashboardDisregarded(
+      section,
+      "modcleanup",
+      this.getModCleanupRows(true).map((item) => ({
+        key: this.modCleanupKey(item),
+        renderName: (nameRow) => this.renderModIssueName(nameRow, this.modCleanupName(item)),
+        meta: this.modCleanupProblem(item)
+      }))
+    );
+  }
+  // ---------- Mod checks (see modChecks.ts) ----------
+  modHealthKey(issue) {
+    switch (issue.kind) {
+      case "missing-dir":
+      case "not-a-plugin":
+        return `modhealth:${issue.kind}:${issue.path}`;
+      case "missing-module":
+        return `modhealth:missing-module:${issue.mod.path}:${issue.modules.join("|")}`;
+      case "duplicate":
+        return `modhealth:duplicate:${issue.mods.map((m) => m.path).sort().join("|")}`;
+    }
+  }
+  getModHealthRows(wantDisregarded = false) {
+    const disregarded = this.getSettings().dashboardDisregarded;
+    return findModHealthIssues(this.getSettings().tools, this.mods).filter((issue) => !!disregarded[this.modHealthKey(issue)] === wantDisregarded);
+  }
+  modCleanupKey(item) {
+    return item.kind === "promoted-copy" ? `modcleanup:promoted:${item.dev.path}` : `modcleanup:empty:${item.toolId}:${item.paths.join("|")}`;
+  }
+  getModCleanupRows(wantDisregarded = false) {
+    const disregarded = this.getSettings().dashboardDisregarded;
+    return findModCleanup(this.getSettings().tools, this.mods).filter((item) => !!disregarded[this.modCleanupKey(item)] === wantDisregarded);
+  }
+  renderModIssueName(el, name) {
+    (0, import_obsidian16.setIcon)(el.createSpan({ cls: "skillmanager-dash-row-icon" }), "puzzle");
+    el.createSpan({ text: name });
+  }
+  modHealthName(issue) {
+    if (issue.kind === "missing-dir" || issue.kind === "not-a-plugin")
+      return (0, import_path19.basename)(issue.path);
+    return issue.kind === "duplicate" ? issue.name : issue.mod.name;
+  }
+  modHealthProblem(issue) {
+    switch (issue.kind) {
+      case "missing-dir":
+        return "CLAUDE_CODE_PLUGIN_DIRS names a folder that no longer exists.";
+      case "not-a-plugin":
+        return "CLAUDE_CODE_PLUGIN_DIRS names a folder with no .claude-plugin/plugin.json, so nothing loads from it.";
+      case "missing-module":
+        return `hooks.json names ${issue.modules.length === 1 ? "a module that isn't" : `${issue.modules.length} modules that aren't`} there, so the mod won't load.`;
+      case "duplicate":
+        return `${issue.mods.length} copies load in every session, so each hook runs ${issue.mods.length} times.`;
+    }
+  }
+  modCleanupName(item) {
+    return item.kind === "promoted-copy" ? item.dev.name : "Empty session folders";
+  }
+  modCleanupProblem(item) {
+    return item.kind === "promoted-copy" ? "A dev copy of a mod that's already finished. The session that made it loads both." : `${item.paths.length} folder${item.paths.length === 1 ? "" : "s"} in the dev mods folder with no mod left in ${item.paths.length === 1 ? "it" : "them"}.`;
+  }
+  /** Jumps to the Mods page, with `mod`'s rail open when given. */
+  openModsPage(mod) {
+    this.clearScopeFilters();
+    this.modsMode = true;
+    this.selectedMod = mod != null ? mod : null;
+    this.pendingDetailAnimation = mod ? "forward" : null;
+    this.render();
+  }
+  async openPathInFileManager(path) {
+    const shell = this.electronShell();
+    if (!shell) {
+      new import_obsidian16.Notice("Can't open files from this device, try Obsidian's desktop app.");
+      return;
+    }
+    const errorText = await shell.openPath(path);
+    if (errorText)
+      new import_obsidian16.Notice(`Couldn't open ${path}: ${errorText}`);
+  }
+  confirmRemovePluginDir(toolId, path) {
+    const tool = this.getSettings().tools.find((t) => t.id === toolId);
+    if (!(tool == null ? void 0 : tool.pluginsSettingsPath))
+      return;
+    new ConfirmModal(
+      this.app,
+      "Remove from CLAUDE_CODE_PLUGIN_DIRS?",
+      `This takes ${path} out of CLAUDE_CODE_PLUGIN_DIRS in ${expandHome2(tool.pluginsSettingsPath)}. Nothing on disk is deleted.`,
+      "Remove",
+      async () => {
+        try {
+          setPluginDirListed(tool, path, false);
+        } catch (e) {
+          new import_obsidian16.Notice(`Couldn't update the setting: ${errorMessage(e)}`);
+          return;
+        }
+        await this.rescan();
+      }
+    ).open();
+  }
+  confirmTrashEmptySessions(paths) {
+    new ConfirmModal(
+      this.app,
+      `Move ${paths.length} empty folder${paths.length === 1 ? "" : "s"} to the Trash?`,
+      `These session folders hold no mods: ${paths.map(tildePath).join(", ")}. You can restore them from the Recycle Bin/Trash.`,
+      "Move to Trash",
+      async () => {
+        try {
+          for (const path of paths)
+            await this.trashPath(path);
+        } catch (e) {
+          new import_obsidian16.Notice(`Couldn't move a folder to the Trash: ${errorMessage(e)}`);
+        }
+        await this.rescan();
+      }
+    ).open();
+  }
+  renderDashboardModHealth(body, issues) {
+    const section = body.createDiv({ cls: "skillmanager-insights-block skillmanager-insight-section" });
+    const rows = issues.map((issue) => {
+      const key = this.modHealthKey(issue);
+      const base = {
+        key,
+        renderName: (el) => this.renderModIssueName(el, this.modHealthName(issue)),
+        problem: this.modHealthProblem(issue),
+        tone: "warn",
+        disregardKey: key
+      };
+      switch (issue.kind) {
+        case "missing-dir":
+          return {
+            ...base,
+            group: "missing folder",
+            facts: [{ label: "Path", value: tildePath(issue.path), path: true, missing: true }],
+            primary: { label: "Remove from setting", run: () => this.confirmRemovePluginDir(issue.toolId, issue.path) }
+          };
+        case "not-a-plugin":
+          return {
+            ...base,
+            group: "not a plugin",
+            facts: [{ label: "Path", value: tildePath(issue.path), path: true }],
+            primary: { label: "Open folder", run: () => void this.openPathInFileManager(issue.path) },
+            extra: [{ label: "Remove from setting", run: () => this.confirmRemovePluginDir(issue.toolId, issue.path) }]
+          };
+        case "missing-module":
+          return {
+            ...base,
+            group: "missing module",
+            facts: [
+              { label: "Missing", value: issue.modules.join("\n"), multiline: true },
+              { label: "Path", value: tildePath(issue.mod.path), path: true }
+            ],
+            primary: { label: "Open", run: () => this.openModsPage(issue.mod) }
+          };
+        case "duplicate":
+          return {
+            ...base,
+            group: "duplicate",
+            facts: [{ label: "Copies", value: issue.mods.map((m) => tildePath(m.path)).join("\n"), multiline: true }],
+            primary: { label: "Open mods", run: () => this.openModsPage() }
+          };
+      }
+    });
+    this.renderInsightSectionHead(section, "Mods", rows, false);
+    section.createDiv({
+      text: "Mods that won't load, or load more than once. Checked from the files and settings on disk.",
+      cls: "skillmanager-subtitle"
+    });
+    this.renderInsightRows(section, rows, "No mod problems found.");
+    return section;
+  }
+  renderDashboardModCleanup(body, items) {
+    const section = body.createDiv({ cls: "skillmanager-insights-block skillmanager-insight-section" });
+    const rows = items.map((item) => {
+      const key = this.modCleanupKey(item);
+      const base = {
+        key,
+        renderName: (el) => this.renderModIssueName(el, this.modCleanupName(item)),
+        problem: this.modCleanupProblem(item),
+        tone: "muted",
+        disregardKey: key
+      };
+      if (item.kind === "promoted-copy") {
+        return {
+          ...base,
+          group: "dev copy",
+          facts: [
+            { label: "Dev copy", value: tildePath(item.dev.path), path: true },
+            { label: "Finished", value: tildePath(item.finished.path), path: true }
+          ],
+          primary: { label: "Delete dev copy", run: () => this.confirmDeleteMod(item.dev), warning: true },
+          extra: [{ label: "Open", run: () => this.openModsPage(item.dev) }]
+        };
+      }
+      return {
+        ...base,
+        group: "empty folders",
+        facts: [{ label: "Folders", value: item.paths.map(tildePath).join("\n"), multiline: true }],
+        primary: { label: "Move to Trash", run: () => this.confirmTrashEmptySessions(item.paths), warning: true }
+      };
+    });
+    this.renderInsightSectionHead(section, "Mods", rows, false);
+    section.createDiv({
+      text: "Leftovers from making mods: dev copies of mods you've finished, and session folders with nothing in them.",
+      cls: "skillmanager-subtitle"
+    });
+    this.renderInsightRows(section, rows, "Nothing to clean up.");
+    return section;
   }
   /** Hover tooltip, plus the same text in an info modal on click, so an info icon always
    *  answers when poked (displayTooltip would do this inline, but needs Obsidian 1.8.7). */
@@ -9945,7 +10896,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
         key: `broken:${this.brokenSymlinkDisregardKey(link)}`,
         renderName: (el) => {
           (0, import_obsidian16.setIcon)(el.createSpan({ cls: "skillmanager-dash-row-icon" }), TYPE_ICONS[link.type]);
-          el.createSpan({ text: (0, import_path18.basename)(link.path).replace(/\.md$/i, "") });
+          el.createSpan({ text: (0, import_path19.basename)(link.path).replace(/\.md$/i, "") });
         },
         problem: disabledSource ? "Points to an item you disabled. Enable it and the link works again." : "Points to a file or folder that no longer exists.",
         tone: disabledSource ? "warn" : "danger",
@@ -10083,7 +11034,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     let mtimeMs = (_a = metric == null ? void 0 : metric.mtimeMs) != null ? _a : 0;
     if (!metric) {
       try {
-        mtimeMs = (0, import_fs18.statSync)(item.sourcePath).mtimeMs;
+        mtimeMs = (0, import_fs19.statSync)(item.sourcePath).mtimeMs;
       } catch (e) {
         mtimeMs = 0;
       }
@@ -10540,13 +11491,13 @@ var LibraryView = class extends import_obsidian16.ItemView {
         btn.addEventListener("click", onClick);
       return btn;
     };
-    const sep5 = () => row.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+    const sep7 = () => row.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
     crumb(this.detailReturnsToDashboard ? INSIGHTS_PAGES.find((p) => p.page === this.insightsPage).label : "Library", false, () => this.backToLibrary());
-    sep5();
+    sep7();
     crumb(item.name, !fileOpenFromTree, fileOpenFromTree ? () => this.backToTree() : void 0);
     if (fileOpenFromTree && this.selectedFilePath) {
-      sep5();
-      crumb((0, import_path18.basename)(this.selectedFilePath), true);
+      sep7();
+      crumb((0, import_path19.basename)(this.selectedFilePath), true);
     }
   }
   /** Title + type pill + edit action, the tool line under it, then (once a file is open) the
@@ -10561,7 +11512,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     const section = panel.createDiv({ cls: "skillmanager-detail-head" });
     const header = section.createDiv({ cls: "skillmanager-detail-header" });
     header.createEl("h3", {
-      text: isReviewing ? `${(review == null ? void 0 : review.mode) === "restore" ? "Restore" : "Update"} "${item.name}"` : filePath && !isManifest ? (0, import_path18.basename)(filePath) : item.name,
+      text: isReviewing ? `${(review == null ? void 0 : review.mode) === "restore" ? "Restore" : "Update"} "${item.name}"` : filePath && !isManifest ? (0, import_path19.basename)(filePath) : item.name,
       cls: "skillmanager-detail-title"
     });
     header.createSpan({ text: this.itemTypeLabel(item), cls: "skillmanager-detail-type-pill" });
@@ -10682,7 +11633,7 @@ ${item.description}`.length),
     let modified = Date.now();
     let fileSize = 0;
     try {
-      const stat = (0, import_fs18.statSync)(filePath);
+      const stat = (0, import_fs19.statSync)(filePath);
       fileSize = stat.size;
       modified = stat.mtimeMs;
     } catch (e) {
@@ -10755,7 +11706,7 @@ ${item.description}`.length),
   historyLabel(item, entry) {
     switch (entry.kind) {
       case "edit":
-        return `Before edit to ${entry.relPath || (0, import_path18.basename)(item.sourcePath)}`;
+        return `Before edit to ${entry.relPath || (0, import_path19.basename)(item.sourcePath)}`;
       case "update":
         return entry.toCommit ? `Before GitHub update to ${entry.toCommit.slice(0, 7)}` : "Before GitHub update";
       case "restore-installed":
@@ -10825,10 +11776,10 @@ ${item.description}`.length),
     if (selected.scope === "unit") {
       files = changedUnitFiles(unit.path, history.contentPath(selected), unit.isDirectory);
     } else {
-      const currentPath = selected.relPath ? (0, import_path18.join)(unit.path, selected.relPath) : unit.path;
+      const currentPath = selected.relPath ? (0, import_path19.join)(unit.path, selected.relPath) : unit.path;
       const versionPath = history.contentPath(selected);
-      const same = (0, import_fs18.existsSync)(currentPath) && (0, import_fs18.readFileSync)(currentPath).equals((0, import_fs18.readFileSync)(versionPath));
-      files = same ? [] : [{ file: selected.relPath || (0, import_path18.basename)(unit.path), status: (0, import_fs18.existsSync)(currentPath) ? "modified" : "added", oldPath: currentPath, newPath: versionPath }];
+      const same = (0, import_fs19.existsSync)(currentPath) && (0, import_fs19.readFileSync)(currentPath).equals((0, import_fs19.readFileSync)(versionPath));
+      files = same ? [] : [{ file: selected.relPath || (0, import_path19.basename)(unit.path), status: (0, import_fs19.existsSync)(currentPath) ? "modified" : "added", oldPath: currentPath, newPath: versionPath }];
     }
     const backToVersions = () => {
       view.selectedId = null;
@@ -11005,7 +11956,7 @@ ${item.description}`.length),
     checkBtn.disabled = true;
     this.setSourceBtnContent(checkBtn, "loader-2", "Checking\u2026");
     checkBtn.addClass("is-syncing");
-    await new Promise((resolve4) => window.setTimeout(resolve4, 0));
+    await new Promise((resolve6) => window.setTimeout(resolve6, 0));
     try {
       const latest = remoteHeadCommit(item.sourceRepo, item.sourceRef || void 0);
       if (latest === item.sourceCommit) {
@@ -11053,8 +12004,8 @@ ${item.description}`.length),
         clone = this.latestClone(item, latest);
       }
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
-      const newRoot = subpath ? (0, import_path18.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs18.existsSync)(newRoot)) {
+      const newRoot = subpath ? (0, import_path19.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs19.existsSync)(newRoot)) {
         throw new Error(`"${subpath}" no longer exists in this repo.`);
       }
       const unit = linkableUnit(item.sourcePath);
@@ -11162,8 +12113,8 @@ ${item.description}`.length),
     try {
       clone = this.latestClone(item);
       const subpath = (_a = item.sourceSubpath) != null ? _a : "";
-      const newRoot = subpath ? (0, import_path18.join)(clone.dir, subpath) : clone.dir;
-      if (!(0, import_fs18.existsSync)(newRoot)) {
+      const newRoot = subpath ? (0, import_path19.join)(clone.dir, subpath) : clone.dir;
+      if (!(0, import_fs19.existsSync)(newRoot)) {
         throw new Error(`"${subpath}" no longer exists in this repo.`);
       }
       const unit = linkableUnit(item.sourcePath);
@@ -11222,7 +12173,7 @@ ${item.description}`.length),
     for (let i = 0; i < tracked.length; i++) {
       const item = tracked[i];
       onProgress == null ? void 0 : onProgress(i + 1, tracked.length);
-      await new Promise((resolve4) => window.setTimeout(resolve4, 0));
+      await new Promise((resolve6) => window.setTimeout(resolve6, 0));
       try {
         const key = this.checkCloneKey(item);
         let latest = heads.get(key);
@@ -11237,9 +12188,9 @@ ${item.description}`.length),
         }
         const clone = this.latestClone(item, latest);
         const subpath = (_a = item.sourceSubpath) != null ? _a : "";
-        const newRoot = subpath ? (0, import_path18.join)(clone.dir, subpath) : clone.dir;
+        const newRoot = subpath ? (0, import_path19.join)(clone.dir, subpath) : clone.dir;
         const unit = linkableUnit(item.sourcePath);
-        const changed = (0, import_fs18.existsSync)(newRoot) ? changedUnitFiles(unit.path, newRoot, unit.isDirectory).length : -1;
+        const changed = (0, import_fs19.existsSync)(newRoot) ? changedUnitFiles(unit.path, newRoot, unit.isDirectory).length : -1;
         if (changed === 0) {
           await this.store.update(item.entryId, { sourceCommit: clone.commit });
           this.syncStatus.set(item.entryId, "current");
@@ -11308,7 +12259,7 @@ ${item.description}`.length),
     for (let i = 0; i < stale.length; i++) {
       const item = stale[i];
       btn.setText(`Updating ${i + 1}/${stale.length}\u2026`);
-      await new Promise((resolve4) => window.setTimeout(resolve4, 0));
+      await new Promise((resolve6) => window.setTimeout(resolve6, 0));
       try {
         const changed = await this.silentUpdateItem(item);
         this.syncStatus.set(item.entryId, "current");
@@ -11368,7 +12319,7 @@ ${item.description}`.length),
     if (this.detailLoadedFor === loadKey)
       return;
     try {
-      this.detailContent = (0, import_fs18.readFileSync)(filePath, "utf-8");
+      this.detailContent = (0, import_fs19.readFileSync)(filePath, "utf-8");
     } catch (e) {
       this.detailContent = "";
       new import_obsidian16.Notice("Could not read file: " + errorMessage(e));
@@ -11397,7 +12348,7 @@ ${item.description}`.length),
           try {
             const unitPath = linkableUnit(item.sourcePath).path;
             this.trySnapshot((h) => h.snapshotFile(item.entryId, unitPath, filePath, "edit", textarea.value));
-            (0, import_fs18.writeFileSync)(filePath, textarea.value, "utf-8");
+            (0, import_fs19.writeFileSync)(filePath, textarea.value, "utf-8");
             this.detailContent = textarea.value;
             if (isManifest) {
               const meta = parseSourceMeta(textarea.value);
@@ -11533,11 +12484,11 @@ ${item.description}`.length),
 function codeFence(source, lang) {
   var _a;
   const longest = Math.max(2, ...((_a = source.match(/`+/g)) != null ? _a : []).map((run) => run.length));
-  const fence = "`".repeat(longest + 1);
+  const fence2 = "`".repeat(longest + 1);
   const language = lang === "tsx" || lang === "ts" ? "typescript" : lang;
-  return `${fence}${language}
+  return `${fence2}${language}
 ${source}
-${fence}`;
+${fence2}`;
 }
 
 // src/settings.ts
@@ -12248,7 +13199,7 @@ var SkillManagerPlugin = class extends import_obsidian19.Plugin {
           stale++;
       } catch (e) {
       }
-      await new Promise((resolve4) => window.setTimeout(resolve4, 0));
+      await new Promise((resolve6) => window.setTimeout(resolve6, 0));
     }
     if (stale > 0)
       new import_obsidian19.Notice(`${stale} skill${stale === 1 ? "" : "s"} ${stale === 1 ? "has" : "have"} an update available.`);

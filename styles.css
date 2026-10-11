@@ -1202,6 +1202,19 @@ input.skillmanager-search {
   font-weight: 600;
 }
 
+/* A name followed by its version (mod cards): the name only takes the room it needs, and the
+   version takes up the slack, so it sits right after the name and the pills stay at the right. */
+.skillmanager-card-name-fit {
+  flex: 0 1 auto;
+}
+
+/* Same text treatment as the footer meta (version, "Disabled") it moved up from. */
+.skillmanager-card-version {
+  flex: 1 0 auto;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
 /* What this item is for — the tool, and the plugin it's bundled with if any (see
    sourceLabel.ts's toolLabel) — sits right under the title, small and muted. Type lives up in
    the head row instead (.skillmanager-card-type-sm, next to the name); where it's scoped (Global

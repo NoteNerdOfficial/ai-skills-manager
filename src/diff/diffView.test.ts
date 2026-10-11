@@ -3,7 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DiffLine } from "./buildDiffLines";
-import { changedUnitFiles } from "./companions";
+import { changedModFiles, changedUnitFiles } from "./companions";
 import { foldSegments } from "./renderDiff";
 
 const lines = (markers: string): DiffLine[] =>
@@ -78,5 +78,30 @@ describe("changedUnitFiles", () => {
     writeFileSync(join(tmp, "cmd-new.md"), "new");
     expect(changedUnitFiles(join(tmp, "cmd.md"), join(tmp, "cmd-new.md"), false)).toMatchObject([{ file: "cmd.md", status: "modified" }]);
     expect(changedUnitFiles(join(tmp, "cmd.md"), join(tmp, "cmd.md"), false)).toEqual([]);
+  });
+});
+
+describe("changedModFiles", () => {
+  let root: string;
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("ignores the engine's generated types but reports the mod's own changes", () => {
+    root = mkdtempSync(join(tmpdir(), "skillmanager-moddiff-"));
+    const write = (path: string, text: string) => {
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, text);
+    };
+    const local = join(root, "local");
+    const upstream = join(root, "upstream");
+    write(join(local, "hooks", "register.tsx"), "old");
+    write(join(local, ".claude-plugin", "types", "claude-code", "index.d.ts"), "generated");
+    write(join(local, ".claude-plugin", "plugin.json"), "{}");
+    write(join(upstream, "hooks", "register.tsx"), "new");
+    write(join(upstream, ".claude-plugin", "plugin.json"), "{}");
+    write(join(upstream, "types", "index.d.ts"), "contract");
+    expect(changedModFiles(local, upstream).map((f) => [f.file, f.status])).toEqual([
+      ["hooks/register.tsx", "modified"],
+      ["types/index.d.ts", "added"],
+    ]);
   });
 });

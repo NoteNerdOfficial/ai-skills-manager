@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { delimiter, join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DISABLED_DIRNAME, DISABLED_SUFFIX, toggleItemEnabled } from "./itemToggle";
+import { DISABLED_DIRNAME, DISABLED_SUFFIX, installModFolder, promoteDevMod, setPluginDirListed, toggleItemEnabled } from "./itemToggle";
 import { makeEntryId, scanAllPlugins, scanMods, scanAllTools, scanBrokenSymlinks, scanProject, scanTool, stableEntryPath } from "./scanners";
 import { PluginSource, ProjectWorkspace, ToolConfig, DEFAULT_TOOLS } from "./types";
 
@@ -459,13 +459,20 @@ describe("Antigravity scanning", () => {
 
 describe("scanMods", () => {
   let root: string;
+  // A Claude Code shell exports CLAUDE_CODE_PLUGIN_DIRS from its settings, which scanMods falls
+  // back to; without clearing it, tests run there pick up the real mods.
+  let savedEnv: string | undefined;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "skillmanager-mod-scan-"));
+    savedEnv = process.env.CLAUDE_CODE_PLUGIN_DIRS;
+    delete process.env.CLAUDE_CODE_PLUGIN_DIRS;
   });
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
+    if (savedEnv === undefined) delete process.env.CLAUDE_CODE_PLUGIN_DIRS;
+    else process.env.CLAUDE_CODE_PLUGIN_DIRS = savedEnv;
   });
 
   function writePlugin(path: string, name: string, hooks?: object) {
@@ -497,6 +504,89 @@ describe("scanMods", () => {
     const mods = scanMods([tool], []);
     expect(mods).toHaveLength(1);
     expect(mods[0]).toMatchObject({ name: "band", origin: "dev", version: "0.1.0", enabled: true });
+  });
+
+  describe("plugin-dir toggle and promote", () => {
+    let savedHome: string | undefined;
+    let settingsPath: string;
+    let tool: ToolConfig;
+    beforeEach(() => {
+      savedHome = process.env.HOME;
+      process.env.HOME = join(root, "home");
+      settingsPath = join(root, "settings.json");
+      writeFileSync(settingsPath, JSON.stringify({ permissions: { allow: ["Bash"] } }));
+      tool = { id: "claude-code", name: "Claude Code", icon: "asterisk", paths: {}, devModsPath: join(root, "dev-mods"), pluginsSettingsPath: settingsPath };
+    });
+    afterEach(() => {
+      process.env.HOME = savedHome;
+    });
+    const readSettings = () => JSON.parse(readFileSync(settingsPath, "utf-8")) as { env?: Record<string, string>; permissions?: unknown };
+
+    it("turns a plugin-dir mod off and on, listing it as off from the record", () => {
+      const a = join(root, "mods", "a");
+      const b = join(root, "mods", "b");
+      writePlugin(a, "a", { modules: ["./register.tsx"] });
+      writePlugin(b, "b", { modules: ["./register.tsx"] });
+      writeFileSync(settingsPath, JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: [a, b].join(delimiter), OTHER: "1" } }));
+
+      setPluginDirListed(tool, a, false);
+      expect(readSettings().env).toEqual({ CLAUDE_CODE_PLUGIN_DIRS: b, OTHER: "1" });
+      expect(scanMods([tool], [], [], { "claude-code": [a] })).toMatchObject([
+        { name: "b", enabled: true },
+        { name: "a", origin: "plugin-dir", enabled: false, id: a },
+      ]);
+
+      setPluginDirListed(tool, b, false);
+      expect(readSettings().env).toEqual({ OTHER: "1" });
+      setPluginDirListed(tool, a, true);
+      expect(readSettings().env?.CLAUDE_CODE_PLUGIN_DIRS).toBe(a);
+      expect(scanMods([tool], [], [], { "claude-code": [a] })).toMatchObject([{ name: "a", enabled: true }]);
+    });
+
+    it("refuses to remove a folder listed only in the shell environment", () => {
+      process.env.CLAUDE_CODE_PLUGIN_DIRS = join(root, "x");
+      expect(() => setPluginDirListed(tool, join(root, "x"), false)).toThrow(/shell environment/);
+    });
+
+    it("promotes a dev mod into ~/mods and lists it in the env var", () => {
+      const dev = join(root, "dev-mods", "session-1", "band");
+      writePlugin(dev, "band", { modules: ["./register.tsx"] });
+      const target = join(root, "home", "mods", "band");
+      expect(promoteDevMod(tool, dev)).toBe(target);
+      expect(existsSync(dev)).toBe(false);
+      expect(readSettings()).toMatchObject({ permissions: { allow: ["Bash"] }, env: { CLAUDE_CODE_PLUGIN_DIRS: "~/mods/band" } });
+      expect(scanMods([tool], [])).toMatchObject([{ name: "band", origin: "plugin-dir", path: target, enabled: true }]);
+      writePlugin(dev, "band", { modules: ["./register.tsx"] });
+      expect(() => promoteDevMod(tool, dev)).toThrow(/already exists/);
+    });
+
+    it("installs a mod folder from a clone into ~/mods without its .git, and refuses odd names", () => {
+      const clone = join(root, "clone");
+      writePlugin(clone, "band", { modules: ["./register.tsx"] });
+      mkdirSync(join(clone, ".git"), { recursive: true });
+      const target = join(root, "home", "mods", "band");
+      expect(installModFolder(tool, clone, "band")).toBe(target);
+      expect(existsSync(join(target, ".claude-plugin", "plugin.json"))).toBe(true);
+      expect(existsSync(join(target, ".git"))).toBe(false);
+      expect(existsSync(clone)).toBe(true);
+      expect(readSettings().env?.CLAUDE_CODE_PLUGIN_DIRS).toBe("~/mods/band");
+      expect(() => installModFolder(tool, clone, "band")).toThrow(/already exists/);
+      expect(() => installModFolder(tool, clone, "../evil")).toThrow(/folder name/);
+    });
+
+    it("removes the installed copy when the settings file can't be updated", () => {
+      const clone = join(root, "clone");
+      writePlugin(clone, "band", { modules: ["./register.tsx"] });
+      expect(() => installModFolder({ ...tool, pluginsSettingsPath: join(root, "missing.json") }, clone, "band")).toThrow();
+      expect(existsSync(join(root, "home", "mods", "band"))).toBe(false);
+    });
+
+    it("moves the mod back when the settings file can't be updated", () => {
+      const dev = join(root, "dev-mods", "session-1", "band");
+      writePlugin(dev, "band", { modules: ["./register.tsx"] });
+      expect(() => promoteDevMod({ ...tool, pluginsSettingsPath: join(root, "missing.json") }, dev)).toThrow();
+      expect(existsSync(dev)).toBe(true);
+    });
   });
 
   it("reads CLAUDE_CODE_PLUGIN_DIRS from the settings env block", () => {

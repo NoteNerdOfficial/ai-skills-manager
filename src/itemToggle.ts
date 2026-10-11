@@ -1,6 +1,6 @@
-import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
+import { constants, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { basename, dirname, isAbsolute, join, resolve } from "path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "path";
 import { linkableUnit } from "./fsUnit";
 import { ItemMetadata, ToolConfig } from "./types";
 
@@ -236,4 +236,83 @@ export async function deleteItem(item: ItemMetadata, trash: TrashFn): Promise<vo
     return;
   }
   await trash(unit.path);
+}
+
+/** Where Promote moves a finished mod: a folder the person keeps, outside every session's. */
+export const FINISHED_MODS_DIR = "~/mods";
+
+const PLUGIN_DIRS_ENV = "CLAUDE_CODE_PLUGIN_DIRS";
+
+/** `~/...` for a path under the home folder, the form people write in settings.json by hand. */
+function tildify(path: string): string {
+  const home = homedir();
+  return path === home || path.startsWith(home + sep) ? "~" + path.slice(home.length) : path;
+}
+
+/** Adds or removes one folder in CLAUDE_CODE_PLUGIN_DIRS, in the `env` block of the tool's user
+ *  settings file, where every new session reads it. A value set only in the shell environment
+ *  seeds the list when adding; removing from it is refused, since that isn't ours to edit. Backs
+ *  the file up first, like togglePluginEnabled. A no-op when the folder is already as asked. */
+export function setPluginDirListed(tool: ToolConfig, dir: string, listed: boolean): void {
+  if (!tool.pluginsSettingsPath) throw new Error(`${tool.name} has no known settings file.`);
+  const settingsPath = expandHome(tool.pluginsSettingsPath);
+  if (!existsSync(settingsPath)) throw new Error(`${tool.name}'s settings file wasn't found at ${settingsPath}.`);
+
+  const raw = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown> & { env?: Record<string, unknown> };
+  const fromSettings = raw.env?.[PLUGIN_DIRS_ENV];
+  if (fromSettings !== undefined && typeof fromSettings !== "string") throw new Error(`${PLUGIN_DIRS_ENV} in ${settingsPath} isn't a string.`);
+  const current = fromSettings ?? process.env[PLUGIN_DIRS_ENV] ?? "";
+  const entries = current.split(delimiter).map((p) => p.trim()).filter(Boolean);
+  const target = resolve(expandHome(dir));
+  const others = entries.filter((p) => resolve(expandHome(p)) !== target);
+  if ((others.length !== entries.length) === listed) return;
+  if (!listed && fromSettings === undefined) {
+    throw new Error(`${PLUGIN_DIRS_ENV} is set in your shell environment, not ${settingsPath}. Remove the folder there.`);
+  }
+
+  backupSettingsFile(settingsPath);
+  const next = listed ? [...entries, tildify(target)] : others;
+  const env = { ...(raw.env ?? {}) };
+  if (next.length > 0) env[PLUGIN_DIRS_ENV] = next.join(delimiter);
+  else delete env[PLUGIN_DIRS_ENV];
+  raw.env = env;
+  writeFileSync(settingsPath, JSON.stringify(raw, null, 2) + "\n");
+}
+
+/** Moves a mod out of its session's dev folder into FINISHED_MODS_DIR and lists it in
+ *  CLAUDE_CODE_PLUGIN_DIRS, so every new session loads it. Refuses rather than overwrite an
+ *  existing folder there; moves the mod back if the settings file can't be updated. Returns the
+ *  mod's new path. */
+export function promoteDevMod(tool: ToolConfig, modPath: string): string {
+  const target = join(expandHome(FINISHED_MODS_DIR), basename(modPath));
+  if (existsSync(target)) throw new Error(`${target} already exists.`);
+  mkdirSync(dirname(target), { recursive: true });
+  renameSync(modPath, target);
+  try {
+    setPluginDirListed(tool, target, true);
+  } catch (e) {
+    renameSync(target, modPath);
+    throw e;
+  }
+  return target;
+}
+
+/** Copies a mod folder (a fresh clone's, from Discover) into FINISHED_MODS_DIR/<name> and lists it
+ *  in CLAUDE_CODE_PLUGIN_DIRS, like promoteDevMod but leaving the source alone and skipping .git.
+ *  `name` is the mod's own plugin.json name; one that isn't a plain folder name is refused.
+ *  Refuses rather than overwrite; removes the copy if the settings file can't be updated. Returns
+ *  the installed path. */
+export function installModFolder(tool: ToolConfig, sourceDir: string, name: string): string {
+  if (!name || name !== basename(name) || name === "." || name === "..") throw new Error(`"${name}" can't be used as a folder name.`);
+  const target = join(expandHome(FINISHED_MODS_DIR), name);
+  if (existsSync(target)) throw new Error(`${target} already exists.`);
+  mkdirSync(dirname(target), { recursive: true });
+  cpSync(sourceDir, target, { recursive: true, filter: (src) => basename(src) !== ".git" });
+  try {
+    setPluginDirListed(tool, target, true);
+  } catch (e) {
+    rmSync(target, { recursive: true, force: true });
+    throw e;
+  }
+  return target;
 }
