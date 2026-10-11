@@ -2743,7 +2743,7 @@ export class LibraryView extends ItemView {
     setIcon(removeBtn, "trash-2");
     removeBtn.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      this.confirmRemoveDiscoverSource(group.repoUrl, group.ref, group.entries.length, label);
+      this.confirmRemoveDiscoverSource(group.repoUrl, group.ref, label);
     });
 
     // The header stays pinned at the top of the scroll area for as long as any of this
@@ -2772,7 +2772,10 @@ export class LibraryView extends ItemView {
   /** Bulk removal is still just dropping our own cached rows (nothing on disk to touch, same as
    *  a single Remove) — but at the scale a whole source can reach (dozens of entries in one
    *  click), a lightweight confirm earns its keep in a way it doesn't for one card. */
-  private confirmRemoveDiscoverSource(repoUrl: string, ref: string, count: number, label: string) {
+  private confirmRemoveDiscoverSource(repoUrl: string, ref: string, label: string) {
+    // Counted from the whole catalog, not the group on screen: a type filter or search narrows
+    // the group, but removing the source drops every entry it found.
+    const count = this.getSettings().discoverCatalog.filter((e) => e.repoUrl === repoUrl && e.ref === ref).length;
     new ConfirmModal(
       this.app,
       `Remove all from ${label}?`,

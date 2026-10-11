@@ -1,7 +1,7 @@
 <h1 align="center">AI Skills Manager</h1>
 
 <p align="center">
-  Browse, tag, and organize AI skills, agents, commands, rules, and agent memories from inside Obsidian, across every coding tool you use: Claude Code, Cursor, Codex, Gemini CLI, and more.
+  Browse, tag, and organize AI skills, agents, commands, rules, agent memories, and Claude Code mods from inside Obsidian, across every coding tool you use: Claude Code, Cursor, Codex, Gemini CLI, and more.
 </p>
 
 <p align="center">
@@ -14,6 +14,8 @@
   <a href="https://github.com/NoteNerdOfficial/ai-skills-manager/releases/latest"><img src="https://img.shields.io/github/v/release/NoteNerdOfficial/ai-skills-manager?style=flat-square&label=release" alt="release"></a>
   <a href="https://obsidian.md/plugins?id=ai-skills-manager"><img src="https://img.shields.io/badge/dynamic/json?style=flat-square&logo=obsidian&color=7C3AED&label=downloads&query=%24%5B%22ai-skills-manager%22%5D.downloads&url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsidianmd%2Fobsidian-releases%2Fmaster%2Fcommunity-plugin-stats.json" alt="Obsidian downloads"></a>
 </p>
+
+> **Latest update: Mods.** AI Skills Manager now manages Claude Code mods: see every mod you have, turn them on and off, promote one you're building into a finished mod, install mods from GitHub, update them with a diff, and roll back from history. See [Mods](#mods) for details.
 
 If you've written a good skill for one tool and then can't find it again, or you keep hand-copying the same prompt into every project and every agent, this plugin turns your scattered `~/.claude/skills`, `~/.cursor/rules`, `.github/prompts`, and similar folders into one searchable, taggable library, without moving your files out of the places those tools actually read from.
 
@@ -31,6 +33,7 @@ AI Skills Manager works directly on the real folders each tool reads. It doesn't
 ## Contents
 
 - [Features](#features)
+- [Mods](#mods)
 - [Supported tools](#supported-tools)
 - [Installation](#installation)
 - [Getting started](#getting-started)
@@ -76,7 +79,7 @@ Memory files an agent writes for itself are listed under **Memories & Rules**, n
 Add a global skill to a project workspace and it's symlinked into that project's local tool folder, never copied, so it can't drift out of sync with the source. Remove it and only the link goes away; the original is untouched.
 
 **Discover and install from GitHub**
-Point Discover at a GitHub repo (or a specific subfolder) and it walks it for `SKILL.md` files and agent/command/rule markdown, showing star counts and previews before you install. Or paste a repo URL (or a GitHub `tree` URL for one branch/subfolder) directly into "Install from GitHub" and pick which tool, type, and project (or global) it lands in. Self-hosted GitHub works too: paste the repo or `tree` URL from your company's GitHub the same way.
+Point Discover at a GitHub repo (or a specific subfolder) and it walks it for `SKILL.md` files, agent/command/rule markdown, and Claude Code mods, showing star counts and previews before you install. Filter the results by type to see only what you're after. Or paste a repo URL (or a GitHub `tree` URL for one branch/subfolder) directly into "Install from GitHub" and pick which tool, type, and project (or global) it lands in. Self-hosted GitHub works too: paste the repo or `tree` URL from your company's GitHub the same way.
 
 ![Discover tab, empty state with suggested starter repos](images/discover.png)
 
@@ -101,15 +104,15 @@ Open a version to see what restoring it would change, in the same tabbed diff as
 **Claude Code and Codex plugin awareness**
 Reads Claude Code's installed-plugins registry and Codex's installed plugin cache so skills, agents, and commands bundled inside installed plugins show up in the library too, tagged with the plugin they came from. Codex plugins are read-only here because AI Skills Manager has no supported Codex setting for enabling or disabling an installed plugin. Manage Codex plugins from Codex itself.
 
-Installed bundles are browsable from **Library → Plugin bundles**, with search, tool/group/tag filters, sorting, and a breadcrumb back from a bundle's item list.
+Installed bundles are browsable from **Extensions → Plugin bundles**, with search, tool/group/tag filters, sorting, and a breadcrumb back from a bundle's item list.
 
 **Insights**
 A collapsible sidebar section with four pages, each answering one question:
 
 - **Context**: what's taking up context? Separates representative source-file size from estimated context exposure, by tool and ranked per item. For skills and agents, metadata available before invocation is shown separately from instruction tokens loaded on invocation; commands and rules are marked tool-dependent until their per-tool loading policies are modeled. The ranked list shows each item's share of the total, sums up how much the top five account for, and rescales when you filter by tool or type.
 - **Usage**: what do you actually use? Reads Claude Code and Codex session history (`~/.claude/projects` and `~/.codex/sessions`) for a weekly activity chart and a ranked list of your most-used skills and agents.
-- **Health**: what's broken? Broken symlinks and integrity issues. Its sidebar badge counts open problems.
-- **Cleanup**: what could go? Prune candidates (Claude Code skills and agents that never fired or have gone stale, and a file-age heuristic everywhere else) and possible overlaps (enabled items sharing an exact name or near-duplicate descriptions), with a restore window after you disable something.
+- **Health**: what's broken? Broken symlinks, integrity issues, and mods that won't load or load twice (see [Mods](#mods)). Its sidebar badge counts open problems.
+- **Cleanup**: what could go? Prune candidates (Claude Code skills and agents that never fired or have gone stale, and a file-age heuristic everywhere else), possible overlaps (enabled items sharing an exact name or near-duplicate descriptions), and leftovers from building mods, with a restore window after you disable something.
 
 ![Insights Context page showing source size by tool and items ranked by cost](images/insights-context.png)
 
@@ -118,10 +121,45 @@ On Health and Cleanup, each problem is one row: the item's name, a colored statu
 Any suggestion can be dismissed with "Disregard" so it stops resurfacing, without touching the item itself. "Show disregarded" on each section lists what you've dismissed and brings any of it back.
 
 **MCP servers, read-only**
-A dedicated page lists every MCP server configured across your tools, global and per-project, read straight from each tool's own config file (`~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, `.vscode/mcp.json`, and more). It's visibility only, nothing here can enable, disable, or edit a server, but you can jump straight to its config file to do that by hand.
+A dedicated page under **Extensions** lists every MCP server configured across your tools, global and per-project, read straight from each tool's own config file (`~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, `.vscode/mcp.json`, and more). It's visibility only, nothing here can enable, disable, or edit a server, but you can jump straight to its config file to do that by hand.
 
 **Built for scanning, not guessing**
 A file-tree preview with per-file size and estimated token count for multi-file skills, a background auto-rescan interval you control, and a reorderable sidebar (by type, plugin, tool, project, or collection) that can hide rows with nothing in them.
+
+## Mods
+
+A mod is a Claude Code plugin that changes Claude Code itself rather than adding skills: a pane or panel, a band above the prompt, a status line entry, a slash command, or a hook on prompts and tool calls. In files, it's a plugin folder whose `hooks/hooks.json` names a hooks module. Mods run code in every Claude Code session that loads them, so only install mods you trust.
+
+Open **Extensions → Mods** to see them all. Each card shows the mod's name and version, and where it loads from. Click one for its description, when Claude Code loads it, and a read-only preview of its files.
+
+**Where mods come from**
+
+| Source | Where it lives | When it loads |
+|---|---|---|
+| In development | `~/.claude/dev-mods/<session>/<mod>/` | Only in the Claude Code session that created it |
+| Plugin folder | Any folder named in `CLAUDE_CODE_PLUGIN_DIRS`, in the `env` block of `~/.claude/settings.json` | Every new session |
+| Installed plugin | Installed with Claude Code's `/plugin install` | Every session, while the plugin is enabled |
+| Skills folder | A plugin folder inside `~/.claude/skills/` or a project's `.claude/skills/` | Every session |
+
+A mod installed from GitHub through Discover is a plugin folder mod whose card shows its repo (`owner/repo`) in place of "Plugin folder".
+
+**Turn mods on and off**
+The switch on a plugin folder mod takes its folder out of `CLAUDE_CODE_PLUGIN_DIRS` (and puts it back when you turn it on). The folder stays where it is and the card stays in the list, marked Disabled. Installed mods switch through Claude Code's own plugin setting. New sessions pick up the change; a session already running keeps the mod until it restarts. A backup of `settings.json` is made before each change.
+
+**Finish a mod you're building**
+A mod you build with Claude Code starts in its session's dev folder, so only that session loads it. When it's ready, choose **Promote to finished mod** from its card menu or detail panel. The mod moves to `~/mods/<name>` and is added to `CLAUDE_CODE_PLUGIN_DIRS`, so every new session loads it.
+
+**Card menu**
+Every mod card has a menu with **Reveal in Finder**, plus what applies to that mod: **Promote to finished mod**, **Open on GitHub**, **Check for updates**, and **Delete**. Delete asks first, moves the folder to the Trash (or only removes the link, for a symlinked mod), and takes it out of `CLAUDE_CODE_PLUGIN_DIRS` if it's listed there. Installed mods have no Delete here: remove those with `/plugin uninstall` in Claude Code.
+
+**Install mods from GitHub**
+Add a repo in **Discover** and any mods in it appear alongside its skills and agents. Use the **Mods** filter to see only those. A mod's preview shows its README followed by the hooks module code, so you can read what it would run before installing. **Install** copies the exact version you previewed into `~/mods/<name>` and adds it to `CLAUDE_CODE_PLUGIN_DIRS`. Skills bundled inside a mod come with it rather than being listed separately.
+
+**Updates and history**
+For a mod installed from GitHub, **Check for updates** compares it with the repo. If the mod changed, you get the same tabbed diff as a skill update, and nothing changes until you click **Update**. A version is saved before every update or restore: open **History** in the mod's detail panel to see them, compare one with what's on disk, and restore it. The last 20 versions are kept.
+
+**Insights**
+Health flags mods that won't load as intended: a `CLAUDE_CODE_PLUGIN_DIRS` entry pointing at a missing folder or a folder with no plugin manifest, a `hooks.json` naming a module file that isn't there, and two finished copies of the same mod loading at once (so every hook runs twice). Cleanup lists dev copies of mods you've already finished, and empty session folders under `~/.claude/dev-mods` that are more than a day old. Mods don't appear on Usage or Context: Claude Code doesn't record when a mod's hooks run.
 
 ## Supported tools
 
@@ -170,10 +208,11 @@ Deleting an item, or updating one from GitHub, moves the old copy to your system
 3. Tag, favorite, or add items to a collection from the detail panel or right-click menu.
 4. Toggle an item on or off directly from its card.
 5. Add a project workspace from the "+" next to Workspaces in the sidebar to see that project's local skills alongside your global ones, and to link global skills into it.
-6. Use **Discover** to browse a GitHub repo for skills/agents/commands/rules and install what you want, or use **Install from GitHub** directly if you already know the repo.
+6. Use **Discover** to browse a GitHub repo for skills, agents, commands, rules, and mods and install what you want, or use **Install from GitHub** directly if you already know the repo.
 7. For anything installed that way, use **Check for updates** on its detail panel to review a diff before pulling in changes, or **Restore** to revert to the version you installed.
-8. Open the **Insights** pages any time to see estimated context exposure by tool, what you actually use, what's broken, and what's probably safe to prune or merge.
-9. Open **MCP servers** from the sidebar to see every server configured across your tools, global and per-project, and jump to its config file.
+8. Open **Extensions → Mods** to see your Claude Code mods, turn them on or off, promote one you've finished building, or check one installed from GitHub for updates. See [Mods](#mods).
+9. Open the **Insights** pages any time to see estimated context exposure by tool, what you actually use, what's broken, and what's probably safe to prune or merge.
+10. Open **MCP servers** from the sidebar to see every server configured across your tools, global and per-project, and jump to its config file.
 
 ## Settings
 

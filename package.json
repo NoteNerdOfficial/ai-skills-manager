@@ -1,7 +1,7 @@
 {
   "name": "ai-skills-manager",
   "version": "0.1.17",
-  "description": "Manage AI skills, agents, commands, and rules for Claude, Codex, Pi, and more, with usage insights and MCP visibility.",
+  "description": "Manage AI skills, agents, commands, rules, and Claude Code mods for Claude, Codex, Pi, and more, with usage insights and MCP visibility.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",

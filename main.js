@@ -7306,7 +7306,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     (0, import_obsidian16.setIcon)(removeBtn, "trash-2");
     removeBtn.addEventListener("click", (evt) => {
       evt.stopPropagation();
-      this.confirmRemoveDiscoverSource(group.repoUrl, group.ref, group.entries.length, label);
+      this.confirmRemoveDiscoverSource(group.repoUrl, group.ref, label);
     });
     header.addEventListener("click", () => {
       const scrollContainer = section.closest(".skillmanager-items");
@@ -7324,7 +7324,8 @@ var LibraryView = class extends import_obsidian16.ItemView {
   /** Bulk removal is still just dropping our own cached rows (nothing on disk to touch, same as
    *  a single Remove) — but at the scale a whole source can reach (dozens of entries in one
    *  click), a lightweight confirm earns its keep in a way it doesn't for one card. */
-  confirmRemoveDiscoverSource(repoUrl, ref, count, label) {
+  confirmRemoveDiscoverSource(repoUrl, ref, label) {
+    const count = this.getSettings().discoverCatalog.filter((e) => e.repoUrl === repoUrl && e.ref === ref).length;
     new ConfirmModal(
       this.app,
       `Remove all from ${label}?`,
