@@ -1,7 +1,7 @@
 import { Component, FileSystemAdapter, ItemView, Menu, MarkdownRenderer, Notice, WorkspaceLeaf, parseYaml, setIcon, setTooltip } from "obsidian";
 import { execFile, execFileSync } from "child_process";
 import { cpSync, existsSync, lstatSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
-import { basename, dirname, join, relative, sep } from "path";
+import { basename, dirname, extname, join, relative, sep } from "path";
 import { homedir } from "os";
 import { COMMUNITY_PLUGIN_URL, PluginVersionStatus } from "../pluginVersion";
 import {
@@ -12,6 +12,7 @@ import {
   ItemMetadata,
   ItemType,
   McpServerEntry,
+  ModEntry,
   MORE_HORIZONTAL_ICON_ID,
   MORE_ICON_ID,
   PLUGIN_ICON_ID,
@@ -83,7 +84,7 @@ import { errorMessage } from "../errors";
 import { checkIntegrity } from "../integrity";
 import { DayCounts, HEATMAP_WEEKS, buildHeatmap, heatLevel, historyKey, mergeUsageHistory } from "../usage-history";
 import { formatBytes, formatDate, formatRelativeDay, formatTokens, stripFrontmatter } from "../format";
-import { buildFileTree, countFiles, isFolderItem, TreeNode } from "../fileTree";
+import { buildFileTree, buildModFileTree, countFiles, isFolderItem, TreeNode } from "../fileTree";
 import { getAllProjects as computeAllProjects, performRescan, projectIcon, RescanResult, VAULT_PROJECT_ID } from "../rescan";
 import { originLabel as resolveOriginLabel, sourceLabel as resolveSourceLabel, toolLabel as resolveToolLabel } from "../sourceLabel";
 import { ClonedRepo, remoteHeadCommit, removeGitDir, shallowCloneAtCommit, shallowCloneRepo } from "../git";
@@ -434,6 +435,14 @@ export class LibraryView extends ItemView {
   private dragHighlightEl: HTMLElement | null = null;
   private discoveredPlugins: PluginSource[] = [];
   private mcpServers: McpServerEntry[] = [];
+  private mods: ModEntry[] = [];
+  /** True while the sidebar's "Mods" row is active. Read-only like mcpMode: a mod is toggled as
+   *  the plugin it ships in, from its owning tool. */
+  private modsMode = false;
+  /** The mod open in the docked rail (file tree, then a file via selectedFilePath). */
+  private selectedMod: ModEntry | null = null;
+  private modFileLoadedFor: string | null = null;
+  private modFileContent = "";
   /** True while the sidebar's "MCP servers" row is active — same swap-the-content-pane idea as
    *  discoverMode/toolsMode/dashboardMode. Read-only: no enable/disable here, see McpServerEntry. */
   private mcpMode = false;
@@ -580,6 +589,7 @@ export class LibraryView extends ItemView {
     const result = await performRescan(this.app, this.getSettings(), this.store);
     this.discoveredPlugins = result.plugins;
     this.mcpServers = result.mcpServers;
+    this.mods = result.mods;
     this.brokenSymlinks = result.brokenSymlinks;
     const brokenKeys = new Set(this.brokenSymlinks.map((link) => link.path));
     const newBroken = this.brokenSymlinks.filter((link) => !this.knownBrokenSymlinkKeys.has(link.path));
@@ -1020,6 +1030,8 @@ export class LibraryView extends ItemView {
     this.pluginBundlesMode = false;
     this.detailReturnsToDashboard = false;
     this.mcpMode = false;
+    this.modsMode = false;
+    this.selectedMod = null;
     this.mcpToolFilter = null;
     this.selectedMcpServer = null;
     this.revealedMcpEnvKeys = new Set();
@@ -1042,6 +1054,7 @@ export class LibraryView extends ItemView {
       this.toolsMode ||
       this.dashboardMode ||
       this.mcpMode ||
+      this.modsMode ||
       this.pluginBundlesMode
     );
   }
@@ -1499,7 +1512,7 @@ export class LibraryView extends ItemView {
   }
 
   private isSectionVisible(key: string): boolean {
-    if (key === "extensions") return this.mcpServers.length > 0 || this.discoveredPlugins.length > 0;
+    if (key === "extensions") return this.mcpServers.length > 0 || this.discoveredPlugins.length > 0 || this.mods.length > 0;
     return true;
   }
 
@@ -1592,6 +1605,26 @@ export class LibraryView extends ItemView {
         undefined,
         false,
         "Installed plugin bundles, browsed separately from individual skills."
+      );
+    }
+    if (this.mods.length > 0) {
+      this.renderNavRow(
+        sidebar,
+        "puzzle",
+        "Mods",
+        this.mods.length,
+        this.modsMode,
+        () => {
+          this.clearScopeFilters();
+          this.modsMode = true;
+          this.render();
+        },
+        undefined,
+        false,
+        "default",
+        undefined,
+        false,
+        "Mods change the tool's own interface and behaviour: panes, status line, slash commands, hooks."
       );
     }
   }
@@ -2131,6 +2164,10 @@ export class LibraryView extends ItemView {
     }
     if (this.mcpMode) {
       this.renderMcpServersContent(content);
+      return;
+    }
+    if (this.modsMode) {
+      this.renderModsContent(content);
       return;
     }
 
@@ -3176,6 +3213,167 @@ export class LibraryView extends ItemView {
     bundlesCrumb.addEventListener("click", back);
     crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
     crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: plugin.name });
+  }
+
+  // ---------- Mods ----------
+
+  private renderModsContent(content: HTMLElement) {
+    const header = content.createDiv({ cls: "skillmanager-content-header" });
+    const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
+    titleRow.createEl("h2", { text: "Mods", cls: "skillmanager-title" });
+    titleRow.createSpan({ text: String(this.mods.length), cls: "skillmanager-count-pill" });
+    header.createDiv({
+      text: "Mods change the tool itself (panes, status line, slash commands, hooks on tool calls) instead of adding skills. Installed mods are toggled as the plugin they ship in.",
+      cls: "skillmanager-subtitle",
+    });
+    // A rescan rebuilds this.mods; keep the open mod by id, or close the rail if it's gone.
+    if (this.selectedMod) this.selectedMod = this.mods.find((m) => m.id === this.selectedMod?.id) ?? null;
+    const body = content.createDiv({ cls: "skillmanager-body" });
+    const animation = this.pendingDetailAnimation;
+    this.pendingDetailAnimation = null;
+    const grid = body.createDiv({ cls: `skillmanager-items${this.selectedMod ? " is-docked" : ""}` });
+    if (this.mods.length === 0) grid.createDiv({ text: "No mods found.", cls: "skillmanager-empty" });
+    const sorted = [...this.mods].sort((a, b) => a.name.localeCompare(b.name));
+    for (const mod of sorted) this.renderModCard(grid, mod);
+    if (this.selectedMod) {
+      const rail = body.createDiv({ cls: `skillmanager-detail${animation ? ` skillmanager-panel-enter-${animation}` : ""}` });
+      this.renderModDetailRail(rail, this.selectedMod);
+    }
+  }
+
+  private selectMod(mod: ModEntry) {
+    this.selectedMod = mod;
+    this.selectedFilePath = null;
+    this.collapsedTreeFolders = new Set();
+    this.pendingDetailAnimation = "forward";
+    this.render();
+  }
+
+  /** Same shape as an item's rail (Mods / mod / file breadcrumbs, a file tree, then a read-only
+   *  preview), minus the item-only parts: no edit, history, tags or usage, since a mod isn't a
+   *  library item and its files are the engine's to load. */
+  private renderModDetailRail(panel: HTMLElement, mod: ModEntry) {
+    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
+    const filePath = this.selectedFilePath;
+    const backToMods = () => {
+      this.selectedMod = null;
+      this.selectedFilePath = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    const backToTree = () => {
+      this.selectedFilePath = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+
+    const crumbs = panel.createDiv({ cls: "skillmanager-crumbs" });
+    const backBtn = crumbs.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Back" } });
+    setIcon(backBtn, "arrow-left");
+    backBtn.addEventListener("click", filePath ? backToTree : backToMods);
+    crumbs.createEl("button", { cls: "skillmanager-crumb", text: "Mods" }).addEventListener("click", backToMods);
+    crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+    const modCrumb = crumbs.createEl("button", { cls: `skillmanager-crumb${filePath ? "" : " is-current"}`, text: mod.name });
+    if (filePath) {
+      modCrumb.addEventListener("click", backToTree);
+      crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+      crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: basename(filePath) });
+    }
+
+    const section = panel.createDiv({ cls: "skillmanager-detail-head" });
+    const header = section.createDiv({ cls: "skillmanager-detail-header" });
+    header.createEl("h3", { text: filePath ? basename(filePath) : mod.name, cls: "skillmanager-detail-title" });
+    header.createSpan({ text: "Mod", cls: "skillmanager-detail-type-pill" });
+    const actions = header.createDiv({ cls: "skillmanager-detail-actions" });
+    const revealBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": this.fileManagerLabel() } });
+    setIcon(revealBtn, "folder-open");
+    revealBtn.addEventListener("click", () => void this.openModFolder(mod));
+    const toolLine = section.createDiv({ cls: "skillmanager-detail-tool" });
+    if (tool) this.renderIcon(toolLine.createSpan({ cls: "skillmanager-detail-tool-icon" }), tool.icon, tool.svgIcon);
+    const origin = this.modOriginLabel(mod).text;
+    toolLine.createSpan({ text: [tool?.name, origin, mod.version ? `v${mod.version}` : null].filter(Boolean).join(" · ") });
+    if (!filePath && mod.description) section.createDiv({ cls: "skillmanager-detail-desc", text: mod.description });
+
+    if (!filePath) {
+      const list = panel.createDiv({ cls: "skillmanager-tree" });
+      this.renderTreeNodes(list, buildModFileTree(mod.path), 0);
+      panel.createDiv({ cls: "skillmanager-tree-hint", text: "Click a file to open it." });
+      return;
+    }
+
+    if (this.modFileLoadedFor !== filePath) {
+      try {
+        this.modFileContent = readFileSync(filePath, "utf-8");
+      } catch (e) {
+        this.modFileContent = "";
+        new Notice("Could not read file: " + errorMessage(e));
+      }
+      this.modFileLoadedFor = filePath;
+    }
+    // Markdown renders as a note; anything else (the hooks module, its JSON) as a code block so
+    // the theme's syntax highlighting applies instead of the source being read as prose.
+    const ext = extname(filePath).slice(1).toLowerCase();
+    const source = ext === "md" ? stripFrontmatter(this.modFileContent) : codeFence(this.modFileContent, ext);
+    const body = panel.createDiv({ cls: "skillmanager-detail-body" });
+    const readingView = body.createDiv({
+      cls: "markdown-preview-view markdown-rendered node-insert-event is-readable-line-width allow-fold-headings allow-fold-lists show-indentation-guide skillmanager-markdown-preview",
+    });
+    const sizer = readingView.createDiv({ cls: "markdown-preview-sizer markdown-preview-section" });
+    void MarkdownRenderer.render(this.app, source, sizer, filePath, this.markdownComponent);
+  }
+
+  private renderModCard(container: HTMLElement, mod: ModEntry) {
+    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
+    const plugin = mod.pluginId ? this.discoveredPlugins.find((p) => p.id === mod.pluginId) : undefined;
+    const card = container.createDiv({ cls: "skillmanager-card" });
+    if (!mod.enabled) card.addClass("is-off");
+    const head = card.createDiv({ cls: "skillmanager-card-head" });
+    head.createSpan({ text: mod.name, cls: "skillmanager-card-name" });
+    head.createSpan({ text: "Mod", cls: "skillmanager-card-type skillmanager-card-type-sm" });
+    if (plugin) {
+      createSwitch(head, {
+        on: plugin.enabled,
+        label: `${mod.name} mod enabled`,
+        onClick: () => this.explainPluginBundleToggle(plugin),
+      });
+    }
+    if (tool) {
+      const toolCaption = card.createDiv({ cls: "skillmanager-card-tool" });
+      const toolIcon = toolCaption.createSpan({ cls: "skillmanager-card-tool-icon" });
+      this.renderIcon(toolIcon, tool.icon, tool.svgIcon);
+      toolCaption.createSpan({ text: tool.name });
+    }
+    card.createDiv({ text: mod.description || "No description", cls: "skillmanager-card-desc" });
+    const footer = card.createDiv({ cls: "skillmanager-card-footer" });
+    const source = footer.createDiv({ cls: "skillmanager-card-source" });
+    const sourceIcon = source.createSpan({ cls: "skillmanager-card-source-icon" });
+    const originInfo = this.modOriginLabel(mod);
+    setIcon(sourceIcon, originInfo.icon);
+    source.createSpan({ text: originInfo.text, cls: "skillmanager-card-source-text" });
+    const right = footer.createDiv({ cls: "skillmanager-card-footer-right" });
+    if (mod.version) right.createSpan({ text: `v${mod.version}`, cls: "skillmanager-card-meta" });
+    if (!mod.enabled) right.createSpan({ text: "Disabled", cls: "skillmanager-card-meta" });
+    if (this.selectedMod?.id === mod.id) card.addClass("is-selected");
+    makeActivatable(card);
+    card.addEventListener("click", () => this.selectMod(mod));
+  }
+
+  private modOriginLabel(mod: ModEntry): { text: string; icon: string } {
+    if (mod.origin === "dev") return { text: "In development", icon: "flask-conical" };
+    if (mod.origin === "plugin-dir") return { text: "Plugin folder (env)", icon: "folder-cog" };
+    if (mod.origin === "skill") return { text: "Skills folder", icon: "sparkles" };
+    const plugin = this.discoveredPlugins.find((p) => p.id === mod.pluginId);
+    return { text: plugin?.group ?? "Installed plugin", icon: "layers-3" };
+  }
+
+  private async openModFolder(mod: ModEntry) {
+    const shell = this.electronShell();
+    if (!shell) {
+      new Notice("Can't open files from this device, try Obsidian's desktop app.");
+      return;
+    }
+    const errorText = await shell.openPath(mod.path);
+    if (errorText) new Notice(`Couldn't open ${mod.path}: ${errorText}`);
   }
 
   // ---------- MCP servers ----------
@@ -7381,4 +7579,12 @@ export class LibraryView extends ItemView {
     input.addEventListener("blur", () => finish(true));
     window.setTimeout(() => input.focus(), 0);
   }
+}
+
+/** Wraps source in a fence longer than any backtick run inside it, so the file can't close it. */
+function codeFence(source: string, lang: string): string {
+  const longest = Math.max(2, ...(source.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = "`".repeat(longest + 1);
+  const language = lang === "tsx" || lang === "ts" ? "typescript" : lang;
+  return `${fence}${language}\n${source}\n${fence}`;
 }

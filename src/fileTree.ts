@@ -25,7 +25,9 @@ export function skillFolder(item: ItemMetadata): string {
   return dirname(item.sourcePath);
 }
 
-function walk(dir: string, prefix: string, depth: number): TreeNode[] {
+/** `keepDotEntry` lets a caller show a dot-folder that matters for its kind of item (a mod's
+ *  .claude-plugin manifest); every other dot entry stays hidden. */
+function walk(dir: string, prefix: string, depth: number, keepDotEntry?: (relPath: string) => boolean): TreeNode[] {
   if (depth > MAX_DEPTH) return [];
   let entries: string[];
   try {
@@ -36,9 +38,10 @@ function walk(dir: string, prefix: string, depth: number): TreeNode[] {
 
   const nodes: TreeNode[] = [];
   for (const entry of entries) {
-    if (SKIP_ENTRIES.has(entry) || entry.startsWith(".")) continue;
+    if (SKIP_ENTRIES.has(entry)) continue;
     const absPath = join(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
+    if (entry.startsWith(".") && !keepDotEntry?.(relPath)) continue;
 
     let isDir = false;
     try {
@@ -49,7 +52,7 @@ function walk(dir: string, prefix: string, depth: number): TreeNode[] {
 
     nodes.push(
       isDir
-        ? { name: entry, relPath, absPath, isDir: true, children: walk(absPath, relPath, depth + 1) }
+        ? { name: entry, relPath, absPath, isDir: true, children: walk(absPath, relPath, depth + 1, keepDotEntry) }
         : { name: entry, relPath, absPath, isDir: false }
     );
   }
@@ -60,6 +63,16 @@ function walk(dir: string, prefix: string, depth: number): TreeNode[] {
 
 export function buildFileTree(item: ItemMetadata): TreeNode[] {
   return walk(skillFolder(item), "", 0);
+}
+
+/** A mod's folder, with its .claude-plugin manifest shown but not the type declarations the engine
+ *  writes into .claude-plugin/types on every load (generated, and about 14,000 lines). */
+export function buildModFileTree(modPath: string): TreeNode[] {
+  const nodes = walk(modPath, "", 0, (relPath) => relPath === ".claude-plugin");
+  for (const node of nodes) {
+    if (node.relPath === ".claude-plugin") node.children = node.children?.filter((child) => child.name !== "types");
+  }
+  return nodes;
 }
 
 export function countFiles(nodes: TreeNode[]): number {

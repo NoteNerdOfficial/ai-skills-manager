@@ -73,6 +73,12 @@ export interface ToolConfig {
    *  `[plugins."<name>@<marketplace>"]` tables with `enabled = true|false` — Codex's
    *  ~/.codex/config.toml. Read-only. Without it, every cached plugin counts as enabled. */
   pluginsConfigToml?: string;
+  /** Folder holding mods under development, one subfolder per session, each holding one folder
+   *  per mod — Claude Code's ~/.claude/dev-mods/<session>/<mod>/. Installed mods need no path of
+   *  their own: they're plugins, found through pluginsRegistry like any other bundle. Its presence
+   *  also marks a tool as loading mods at all, so scanMods only then reads CLAUDE_CODE_PLUGIN_DIRS
+   *  and looks for mods in the tool's skills folders. */
+  devModsPath?: string;
   /** Per-plugin-bundle path overrides. Most tools reuse basename(paths[type]), but a tool can
    *  call its plugin command folder something different from its global command folder (Codex
    *  uses ~/.codex/prompts globally and commands/ inside plugin bundles). */
@@ -193,6 +199,25 @@ export interface PluginSource {
   /** From the plugin's own manifest, else the registry entry or cache folder name (which can be
    *  a commit hash rather than a semver). */
   version?: string;
+}
+
+/** A mod: a plugin whose hooks/hooks.json names a hooks module under "modules", changing the
+ *  tool's own interface or behaviour (panes, status line, slash commands, hooks on tool calls)
+ *  rather than supplying skills/agents/commands/rules. Read-only here, like McpServerEntry. */
+export interface ModEntry {
+  /** The owning plugin's id for an installed mod, else the mod folder's path. */
+  id: string;
+  name: string;
+  description?: string;
+  version?: string;
+  path: string;
+  toolId: string;
+  /** "installed" through the tool's plugin registry, "dev" from devModsPath, "plugin-dir" from
+   *  CLAUDE_CODE_PLUGIN_DIRS, or "skill" for a plugin auto-loaded from a skills folder. */
+  origin: "installed" | "dev" | "plugin-dir" | "skill";
+  /** Set for an installed mod: the PluginSource it was found as, for its enable/disable state. */
+  pluginId?: string;
+  enabled: boolean;
 }
 
 export interface DiscoveredItem {
@@ -436,6 +461,7 @@ export const DEFAULT_TOOLS: ToolConfig[] = [
     memoryPath: "~/.claude/projects",
     pluginsRegistry: "~/.claude/plugins/installed_plugins.json",
     pluginsSettingsPath: "~/.claude/settings.json",
+    devModsPath: "~/.claude/dev-mods",
     // ~/.claude/skills/synced/<workspace>_<user>/ is a vendor-managed cache of Claude Code's own
     // default skill catalog (confirmed on-disk: a manifest.json + .bucket-<id> marker sit
     // alongside the skill folders) — not something the user installed or wrote.

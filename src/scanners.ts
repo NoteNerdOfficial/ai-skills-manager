@@ -1,9 +1,9 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "fs";
 import { homedir } from "os";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "path";
 import { slug } from "./format";
 import { DISABLED_DIRNAME, DISABLED_SUFFIX } from "./itemToggle";
-import { BrokenSymlink, DiscoveredItem, ItemType, PluginSource, ProjectWorkspace, RulePathEntry, ToolConfig } from "./types";
+import { BrokenSymlink, DiscoveredItem, ItemType, ModEntry, PluginSource, ProjectWorkspace, RulePathEntry, ToolConfig } from "./types";
 
 export function expandHome(rawPath: string): string {
   return rawPath.startsWith("~") ? join(homedir(), rawPath.slice(1)) : rawPath;
@@ -653,4 +653,106 @@ export function scanAllPlugins(tools: ToolConfig[]): { items: DiscoveredItem[]; 
     }
   }
   return { items, plugins };
+}
+
+/** A mod is a plugin whose hooks/hooks.json lists at least one hooks module under "modules"
+ *  (as opposed to command-style "hooks"), per Claude Code's mod layout. */
+export function isModFolder(pluginPath: string): boolean {
+  try {
+    const raw = JSON.parse(readFileSync(join(pluginPath, "hooks", "hooks.json"), "utf-8")) as { modules?: unknown };
+    return Array.isArray(raw.modules) && raw.modules.some((m) => typeof m === "string" && m.length > 0);
+  } catch {
+    return false;
+  }
+}
+
+function readModDescription(pluginPath: string): string | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(join(pluginPath, ".claude-plugin", "plugin.json"), "utf-8")) as { description?: unknown };
+    return typeof raw.description === "string" ? raw.description : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** CLAUDE_CODE_PLUGIN_DIRS as the tool reads it: from the `env` block of its user settings file
+ *  (never a project's), else Obsidian's own process environment. Path-list separated, `~` allowed. */
+export function readPluginDirsEnv(settingsPath: string | undefined): string[] {
+  let value: string | undefined;
+  if (settingsPath) {
+    try {
+      const raw = JSON.parse(readFileSync(expandHome(settingsPath), "utf-8")) as { env?: Record<string, unknown> };
+      const fromSettings = raw.env?.CLAUDE_CODE_PLUGIN_DIRS;
+      if (typeof fromSettings === "string") value = fromSettings;
+    } catch {
+      // Missing or unreadable settings: fall through to the process environment.
+    }
+  }
+  value ??= process.env.CLAUDE_CODE_PLUGIN_DIRS;
+  return (value ?? "").split(delimiter).map((p) => p.trim()).filter(Boolean).map(expandHome);
+}
+
+/** Installed mods (any already-discovered plugin that is one), mods under development in each
+ *  tool's devModsPath/<session>/<mod>/, folders named in CLAUDE_CODE_PLUGIN_DIRS, and plugins the
+ *  tool auto-loads from a skills folder (global or a project's). Only installed mods carry an
+ *  enabled state of their own; the rest load whenever the tool sees them, so they count as enabled.
+ *  The same folder reached two ways (a symlinked skill, a dev mod also named in the env var) is
+ *  listed once, first source wins. */
+export function scanMods(tools: ToolConfig[], plugins: PluginSource[], projects: ProjectWorkspace[] = []): ModEntry[] {
+  const mods: ModEntry[] = [];
+  const seen = new Set<string>();
+  const addFolder = (modPath: string, tool: ToolConfig, origin: ModEntry["origin"]) => {
+    if (!isModFolder(modPath)) return;
+    const real = resolveRealPath(modPath);
+    if (seen.has(real)) return;
+    seen.add(real);
+    const manifest = readPluginManifest(modPath);
+    mods.push({
+      id: modPath,
+      name: manifest.name || basename(modPath),
+      description: readModDescription(modPath),
+      version: manifest.version,
+      path: modPath,
+      toolId: tool.id,
+      origin,
+      enabled: true,
+    });
+  };
+  const childDirs = (dir: string): string[] => {
+    try {
+      return readdirSync(dir).filter((name) => !name.startsWith(".")).map((name) => join(dir, name));
+    } catch {
+      return [];
+    }
+  };
+  for (const plugin of plugins) {
+    if (!isModFolder(plugin.path)) continue;
+    seen.add(resolveRealPath(plugin.path));
+    mods.push({
+      id: plugin.id,
+      name: plugin.name,
+      description: readModDescription(plugin.path),
+      version: plugin.version,
+      path: plugin.path,
+      toolId: plugin.toolId,
+      origin: "installed",
+      pluginId: plugin.id,
+      enabled: plugin.enabled,
+    });
+  }
+  for (const tool of tools) {
+    if (!tool.devModsPath) continue;
+    for (const session of childDirs(expandHome(tool.devModsPath))) {
+      for (const modPath of childDirs(session)) addFolder(modPath, tool, "dev");
+    }
+    for (const dir of readPluginDirsEnv(tool.pluginsSettingsPath)) addFolder(dir, tool, "plugin-dir");
+    for (const project of [null, ...projects]) {
+      const skillsDir = resolveToolDir(tool, "skill", project);
+      if (!skillsDir) continue;
+      for (const folder of childDirs(skillsDir)) {
+        if (existsSync(join(folder, ".claude-plugin", "plugin.json"))) addFolder(folder, tool, "skill");
+      }
+    }
+  }
+  return mods;
 }

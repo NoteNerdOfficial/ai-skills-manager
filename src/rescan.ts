@@ -1,7 +1,7 @@
 import { App, FileSystemAdapter } from "obsidian";
 import { dirname } from "path";
-import { BrokenSymlink, ItemMetadata, McpServerEntry, PluginSource, ProjectWorkspace, SkillManagerPluginSettings } from "./types";
-import { scanAllPlugins, scanAllProjects, scanAllTools, scanBrokenSymlinks, stableEntryPath } from "./scanners";
+import { BrokenSymlink, ItemMetadata, McpServerEntry, ModEntry, PluginSource, ProjectWorkspace, SkillManagerPluginSettings } from "./types";
+import { scanAllPlugins, scanAllProjects, scanMods, scanAllTools, scanBrokenSymlinks, stableEntryPath } from "./scanners";
 import { scanMcpServers } from "./mcpScanners";
 import { scanAllMemories } from "./memories";
 import { ShadowNoteStore } from "./store";
@@ -29,6 +29,7 @@ export function getAllProjects(app: App, settings: SkillManagerPluginSettings): 
 export interface RescanResult {
   items: ItemMetadata[];
   plugins: PluginSource[];
+  mods: ModEntry[];
   mcpServers: McpServerEntry[];
   brokenSymlinks: BrokenSymlink[];
 }
@@ -97,6 +98,7 @@ export async function performRescan(
     // Filtered here too: the metadata cache may not have caught up with a just-marked missing note.
     items: (await store.list()).filter((item) => validIds.has(item.entryId)),
     plugins: pluginScan.plugins,
+    mods: scanMods(settings.tools, pluginScan.plugins, projects),
     mcpServers: includeMcpServers ? scanMcpServers(settings.tools, projects) : [],
     brokenSymlinks,
   };

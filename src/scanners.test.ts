@@ -3,8 +3,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DISABLED_DIRNAME, DISABLED_SUFFIX, toggleItemEnabled } from "./itemToggle";
-import { makeEntryId, scanAllPlugins, scanAllTools, scanBrokenSymlinks, scanProject, scanTool, stableEntryPath } from "./scanners";
-import { ProjectWorkspace, ToolConfig, DEFAULT_TOOLS } from "./types";
+import { makeEntryId, scanAllPlugins, scanMods, scanAllTools, scanBrokenSymlinks, scanProject, scanTool, stableEntryPath } from "./scanners";
+import { PluginSource, ProjectWorkspace, ToolConfig, DEFAULT_TOOLS } from "./types";
 
 function makeTool(pluginsRegistry: string, pluginsSettingsPath: string): ToolConfig {
   return {
@@ -456,3 +456,68 @@ describe("Antigravity scanning", () => {
   });
 });
 
+
+describe("scanMods", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "skillmanager-mod-scan-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function writePlugin(path: string, name: string, hooks?: object) {
+    mkdirSync(join(path, ".claude-plugin"), { recursive: true });
+    writeFileSync(join(path, ".claude-plugin", "plugin.json"), JSON.stringify({ name, version: "0.1.0", description: `${name} desc` }));
+    if (hooks) {
+      mkdirSync(join(path, "hooks"), { recursive: true });
+      writeFileSync(join(path, "hooks", "hooks.json"), JSON.stringify(hooks));
+    }
+  }
+
+  it("lists an installed plugin with a hooks module as a mod, and skips plain plugins", () => {
+    writePlugin(join(root, "tally"), "tally", { modules: ["./register.tsx"] });
+    writePlugin(join(root, "plain"), "plain", { hooks: {} });
+    const plugins: PluginSource[] = [
+      { id: "tally@m", name: "tally", group: "m", path: join(root, "tally"), toolId: "claude-code", enabled: false },
+      { id: "plain@m", name: "plain", group: "m", path: join(root, "plain"), toolId: "claude-code", enabled: true },
+    ];
+    const mods = scanMods([], plugins);
+    expect(mods).toHaveLength(1);
+    expect(mods[0]).toMatchObject({ id: "tally@m", origin: "installed", pluginId: "tally@m", enabled: false, description: "tally desc" });
+  });
+
+  it("finds dev mods one session folder deep under devModsPath", () => {
+    const devRoot = join(root, "dev-mods");
+    writePlugin(join(devRoot, "session-1", "band"), "band", { modules: ["./register.tsx"] });
+    writePlugin(join(devRoot, "session-1", "notmod"), "notmod");
+    const tool: ToolConfig = { id: "claude-code", name: "Claude Code", icon: "asterisk", paths: {}, devModsPath: devRoot };
+    const mods = scanMods([tool], []);
+    expect(mods).toHaveLength(1);
+    expect(mods[0]).toMatchObject({ name: "band", origin: "dev", version: "0.1.0", enabled: true });
+  });
+
+  it("reads CLAUDE_CODE_PLUGIN_DIRS from the settings env block", () => {
+    writePlugin(join(root, "elsewhere", "pane"), "pane", { modules: ["./register.tsx"] });
+    const settingsPath = join(root, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: join(root, "elsewhere", "pane") } }));
+    const tool: ToolConfig = { id: "claude-code", name: "Claude Code", icon: "asterisk", paths: {}, devModsPath: join(root, "none"), pluginsSettingsPath: settingsPath };
+    expect(scanMods([tool], [])).toMatchObject([{ name: "pane", origin: "plugin-dir" }]);
+  });
+
+  it("finds a plugin in a skills folder, global and per project, and lists a folder reached twice once", () => {
+    const skills = join(root, "skills");
+    writePlugin(join(skills, "skill-mod"), "skill-mod", { modules: ["./register.tsx"] });
+    mkdirSync(join(skills, "plain-skill"), { recursive: true });
+    const project = join(root, "proj");
+    writePlugin(join(project, ".claude", "skills", "proj-mod"), "proj-mod", { modules: ["./register.tsx"] });
+    const devRoot = join(root, "dev-mods");
+    mkdirSync(join(devRoot, "s1"), { recursive: true });
+    symlinkSync(join(skills, "skill-mod"), join(devRoot, "s1", "skill-mod"));
+    const tool: ToolConfig = { id: "claude-code", name: "Claude Code", icon: "asterisk", paths: { skill: skills }, projectPaths: { skill: ".claude/skills" }, devModsPath: devRoot, pluginsSettingsPath: join(root, "missing.json") };
+    const mods = scanMods([tool], [], [{ id: "p", name: "proj", path: project }]);
+    expect(mods.map((m) => [m.name, m.origin]).sort()).toEqual([["proj-mod", "skill"], ["skill-mod", "dev"]]);
+  });
+});

@@ -81,6 +81,7 @@ var DEFAULT_TOOLS = [
     memoryPath: "~/.claude/projects",
     pluginsRegistry: "~/.claude/plugins/installed_plugins.json",
     pluginsSettingsPath: "~/.claude/settings.json",
+    devModsPath: "~/.claude/dev-mods",
     // ~/.claude/skills/synced/<workspace>_<user>/ is a vendor-managed cache of Claude Code's own
     // default skill catalog (confirmed on-disk: a manifest.json + .bucket-<id> marker sit
     // alongside the skill folders) — not something the user installed or wrote.
@@ -1138,6 +1139,103 @@ function scanAllPlugins(tools) {
   }
   return { items, plugins };
 }
+function isModFolder(pluginPath) {
+  try {
+    const raw = JSON.parse((0, import_fs2.readFileSync)((0, import_path3.join)(pluginPath, "hooks", "hooks.json"), "utf-8"));
+    return Array.isArray(raw.modules) && raw.modules.some((m) => typeof m === "string" && m.length > 0);
+  } catch (e) {
+    return false;
+  }
+}
+function readModDescription(pluginPath) {
+  try {
+    const raw = JSON.parse((0, import_fs2.readFileSync)((0, import_path3.join)(pluginPath, ".claude-plugin", "plugin.json"), "utf-8"));
+    return typeof raw.description === "string" ? raw.description : void 0;
+  } catch (e) {
+    return void 0;
+  }
+}
+function readPluginDirsEnv(settingsPath) {
+  var _a;
+  let value;
+  if (settingsPath) {
+    try {
+      const raw = JSON.parse((0, import_fs2.readFileSync)(expandHome2(settingsPath), "utf-8"));
+      const fromSettings = (_a = raw.env) == null ? void 0 : _a.CLAUDE_CODE_PLUGIN_DIRS;
+      if (typeof fromSettings === "string")
+        value = fromSettings;
+    } catch (e) {
+    }
+  }
+  value != null ? value : value = process.env.CLAUDE_CODE_PLUGIN_DIRS;
+  return (value != null ? value : "").split(import_path3.delimiter).map((p) => p.trim()).filter(Boolean).map(expandHome2);
+}
+function scanMods(tools, plugins, projects = []) {
+  const mods = [];
+  const seen = /* @__PURE__ */ new Set();
+  const addFolder = (modPath, tool, origin) => {
+    if (!isModFolder(modPath))
+      return;
+    const real = resolveRealPath(modPath);
+    if (seen.has(real))
+      return;
+    seen.add(real);
+    const manifest = readPluginManifest(modPath);
+    mods.push({
+      id: modPath,
+      name: manifest.name || (0, import_path3.basename)(modPath),
+      description: readModDescription(modPath),
+      version: manifest.version,
+      path: modPath,
+      toolId: tool.id,
+      origin,
+      enabled: true
+    });
+  };
+  const childDirs2 = (dir) => {
+    try {
+      return (0, import_fs2.readdirSync)(dir).filter((name) => !name.startsWith(".")).map((name) => (0, import_path3.join)(dir, name));
+    } catch (e) {
+      return [];
+    }
+  };
+  for (const plugin of plugins) {
+    if (!isModFolder(plugin.path))
+      continue;
+    seen.add(resolveRealPath(plugin.path));
+    mods.push({
+      id: plugin.id,
+      name: plugin.name,
+      description: readModDescription(plugin.path),
+      version: plugin.version,
+      path: plugin.path,
+      toolId: plugin.toolId,
+      origin: "installed",
+      pluginId: plugin.id,
+      enabled: plugin.enabled
+    });
+  }
+  for (const tool of tools) {
+    if (!tool.devModsPath)
+      continue;
+    for (const session of childDirs2(expandHome2(tool.devModsPath))) {
+      for (const modPath of childDirs2(session))
+        addFolder(modPath, tool, "dev");
+    }
+    for (const dir of readPluginDirsEnv(tool.pluginsSettingsPath))
+      addFolder(dir, tool, "plugin-dir");
+    for (const project of [null, ...projects]) {
+      const skillsDir = resolveToolDir(tool, "skill", project);
+      if (!skillsDir)
+        continue;
+      for (const folder of childDirs2(skillsDir)) {
+        if ((0, import_fs2.existsSync)((0, import_path3.join)(folder, ".claude-plugin", "plugin.json")))
+          addFolder(folder, tool, "skill");
+      }
+    }
+  }
+  return mods;
+}
 
 // src/projectLink.ts
 var import_fs3 = require("fs");
@@ -1993,6 +2091,7 @@ async function performRescan(app, settings, store, includeMcpServers = true) {
     // Filtered here too: the metadata cache may not have caught up with a just-marked missing note.
     items: (await store.list()).filter((item) => validIds.has(item.entryId)),
     plugins: pluginScan.plugins,
+    mods: scanMods(settings.tools, pluginScan.plugins, projects),
     mcpServers: includeMcpServers ? scanMcpServers(settings.tools, projects) : [],
     brokenSymlinks
   };
@@ -3580,7 +3679,7 @@ function isFolderItem(item) {
 function skillFolder(item) {
   return (0, import_path15.dirname)(item.sourcePath);
 }
-function walk(dir, prefix, depth) {
+function walk(dir, prefix, depth, keepDotEntry) {
   if (depth > MAX_DEPTH)
     return [];
   let entries;
@@ -3591,10 +3690,12 @@ function walk(dir, prefix, depth) {
   }
   const nodes = [];
   for (const entry of entries) {
-    if (SKIP_ENTRIES.has(entry) || entry.startsWith("."))
+    if (SKIP_ENTRIES.has(entry))
       continue;
     const absPath = (0, import_path15.join)(dir, entry);
     const relPath = prefix ? `${prefix}/${entry}` : entry;
+    if (entry.startsWith(".") && !(keepDotEntry == null ? void 0 : keepDotEntry(relPath)))
+      continue;
     let isDir = false;
     try {
       isDir = (0, import_fs15.statSync)(absPath).isDirectory();
@@ -3602,7 +3703,7 @@ function walk(dir, prefix, depth) {
       continue;
     }
     nodes.push(
-      isDir ? { name: entry, relPath, absPath, isDir: true, children: walk(absPath, relPath, depth + 1) } : { name: entry, relPath, absPath, isDir: false }
+      isDir ? { name: entry, relPath, absPath, isDir: true, children: walk(absPath, relPath, depth + 1, keepDotEntry) } : { name: entry, relPath, absPath, isDir: false }
     );
   }
   nodes.sort((a, b) => a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1);
@@ -3610,6 +3711,15 @@ function walk(dir, prefix, depth) {
 }
 function buildFileTree(item) {
   return walk(skillFolder(item), "", 0);
+}
+function buildModFileTree(modPath) {
+  var _a;
+  const nodes = walk(modPath, "", 0, (relPath) => relPath === ".claude-plugin");
+  for (const node of nodes) {
+    if (node.relPath === ".claude-plugin")
+      node.children = (_a = node.children) == null ? void 0 : _a.filter((child) => child.name !== "types");
+  }
+  return nodes;
 }
 function countFiles(nodes) {
   return nodes.reduce((sum, n) => {
@@ -4858,6 +4968,14 @@ var LibraryView = class extends import_obsidian16.ItemView {
     this.dragHighlightEl = null;
     this.discoveredPlugins = [];
     this.mcpServers = [];
+    this.mods = [];
+    /** True while the sidebar's "Mods" row is active. Read-only like mcpMode: a mod is toggled as
+     *  the plugin it ships in, from its owning tool. */
+    this.modsMode = false;
+    /** The mod open in the docked rail (file tree, then a file via selectedFilePath). */
+    this.selectedMod = null;
+    this.modFileLoadedFor = null;
+    this.modFileContent = "";
     /** True while the sidebar's "MCP servers" row is active — same swap-the-content-pane idea as
      *  discoverMode/toolsMode/dashboardMode. Read-only: no enable/disable here, see McpServerEntry. */
     this.mcpMode = false;
@@ -4984,6 +5102,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     const result = await performRescan(this.app, this.getSettings(), this.store);
     this.discoveredPlugins = result.plugins;
     this.mcpServers = result.mcpServers;
+    this.mods = result.mods;
     this.brokenSymlinks = result.brokenSymlinks;
     const brokenKeys = new Set(this.brokenSymlinks.map((link) => link.path));
     const newBroken = this.brokenSymlinks.filter((link) => !this.knownBrokenSymlinkKeys.has(link.path));
@@ -5379,6 +5498,8 @@ var LibraryView = class extends import_obsidian16.ItemView {
     this.pluginBundlesMode = false;
     this.detailReturnsToDashboard = false;
     this.mcpMode = false;
+    this.modsMode = false;
+    this.selectedMod = null;
     this.mcpToolFilter = null;
     this.selectedMcpServer = null;
     this.revealedMcpEnvKeys = /* @__PURE__ */ new Set();
@@ -5389,7 +5510,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     this.addingTagFor = null;
   }
   isScoped() {
-    return !!(this.typeFilter || this.toolFilter || this.collectionFilter || this.projectFilter || this.pluginFilter || this.favoritesOnly || this.discoverMode || this.toolsMode || this.dashboardMode || this.mcpMode || this.pluginBundlesMode);
+    return !!(this.typeFilter || this.toolFilter || this.collectionFilter || this.projectFilter || this.pluginFilter || this.favoritesOnly || this.discoverMode || this.toolsMode || this.dashboardMode || this.mcpMode || this.modsMode || this.pluginBundlesMode);
   }
   /** In-page filters layered on top of the sidebar scope: everything the "Clear filters" button
    *  resets. Search isn't included; it has its own clear button and is shown separately. */
@@ -5847,7 +5968,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
   }
   isSectionVisible(key) {
     if (key === "extensions")
-      return this.mcpServers.length > 0 || this.discoveredPlugins.length > 0;
+      return this.mcpServers.length > 0 || this.discoveredPlugins.length > 0 || this.mods.length > 0;
     return true;
   }
   /** Fixed under Library rather than one of the reorderable sections: it's navigation, not a
@@ -5938,6 +6059,26 @@ var LibraryView = class extends import_obsidian16.ItemView {
         void 0,
         false,
         "Installed plugin bundles, browsed separately from individual skills."
+      );
+    }
+    if (this.mods.length > 0) {
+      this.renderNavRow(
+        sidebar,
+        "puzzle",
+        "Mods",
+        this.mods.length,
+        this.modsMode,
+        () => {
+          this.clearScopeFilters();
+          this.modsMode = true;
+          this.render();
+        },
+        void 0,
+        false,
+        "default",
+        void 0,
+        false,
+        "Mods change the tool's own interface and behaviour: panes, status line, slash commands, hooks."
       );
     }
   }
@@ -6430,6 +6571,10 @@ var LibraryView = class extends import_obsidian16.ItemView {
     }
     if (this.mcpMode) {
       this.renderMcpServersContent(content);
+      return;
+    }
+    if (this.modsMode) {
+      this.renderModsContent(content);
       return;
     }
     const items = this.filteredItems();
@@ -7382,6 +7527,172 @@ var LibraryView = class extends import_obsidian16.ItemView {
     bundlesCrumb.addEventListener("click", back);
     crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
     crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: plugin.name });
+  }
+  // ---------- Mods ----------
+  renderModsContent(content) {
+    var _a;
+    const header = content.createDiv({ cls: "skillmanager-content-header" });
+    const titleRow = header.createDiv({ cls: "skillmanager-title-row" });
+    titleRow.createEl("h2", { text: "Mods", cls: "skillmanager-title" });
+    titleRow.createSpan({ text: String(this.mods.length), cls: "skillmanager-count-pill" });
+    header.createDiv({
+      text: "Mods change the tool itself (panes, status line, slash commands, hooks on tool calls) instead of adding skills. Installed mods are toggled as the plugin they ship in.",
+      cls: "skillmanager-subtitle"
+    });
+    if (this.selectedMod)
+      this.selectedMod = (_a = this.mods.find((m) => {
+        var _a2;
+        return m.id === ((_a2 = this.selectedMod) == null ? void 0 : _a2.id);
+      })) != null ? _a : null;
+    const body = content.createDiv({ cls: "skillmanager-body" });
+    const animation = this.pendingDetailAnimation;
+    this.pendingDetailAnimation = null;
+    const grid = body.createDiv({ cls: `skillmanager-items${this.selectedMod ? " is-docked" : ""}` });
+    if (this.mods.length === 0)
+      grid.createDiv({ text: "No mods found.", cls: "skillmanager-empty" });
+    const sorted = [...this.mods].sort((a, b) => a.name.localeCompare(b.name));
+    for (const mod of sorted)
+      this.renderModCard(grid, mod);
+    if (this.selectedMod) {
+      const rail = body.createDiv({ cls: `skillmanager-detail${animation ? ` skillmanager-panel-enter-${animation}` : ""}` });
+      this.renderModDetailRail(rail, this.selectedMod);
+    }
+  }
+  selectMod(mod) {
+    this.selectedMod = mod;
+    this.selectedFilePath = null;
+    this.collapsedTreeFolders = /* @__PURE__ */ new Set();
+    this.pendingDetailAnimation = "forward";
+    this.render();
+  }
+  /** Same shape as an item's rail (Mods / mod / file breadcrumbs, a file tree, then a read-only
+   *  preview), minus the item-only parts: no edit, history, tags or usage, since a mod isn't a
+   *  library item and its files are the engine's to load. */
+  renderModDetailRail(panel, mod) {
+    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
+    const filePath = this.selectedFilePath;
+    const backToMods = () => {
+      this.selectedMod = null;
+      this.selectedFilePath = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    const backToTree = () => {
+      this.selectedFilePath = null;
+      this.pendingDetailAnimation = "back";
+      this.render();
+    };
+    const crumbs = panel.createDiv({ cls: "skillmanager-crumbs" });
+    const backBtn = crumbs.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": "Back" } });
+    (0, import_obsidian16.setIcon)(backBtn, "arrow-left");
+    backBtn.addEventListener("click", filePath ? backToTree : backToMods);
+    crumbs.createEl("button", { cls: "skillmanager-crumb", text: "Mods" }).addEventListener("click", backToMods);
+    crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+    const modCrumb = crumbs.createEl("button", { cls: `skillmanager-crumb${filePath ? "" : " is-current"}`, text: mod.name });
+    if (filePath) {
+      modCrumb.addEventListener("click", backToTree);
+      crumbs.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+      crumbs.createEl("button", { cls: "skillmanager-crumb is-current", text: (0, import_path18.basename)(filePath) });
+    }
+    const section = panel.createDiv({ cls: "skillmanager-detail-head" });
+    const header = section.createDiv({ cls: "skillmanager-detail-header" });
+    header.createEl("h3", { text: filePath ? (0, import_path18.basename)(filePath) : mod.name, cls: "skillmanager-detail-title" });
+    header.createSpan({ text: "Mod", cls: "skillmanager-detail-type-pill" });
+    const actions = header.createDiv({ cls: "skillmanager-detail-actions" });
+    const revealBtn = actions.createEl("button", { cls: "skillmanager-icon-btn", attr: { "aria-label": this.fileManagerLabel() } });
+    (0, import_obsidian16.setIcon)(revealBtn, "folder-open");
+    revealBtn.addEventListener("click", () => void this.openModFolder(mod));
+    const toolLine = section.createDiv({ cls: "skillmanager-detail-tool" });
+    if (tool)
+      this.renderIcon(toolLine.createSpan({ cls: "skillmanager-detail-tool-icon" }), tool.icon, tool.svgIcon);
+    const origin = this.modOriginLabel(mod).text;
+    toolLine.createSpan({ text: [tool == null ? void 0 : tool.name, origin, mod.version ? `v${mod.version}` : null].filter(Boolean).join(" \xB7 ") });
+    if (!filePath && mod.description)
+      section.createDiv({ cls: "skillmanager-detail-desc", text: mod.description });
+    if (!filePath) {
+      const list = panel.createDiv({ cls: "skillmanager-tree" });
+      this.renderTreeNodes(list, buildModFileTree(mod.path), 0);
+      panel.createDiv({ cls: "skillmanager-tree-hint", text: "Click a file to open it." });
+      return;
+    }
+    if (this.modFileLoadedFor !== filePath) {
+      try {
+        this.modFileContent = (0, import_fs18.readFileSync)(filePath, "utf-8");
+      } catch (e) {
+        this.modFileContent = "";
+        new import_obsidian16.Notice("Could not read file: " + errorMessage(e));
+      }
+      this.modFileLoadedFor = filePath;
+    }
+    const ext = (0, import_path18.extname)(filePath).slice(1).toLowerCase();
+    const source = ext === "md" ? stripFrontmatter(this.modFileContent) : codeFence(this.modFileContent, ext);
+    const body = panel.createDiv({ cls: "skillmanager-detail-body" });
+    const readingView = body.createDiv({
+      cls: "markdown-preview-view markdown-rendered node-insert-event is-readable-line-width allow-fold-headings allow-fold-lists show-indentation-guide skillmanager-markdown-preview"
+    });
+    const sizer = readingView.createDiv({ cls: "markdown-preview-sizer markdown-preview-section" });
+    void import_obsidian16.MarkdownRenderer.render(this.app, source, sizer, filePath, this.markdownComponent);
+  }
+  renderModCard(container, mod) {
+    var _a;
+    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
+    const plugin = mod.pluginId ? this.discoveredPlugins.find((p) => p.id === mod.pluginId) : void 0;
+    const card = container.createDiv({ cls: "skillmanager-card" });
+    if (!mod.enabled)
+      card.addClass("is-off");
+    const head = card.createDiv({ cls: "skillmanager-card-head" });
+    head.createSpan({ text: mod.name, cls: "skillmanager-card-name" });
+    head.createSpan({ text: "Mod", cls: "skillmanager-card-type skillmanager-card-type-sm" });
+    if (plugin) {
+      createSwitch(head, {
+        on: plugin.enabled,
+        label: `${mod.name} mod enabled`,
+        onClick: () => this.explainPluginBundleToggle(plugin)
+      });
+    }
+    if (tool) {
+      const toolCaption = card.createDiv({ cls: "skillmanager-card-tool" });
+      const toolIcon = toolCaption.createSpan({ cls: "skillmanager-card-tool-icon" });
+      this.renderIcon(toolIcon, tool.icon, tool.svgIcon);
+      toolCaption.createSpan({ text: tool.name });
+    }
+    card.createDiv({ text: mod.description || "No description", cls: "skillmanager-card-desc" });
+    const footer = card.createDiv({ cls: "skillmanager-card-footer" });
+    const source = footer.createDiv({ cls: "skillmanager-card-source" });
+    const sourceIcon = source.createSpan({ cls: "skillmanager-card-source-icon" });
+    const originInfo = this.modOriginLabel(mod);
+    (0, import_obsidian16.setIcon)(sourceIcon, originInfo.icon);
+    source.createSpan({ text: originInfo.text, cls: "skillmanager-card-source-text" });
+    const right = footer.createDiv({ cls: "skillmanager-card-footer-right" });
+    if (mod.version)
+      right.createSpan({ text: `v${mod.version}`, cls: "skillmanager-card-meta" });
+    if (!mod.enabled)
+      right.createSpan({ text: "Disabled", cls: "skillmanager-card-meta" });
+    if (((_a = this.selectedMod) == null ? void 0 : _a.id) === mod.id)
+      card.addClass("is-selected");
+    makeActivatable(card);
+    card.addEventListener("click", () => this.selectMod(mod));
+  }
+  modOriginLabel(mod) {
+    var _a;
+    if (mod.origin === "dev")
+      return { text: "In development", icon: "flask-conical" };
+    if (mod.origin === "plugin-dir")
+      return { text: "Plugin folder (env)", icon: "folder-cog" };
+    if (mod.origin === "skill")
+      return { text: "Skills folder", icon: "sparkles" };
+    const plugin = this.discoveredPlugins.find((p) => p.id === mod.pluginId);
+    return { text: (_a = plugin == null ? void 0 : plugin.group) != null ? _a : "Installed plugin", icon: "layers-3" };
+  }
+  async openModFolder(mod) {
+    const shell = this.electronShell();
+    if (!shell) {
+      new import_obsidian16.Notice("Can't open files from this device, try Obsidian's desktop app.");
+      return;
+    }
+    const errorText = await shell.openPath(mod.path);
+    if (errorText)
+      new import_obsidian16.Notice(`Couldn't open ${mod.path}: ${errorText}`);
   }
   // ---------- MCP servers ----------
   /** Read-only visibility into every MCP server found in a tool's own config files (see
@@ -11219,6 +11530,15 @@ ${item.description}`.length),
     window.setTimeout(() => input.focus(), 0);
   }
 };
+function codeFence(source, lang) {
+  var _a;
+  const longest = Math.max(2, ...((_a = source.match(/`+/g)) != null ? _a : []).map((run) => run.length));
+  const fence = "`".repeat(longest + 1);
+  const language = lang === "tsx" || lang === "ts" ? "typescript" : lang;
+  return `${fence}${language}
+${source}
+${fence}`;
+}
 
 // src/settings.ts
 var ENABLED_FILTER_OPTIONS = [
