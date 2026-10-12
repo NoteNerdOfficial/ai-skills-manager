@@ -83,7 +83,8 @@ function holdFileOpen(file: string, ms: number): FileHolder {
   return { holder, exited, locked };
 }
 
-describe("shallowCloneRepo temp-clone cleanup", () => {
+// Every test here runs real git clones, and process start-up can take seconds on Windows with antivirus.
+describe("shallowCloneRepo temp-clone cleanup", { timeout: 60_000 }, () => {
   let sourceRepo: string;
   let repoUrl: string;
 
@@ -136,7 +137,7 @@ describe("shallowCloneRepo temp-clone cleanup", () => {
     } finally {
       for (const d of dirs) rmSync(d, { recursive: true, force: true });
     }
-  }, 60_000);
+  }, 180_000);
 
   it("retries at most 3 queued removals per cleanup, from the front of the queue", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
