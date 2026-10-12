@@ -636,6 +636,9 @@ function pruneOldBackups(settingsPath) {
   }
 }
 function togglePluginEnabled(tool, pluginId, currentlyEnabled) {
+  setPluginEnabled(tool, pluginId, !currentlyEnabled);
+}
+function setPluginEnabled(tool, pluginId, enabled) {
   var _a;
   if (!tool.pluginsSettingsPath)
     throw new Error(`${tool.name} has no known plugin settings file.`);
@@ -644,7 +647,7 @@ function togglePluginEnabled(tool, pluginId, currentlyEnabled) {
     throw new Error(`${tool.name}'s settings file wasn't found at ${settingsPath}.`);
   backupSettingsFile(settingsPath);
   const raw = JSON.parse((0, import_fs.readFileSync)(settingsPath, "utf-8"));
-  raw.enabledPlugins = { ...(_a = raw.enabledPlugins) != null ? _a : {}, [pluginId]: !currentlyEnabled };
+  raw.enabledPlugins = { ...(_a = raw.enabledPlugins) != null ? _a : {}, [pluginId]: enabled };
   (0, import_fs.writeFileSync)(settingsPath, JSON.stringify(raw, null, 2) + "\n");
 }
 async function deleteItem(item, trash) {
@@ -1114,7 +1117,8 @@ function readPluginManifest(installPath) {
       return {
         name: typeof raw.name === "string" ? raw.name : void 0,
         repository: typeof raw.repository === "string" ? raw.repository : void 0,
-        version: typeof raw.version === "string" ? raw.version : void 0
+        version: typeof raw.version === "string" ? raw.version : void 0,
+        defaultEnabled: typeof raw.defaultEnabled === "boolean" ? raw.defaultEnabled : void 0
       };
     } catch (e) {
       return {};
@@ -1304,7 +1308,9 @@ function scanMods(tools, plugins, projects = [], disabledModDirs = {}) {
   var _a;
   const mods = [];
   const seen = /* @__PURE__ */ new Set();
-  const addFolder = (modPath, tool, origin, enabled = true, projectId) => {
+  let enabledMap = {};
+  const addFolder = (modPath, tool, origin, enabled = true, projectId, keyed = false) => {
+    var _a2, _b;
     if (!isModFolder(modPath))
       return;
     const real2 = resolveRealPath(modPath);
@@ -1312,9 +1318,11 @@ function scanMods(tools, plugins, projects = [], disabledModDirs = {}) {
       return;
     seen.add(real2);
     const manifest = readPluginManifest(modPath);
+    const name = manifest.name || (0, import_path3.basename)(modPath);
+    const enabledKey = keyed ? `${name}@${origin === "skill" ? "skills-dir" : "inline"}` : void 0;
     mods.push({
       id: modPath,
-      name: manifest.name || (0, import_path3.basename)(modPath),
+      name,
       description: readModDescription(modPath),
       version: manifest.version,
       path: modPath,
@@ -1322,7 +1330,8 @@ function scanMods(tools, plugins, projects = [], disabledModDirs = {}) {
       toolId: tool.id,
       ...projectId ? { projectId } : {},
       origin,
-      enabled
+      ...enabledKey ? { enabledKey } : {},
+      enabled: enabledKey ? (_b = (_a2 = enabledMap[enabledKey]) != null ? _a2 : manifest.defaultEnabled) != null ? _b : true : enabled
     });
   };
   const childDirs2 = (dir) => {
@@ -1353,12 +1362,13 @@ function scanMods(tools, plugins, projects = [], disabledModDirs = {}) {
   for (const tool of tools) {
     if (!tool.devModsPath)
       continue;
+    enabledMap = readPluginEnabledMap(tool.pluginsSettingsPath ? expandHome2(tool.pluginsSettingsPath) : void 0);
     for (const session of childDirs2(expandHome2(tool.devModsPath))) {
       for (const modPath of childDirs2(session))
         addFolder(modPath, tool, "dev");
     }
     for (const dir of readPluginDirsEnv(tool.pluginsSettingsPath))
-      addFolder(dir, tool, "plugin-dir");
+      addFolder(dir, tool, "plugin-dir", true, void 0, true);
     for (const dir of (_a = disabledModDirs[tool.id]) != null ? _a : [])
       addFolder(dir, tool, "plugin-dir", false);
     for (const project of [null, ...projects]) {
@@ -1367,7 +1377,7 @@ function scanMods(tools, plugins, projects = [], disabledModDirs = {}) {
         continue;
       for (const folder of childDirs2(skillsDir)) {
         if ((0, import_fs2.existsSync)((0, import_path3.join)(folder, ".claude-plugin", "plugin.json")))
-          addFolder(folder, tool, "skill", true, project == null ? void 0 : project.id);
+          addFolder(folder, tool, "skill", true, project == null ? void 0 : project.id, true);
       }
     }
     for (const project of projects) {
@@ -1465,6 +1475,45 @@ function isLink(path) {
   } catch (e) {
     return false;
   }
+}
+var realOrNull = (path) => {
+  try {
+    return (0, import_fs3.realpathSync)(path);
+  } catch (e) {
+    return null;
+  }
+};
+function modGlobalEntries(mod, tool) {
+  return readPluginDirsEnv(tool.pluginsSettingsPath).filter((dir) => realOrNull(dir) === mod.realPath);
+}
+function isModGlobal(mod, tool) {
+  return modGlobalEntries(mod, tool).length > 0 || !!modProjectLink(mod, tool, null);
+}
+function setModGlobal(mod, tool, on) {
+  const modsDir = expandHome2(FINISHED_MODS_DIR);
+  if (on) {
+    const realModsDir = realOrNull(modsDir);
+    let dir;
+    if (realModsDir && mod.realPath.startsWith(realModsDir + import_path4.sep)) {
+      dir = (0, import_path4.join)(modsDir, (0, import_path4.relative)(realModsDir, mod.realPath));
+    } else {
+      dir = (0, import_path4.join)(modsDir, (0, import_path4.basename)(mod.realPath));
+      if (realOrNull(dir) !== mod.realPath) {
+        if ((0, import_fs3.existsSync)(dir) || isLink(dir))
+          throw new Error(`${dir} already exists.`);
+        (0, import_fs3.mkdirSync)(modsDir, { recursive: true });
+        (0, import_fs3.symlinkSync)(mod.realPath, dir, "dir");
+      }
+    }
+    setPluginDirListed(tool, dir, true);
+    return;
+  }
+  for (const entry of modGlobalEntries(mod, tool)) {
+    setPluginDirListed(tool, entry, false);
+    if ((0, import_path4.dirname)(entry) === modsDir && isLink(entry))
+      (0, import_fs3.unlinkSync)(entry);
+  }
+  removeModFromProject(mod, tool, null);
 }
 
 // src/sourceRepo.ts
@@ -2348,17 +2397,24 @@ var ProjectPresenceModal = class extends import_obsidian7.Modal {
     this.options = options;
   }
   onOpen() {
+    var _a;
     const { contentEl } = this;
     const { userScope, note, keptIn } = this.options;
     const sourceProjectId = (keptIn == null ? void 0 : keptIn.kind) === "project" ? keptIn.id : void 0;
     contentEl.addClass("skillmanager-modal");
     this.setTitle("Workspaces");
+    const globalAction = (_a = userScope == null ? void 0 : userScope.action) != null ? _a : `symlink "${this.itemName}" into your user folder`;
     contentEl.createEl("p", {
-      text: userScope ? `Check Global to symlink "${this.itemName}" into your user folder so every session loads it, or a project to symlink it into that project's local folder. The original is never copied, so it can't drift out of sync. Uncheck one to remove just that symlink; nothing is deleted.` : `Check a project to symlink "${this.itemName}" into its local folder. The original is never copied, so it can't drift out of sync. Uncheck it to remove just that symlink; nothing is deleted.`,
+      text: userScope ? `Check Global to ${globalAction} so every session loads it, or a workspace to symlink it into that workspace's local folder. The original is never copied, so it can't drift out of sync. Uncheck one to ${userScope.action ? "undo just that one" : "remove just that symlink"}; nothing is deleted.` : `Check a workspace to symlink "${this.itemName}" into its local folder. The original is never copied, so it can't drift out of sync. Uncheck it to remove just that symlink; nothing is deleted.`,
       cls: "setting-item-description"
     });
-    if (note)
-      contentEl.createEl("p", { text: note, cls: "setting-item-description mod-warning" });
+    const noteEl = contentEl.createEl("p", { cls: "setting-item-description mod-warning" });
+    const showNote = (globalOn) => {
+      const text = typeof note === "function" ? note(globalOn) : note;
+      noteEl.setText(text != null ? text : "");
+      noteEl.toggle(!!text);
+    };
+    showNote(!!(userScope == null ? void 0 : userScope.present));
     const project = sourceProjectId ? this.projects.find((p) => p.id === sourceProjectId) : void 0;
     const home = (0, import_os4.homedir)();
     const source = (keptIn == null ? void 0 : keptIn.kind) === "global" ? { icon: "globe", label: "Global" } : (keptIn == null ? void 0 : keptIn.kind) === "folder" ? { icon: "folder", label: keptIn.path.startsWith(home) ? "~" + keptIn.path.slice(home.length) : keptIn.path } : project ? { icon: projectIcon(project.id), label: project.name } : null;
@@ -2374,7 +2430,7 @@ var ProjectPresenceModal = class extends import_obsidian7.Modal {
       contentEl.createDiv({ cls: "skillmanager-picker-section", text: "Linked into" });
     }
     if (userScope)
-      this.renderRow("globe", "Global", userScope.present, userScope.onAdd, userScope.onRemove);
+      this.renderRow("globe", "Global", userScope.present, userScope.onAdd, userScope.onRemove, showNote);
     const targets = this.projects.filter((p) => p.id !== sourceProjectId);
     if (targets.length === 0 && !userScope) {
       contentEl.createEl("p", { text: "No workspaces registered yet. Add some in plugin settings." });
@@ -2390,7 +2446,7 @@ var ProjectPresenceModal = class extends import_obsidian7.Modal {
       );
     }
   }
-  renderRow(icon, label, checked, onAdd, onRemove) {
+  renderRow(icon, label, checked, onAdd, onRemove, onChanged) {
     const row = this.contentEl.createDiv({ cls: "skillmanager-collection-picker-row" });
     const checkbox = row.createEl("input", { type: "checkbox" });
     checkbox.checked = checked;
@@ -2402,6 +2458,7 @@ var ProjectPresenceModal = class extends import_obsidian7.Modal {
             await onAdd();
           else
             await onRemove();
+          onChanged == null ? void 0 : onChanged(wantAdd);
         } catch (e) {
           checkbox.checked = !wantAdd;
           new import_obsidian7.Notice("Failed: " + errorMessage(e));
@@ -5847,7 +5904,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     );
     const btn = container.createEl("button", {
       cls: `skillmanager-icon-btn${linkedSomewhere ? " is-present" : ""}`,
-      attr: { "aria-label": linkedSomewhere ? "Manage project links" : "Link into a workspace" }
+      attr: { "aria-label": linkedSomewhere ? "Manage workspace links" : "Link into a workspace" }
     });
     (0, import_obsidian16.setIcon)(btn, "link");
     btn.addEventListener("click", (evt) => {
@@ -8267,7 +8324,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
     const countText = (shown) => shown === all.length ? String(all.length) : `${shown} of ${all.length}`;
     const countPill = titleRow.createSpan({ text: countText(mods.length), cls: "skillmanager-count-pill" });
     header.createDiv({
-      text: "Mods change the tool itself (panes, status line, slash commands, hooks on tool calls) instead of adding skills. Installed and plugin folder mods can be turned off here, and a mod you keep can be linked into a project. Promote a mod in development to load it in every session.",
+      text: "Mods change the tool itself (panes, status line, slash commands, hooks on tool calls) instead of adding skills. Turn a mod off here without moving anything, and make a mod you keep Global or link it into a workspace. Promote a mod in development to load it in every session.",
       cls: "skillmanager-subtitle"
     });
     const toolbar = content.createDiv({ cls: "skillmanager-toolbar" });
@@ -8540,8 +8597,10 @@ var LibraryView = class extends import_obsidian16.ItemView {
     });
     (0, import_obsidian16.setTooltip)(dot, dotLabel, { placement: "top" });
     head.createSpan({ text: mod.name, cls: `skillmanager-card-name${mod.version ? " skillmanager-card-name-fit" : ""}` });
-    if (mod.version)
-      head.createSpan({ text: `v${mod.version}`, cls: "skillmanager-card-meta skillmanager-card-version" });
+    if (mod.version) {
+      const version = head.createSpan({ text: `v${mod.version}`, cls: "skillmanager-card-meta skillmanager-card-version" });
+      (0, import_obsidian16.setTooltip)(version, `Version ${mod.version}`, { placement: "top" });
+    }
     head.createSpan({ text: "Mod", cls: "skillmanager-card-type skillmanager-card-type-sm" });
     if (modSource) {
       const syncBtn = head.createEl("button", {
@@ -8562,11 +8621,12 @@ var LibraryView = class extends import_obsidian16.ItemView {
         label: `${mod.name} mod enabled`,
         onClick: () => this.explainPluginBundleToggle(plugin)
       });
-    } else if (mod.origin === "plugin-dir" && (tool == null ? void 0 : tool.pluginsSettingsPath)) {
+    } else if (mod.enabledKey && (tool == null ? void 0 : tool.pluginsSettingsPath)) {
+      const key = mod.enabledKey;
       createSwitch(head, {
         on: mod.enabled,
         label: `${mod.name} mod enabled`,
-        onClick: () => this.confirmPluginDirModToggle(mod)
+        onClick: () => this.confirmModToggle(mod, tool, key)
       });
     }
     if (tool) {
@@ -8611,18 +8671,20 @@ var LibraryView = class extends import_obsidian16.ItemView {
       return "Loads in every session while its plugin is enabled. Running sessions pick up a change after /reload-plugins.";
     if (mod.origin === "dev")
       return "Loads only in the Claude Code session that created it. Promote it to load it in every new session.";
+    if (!mod.enabled && mod.enabledKey)
+      return `Turned off: "${mod.enabledKey}" is false under enabledPlugins, so new sessions skip it. Nothing was moved or unlisted.`;
     if (mod.origin === "plugin-dir") {
-      return mod.enabled ? "Loads in every new session through CLAUDE_CODE_PLUGIN_DIRS." : "Turned off: taken out of CLAUDE_CODE_PLUGIN_DIRS, so new sessions don't load it. The folder stays where it is.";
+      return mod.enabled ? "Loads in every new session through CLAUDE_CODE_PLUGIN_DIRS." : "Taken out of CLAUDE_CODE_PLUGIN_DIRS, so new sessions don't load it. Check Global in its link picker to list it again.";
     }
     if (mod.origin === "repo") {
       const project = this.getAllProjects().find((p) => p.id === mod.projectId);
-      return `Kept in ${(_a = project == null ? void 0 : project.name) != null ? _a : "a source repo"}, which the tool doesn't load mods from. Link it Global or into a project to load it.`;
+      return `Kept in ${(_a = project == null ? void 0 : project.name) != null ? _a : "a source repo"}, which the tool doesn't load mods from. Make it Global or link it into a workspace to load it.`;
     }
     if (mod.projectId) {
       const project = this.getAllProjects().find((p) => p.id === mod.projectId);
-      return `Loads only in ${(_b = project == null ? void 0 : project.name) != null ? _b : "its project"}, with the skills folder it sits in. Move the folder out to turn it off.`;
+      return `Loads only in ${(_b = project == null ? void 0 : project.name) != null ? _b : "its project"}, from the skills folder it sits in.`;
     }
-    return "Loads with the skills folder it sits in, in every session. Move the folder out to turn it off.";
+    return "Loads in every session, from the skills folder it sits in.";
   }
   /** Short form of modLoadNote, for the properties panel under it. */
   modScopeLabel(mod) {
@@ -8704,10 +8766,10 @@ var LibraryView = class extends import_obsidian16.ItemView {
   /** Same control as an item card's (see renderProjectLinkButton): one link icon that's tinted
    *  once the mod is a link itself or linked somewhere, always opening the picker. */
   renderModLinkButton(container, mod, tool) {
-    const linkedSomewhere = mod.realPath !== mod.path || this.modLinkedProjects(mod, tool).length > 0 || !!mod.projectId && !!modProjectLink(mod, tool, null);
+    const linkedSomewhere = mod.realPath !== mod.path || this.modLinkedProjects(mod, tool).length > 0 || isModGlobal(mod, tool);
     const btn = container.createEl("button", {
       cls: `skillmanager-icon-btn${linkedSomewhere ? " is-present" : ""}`,
-      attr: { "aria-label": linkedSomewhere ? "Manage project links" : "Link into a workspace" }
+      attr: { "aria-label": linkedSomewhere ? "Manage workspace links" : "Link into a workspace" }
     });
     (0, import_obsidian16.setIcon)(btn, "link");
     btn.addEventListener("click", (evt) => {
@@ -8719,15 +8781,15 @@ var LibraryView = class extends import_obsidian16.ItemView {
     const keptIn = this.modKeptIn(mod, tool);
     const present = new Set(this.modLinkedProjects(mod, tool).map((p) => p.id));
     const unscannedSource = !keptIn && mod.origin === "skill" && !mod.projectId && this.isSymlinkPath(mod.path);
-    const offerGlobal = !!keptIn && mod.origin !== "plugin-dir" || unscannedSource;
-    const globalLink = offerGlobal ? modProjectLink(mod, tool, null) : null;
-    const realMod = { ...mod, path: mod.realPath };
-    const loadsEverywhere = mod.enabled && !mod.projectId;
-    const notes = [
-      loadsEverywhere ? `"${mod.name}" already loads in every session, so a project you link it into would load it twice.${globalLink ? "" : " Turn it off first to load it only in the projects you check."}` : null,
-      offerGlobal && (keptIn == null ? void 0 : keptIn.loadsThere) ? `Linked as Global, it also loads twice in ${keptIn.project.name}, where it's kept.` : null,
-      unscannedSource ? `Unchecking Global removes the only link the library finds "${mod.name}" through, so it drops off this list until you link it again.` : null
-    ].filter(Boolean);
+    const keptInGlobal = !keptIn && mod.origin === "skill" && !mod.projectId && !unscannedSource;
+    const offerGlobal = !!tool.pluginsSettingsPath && !keptInGlobal;
+    const note = (globalOn) => {
+      const loadsEverywhere = (offerGlobal ? globalOn : !mod.projectId) && mod.enabled;
+      return [
+        loadsEverywhere ? `"${mod.name}" already loads in every session, so a copy linked into a workspace is skipped there.${offerGlobal ? " Uncheck Global to load it only in the workspaces you check." : ""}` : null,
+        globalOn && unscannedSource ? `Unchecking Global removes the only link the library finds "${mod.name}" through, so it drops off this list until you check Global again.` : null
+      ].filter(Boolean).join(" ") || void 0;
+    };
     new ProjectPresenceModal(
       this.app,
       mod.name,
@@ -8742,16 +8804,20 @@ var LibraryView = class extends import_obsidian16.ItemView {
         await this.rescan();
       },
       {
-        note: notes.length > 0 ? notes.join(" ") : void 0,
-        keptIn: keptIn ? { kind: "project", id: keptIn.project.id } : mod.origin === "skill" && !mod.projectId && !unscannedSource ? { kind: "global" } : { kind: "folder", path: (0, import_path20.dirname)(mod.realPath) },
+        note,
+        keptIn: keptIn ? { kind: "project", id: keptIn.project.id } : keptInGlobal ? { kind: "global" } : { kind: "folder", path: (0, import_path20.dirname)(mod.realPath) },
         userScope: offerGlobal ? {
-          present: !!globalLink,
+          present: isModGlobal(mod, tool),
+          action: `list "${mod.name}" in CLAUDE_CODE_PLUGIN_DIRS (through a link in ${FINISHED_MODS_DIR} if it's kept elsewhere)`,
           onAdd: async () => {
-            addModToProject(unscannedSource ? realMod : mod, tool, null);
+            setModGlobal(mod, tool, true);
+            await this.rememberUnlistedMod(mod, tool, false);
             await this.rescan();
           },
           onRemove: async () => {
-            removeModFromProject(mod, tool, null);
+            setModGlobal(mod, tool, false);
+            if (mod.origin === "plugin-dir" && !keptIn)
+              await this.rememberUnlistedMod(mod, tool, true);
             await this.rescan();
           }
         } : void 0
@@ -8791,9 +8857,9 @@ var LibraryView = class extends import_obsidian16.ItemView {
     prop("Loads", this.modScopeLabel(mod));
     if (tool && canLinkModToProjects(mod, tool)) {
       const linked = this.modLinkedProjects(mod, tool).map((p) => p.name);
-      if (mod.projectId && modProjectLink(mod, tool, null))
+      if (isModGlobal(mod, tool))
         linked.unshift("Global");
-      prop("Linked into", linked.length > 0 ? linked.join(", ") : "Nowhere", "Where a symlink to this mod sits: the global skills folder or a project's. Manage them from the link icon on its card.");
+      prop("Linked into", linked.length > 0 ? linked.join(", ") : "Nowhere", "Global: listed in CLAUDE_CODE_PLUGIN_DIRS. A workspace: a symlink in its .claude/skills. Manage them from the link icon on its card.");
     }
     const modules = readModModules(mod.path);
     if (modules.length > 0)
@@ -8931,37 +8997,45 @@ var LibraryView = class extends import_obsidian16.ItemView {
     new import_obsidian16.Notice(`Added "${(0, import_path20.basename)(repo)}" to your workspaces.`);
     this.render();
   }
-  confirmPluginDirModToggle(mod) {
-    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
-    if (!(tool == null ? void 0 : tool.pluginsSettingsPath))
+  /** Keeps a mod taken out of CLAUDE_CODE_PLUGIN_DIRS on the Mods page (see scanMods'
+   *  disabledModDirs), by its real folder, since a ~/mods link it was listed through is gone. */
+  async rememberUnlistedMod(mod, tool, remember) {
+    var _a;
+    const settings = this.getSettings();
+    const recorded = (_a = settings.disabledModDirs[tool.id]) != null ? _a : [];
+    const others = recorded.filter((dir) => dir !== mod.path && dir !== mod.realPath);
+    if (!remember && others.length === recorded.length)
       return;
+    settings.disabledModDirs = { ...settings.disabledModDirs, [tool.id]: remember ? [...others, mod.realPath] : others };
+    await this.saveSettings();
+  }
+  /** Turns a plugin-dir or skills-folder mod on or off by its enabledPlugins entry (see
+   *  ModEntry.enabledKey), the tool's own switch for it: nothing is moved, unlinked or unlisted.
+   *  Behind the same confirmation as an item's switch unless confirmBeforeToggle is off. */
+  confirmModToggle(mod, tool, key) {
+    var _a;
+    const on = !mod.enabled;
     const perform = async () => {
-      var _a;
       try {
-        setPluginDirListed(tool, mod.path, !mod.enabled);
+        setPluginEnabled(tool, key, on);
       } catch (e) {
-        new import_obsidian16.Notice(`Couldn't ${mod.enabled ? "turn off" : "turn on"} ${mod.name}: ${errorMessage(e)}`);
+        new import_obsidian16.Notice(`Couldn't ${on ? "turn on" : "turn off"} ${mod.name}: ${errorMessage(e)}`);
         return;
       }
-      const settings = this.getSettings();
-      const others = ((_a = settings.disabledModDirs[tool.id]) != null ? _a : []).filter((dir) => dir !== mod.path);
-      settings.disabledModDirs = { ...settings.disabledModDirs, [tool.id]: mod.enabled ? [...others, mod.path] : others };
-      await this.saveSettings();
       await this.rescan();
-      this.render();
     };
     if (!this.getSettings().confirmBeforeToggle) {
       void perform();
       return;
     }
-    const settingsPath = expandHome2(tool.pluginsSettingsPath);
+    const settingsPath = expandHome2((_a = tool.pluginsSettingsPath) != null ? _a : "");
     new ConfirmModal(
       this.app,
-      mod.enabled ? `Turn off "${mod.name}"?` : `Turn on "${mod.name}"?`,
-      mod.enabled ? `This takes ${mod.path} out of CLAUDE_CODE_PLUGIN_DIRS in ${settingsPath}. The folder stays where it is. New sessions stop loading it; running ones keep it until they restart.` : `This adds ${mod.path} back to CLAUDE_CODE_PLUGIN_DIRS in ${settingsPath}. New sessions load it.`,
-      mod.enabled ? "Turn off" : "Turn on",
+      on ? `Turn on "${mod.name}"?` : `Turn off "${mod.name}"?`,
+      `This sets "${key}" to ${on} under enabledPlugins in ${settingsPath}. Nothing is moved, unlinked or unlisted. ${on ? "New sessions load it." : "New sessions skip it; running ones keep it until they restart."}`,
+      on ? "Turn on" : "Turn off",
       perform,
-      mod.enabled ? "warning" : "cta"
+      on ? "cta" : "warning"
     ).open();
   }
   /** Always confirms, toggle setting or not: it moves the folder out from under the session that
@@ -9033,7 +9107,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
   confirmDeleteMod(mod) {
     const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
     const isSymlink = this.isSymlinkPath(mod.path);
-    const listed = mod.origin === "plugin-dir" && mod.enabled && (tool == null ? void 0 : tool.pluginsSettingsPath);
+    const listed = mod.origin === "plugin-dir" && !!mod.enabledKey && (tool == null ? void 0 : tool.pluginsSettingsPath);
     const envNote = listed ? " It's also taken out of CLAUDE_CODE_PLUGIN_DIRS." : "";
     new ConfirmModal(
       this.app,
@@ -10928,7 +11002,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
    *  already checks): a raw copy of something with no known origin can never be checked for
    *  updates or reconciled with where it came from, so there's no safe fallback for that case —
    *  see the plan notes for the reasoning. Landing at global (not a project) keeps the new copy
-   *  linkable afterward through the existing "Manage project links" picker, rather than creating
+   *  linkable afterward through the existing "Manage workspace links" picker, rather than creating
    *  a project-scoped duplicate that can't later become a link. */
   addItemToAnotherTool(item) {
     var _a, _b;
@@ -12528,12 +12602,12 @@ var LibraryView = class extends import_obsidian16.ItemView {
         btn.addEventListener("click", onClick);
       return btn;
     };
-    const sep8 = () => row.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
+    const sep9 = () => row.createSpan({ cls: "skillmanager-crumb-sep", text: "/" });
     crumb(this.detailReturnsToDashboard ? INSIGHTS_PAGES.find((p) => p.page === this.insightsPage).label : "Library", false, () => this.backToLibrary());
-    sep8();
+    sep9();
     crumb(item.name, !fileOpenFromTree, fileOpenFromTree ? () => this.backToTree() : void 0);
     if (fileOpenFromTree && this.selectedFilePath) {
-      sep8();
+      sep9();
       crumb((0, import_path20.basename)(this.selectedFilePath), true);
     }
   }

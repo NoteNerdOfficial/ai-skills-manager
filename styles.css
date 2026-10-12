@@ -109,16 +109,24 @@
   color: var(--text-on-accent);
 }
 
+/* The small-caps group label: sidebar headings, the Workspaces picker's sections, and a workspace
+   page's sections. Each rule below adds only its layout. (The list view's column header repeats
+   it on its own: it's also a list row, whose later font-size would win here.) */
+.skillmanager-sidebar-heading,
+.skillmanager-picker-section,
+.skillmanager-items-section {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .skillmanager-sidebar-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin: 16px 8px 6px;
-  font-size: var(--font-ui-smaller);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-faint);
 }
 
 .skillmanager-sidebar-heading-collapsible .skillmanager-sidebar-heading-left {
@@ -1192,14 +1200,19 @@ input.skillmanager-search {
 }
 
 /* A name followed by its version (mod cards): the name only takes the room it needs, and the
-   version takes up the slack, so it sits right after the name and the pills stay at the right. */
+   version takes up the slack, so it sits right after the name and the pills stay at the right.
+   When room runs short the version gives way first, so the name is the last thing cut. */
 .skillmanager-card-name-fit {
   flex: 0 1 auto;
 }
 
 /* Same text treatment as the footer meta (version, "Disabled") it moved up from. */
 .skillmanager-card-version {
-  flex: 1 0 auto;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
 }
@@ -2292,11 +2305,7 @@ input.skillmanager-tag-add-input {
    stated rather than offered (a lock in the checkbox's place). */
 .skillmanager-picker-section {
   margin-top: var(--size-4-3);
-  font-size: var(--font-ui-smaller);
   font-weight: var(--font-semibold);
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .skillmanager-collection-picker-row.is-source {
@@ -3550,11 +3559,7 @@ input.skillmanager-tag-add-input {
 .skillmanager-items-section {
   grid-column: 1 / -1;
   margin-top: var(--size-4-2);
-  font-size: var(--font-ui-smaller);
   font-weight: var(--font-semibold);
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .skillmanager-items-section:first-child {

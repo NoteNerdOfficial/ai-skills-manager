@@ -192,6 +192,13 @@ function pruneOldBackups(settingsPath: string): void {
  *  other settings), so a parse/write mistake here is worth being able to undo by hand. If the
  *  backup can't be made, the rewrite doesn't happen either. */
 export function togglePluginEnabled(tool: ToolConfig, pluginId: string, currentlyEnabled: boolean): void {
+  setPluginEnabled(tool, pluginId, !currentlyEnabled);
+}
+
+/** Sets one `enabledPlugins` entry in the tool's settings file, the same way and with the same
+ *  backup as togglePluginEnabled. Also how a plugin-dir or skills-folder mod is turned on or off,
+ *  by its `<name>@inline` or `<name>@skills-dir` id, without moving or unlisting anything. */
+export function setPluginEnabled(tool: ToolConfig, pluginId: string, enabled: boolean): void {
   if (!tool.pluginsSettingsPath) throw new Error(`${tool.name} has no known plugin settings file.`);
   const settingsPath = expandHome(tool.pluginsSettingsPath);
   if (!existsSync(settingsPath)) throw new Error(`${tool.name}'s settings file wasn't found at ${settingsPath}.`);
@@ -201,7 +208,7 @@ export function togglePluginEnabled(tool: ToolConfig, pluginId: string, currentl
   const raw = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown> & {
     enabledPlugins?: Record<string, boolean>;
   };
-  raw.enabledPlugins = { ...(raw.enabledPlugins ?? {}), [pluginId]: !currentlyEnabled };
+  raw.enabledPlugins = { ...(raw.enabledPlugins ?? {}), [pluginId]: enabled };
   writeFileSync(settingsPath, JSON.stringify(raw, null, 2) + "\n");
 }
 

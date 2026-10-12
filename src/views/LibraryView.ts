@@ -32,8 +32,8 @@ import {
   TYPE_LABELS,
 } from "../types";
 import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, isModFolder, expandHome, readModModules, resolveToolDir, toProjectRelative } from "../scanners";
-import { addModToProject, addToProject, canLinkModToProjects, modProjectLink, modSourceProject, removeFromProject, removeModFromProject } from "../projectLink";
-import { FINISHED_MODS_DIR, deleteItem, tildify, installModFolder, disabledLocation, previewToggle, promoteDevMod, setPluginDirListed, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
+import { addModToProject, addToProject, canLinkModToProjects, isModGlobal, modProjectLink, modSourceProject, removeFromProject, removeModFromProject, setModGlobal } from "../projectLink";
+import { FINISHED_MODS_DIR, deleteItem, tildify, installModFolder, disabledLocation, previewToggle, promoteDevMod, setPluginDirListed, setPluginEnabled, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
 import { samePathKey, unregisteredRepoFor } from "../sourceRepo";
 import { HISTORY_KEPT, HistoryEntry, ItemHistory } from "../history";
@@ -939,7 +939,7 @@ export class LibraryView extends ItemView {
     );
     const btn = container.createEl("button", {
       cls: `skillmanager-icon-btn${linkedSomewhere ? " is-present" : ""}`,
-      attr: { "aria-label": linkedSomewhere ? "Manage project links" : "Link into a workspace" },
+      attr: { "aria-label": linkedSomewhere ? "Manage workspace links" : "Link into a workspace" },
     });
     setIcon(btn, "link");
     btn.addEventListener("click", (evt) => {
@@ -3543,7 +3543,7 @@ export class LibraryView extends ItemView {
     const countText = (shown: number) => (shown === all.length ? String(all.length) : `${shown} of ${all.length}`);
     const countPill = titleRow.createSpan({ text: countText(mods.length), cls: "skillmanager-count-pill" });
     header.createDiv({
-      text: "Mods change the tool itself (panes, status line, slash commands, hooks on tool calls) instead of adding skills. Installed and plugin folder mods can be turned off here, and a mod you keep can be linked into a project. Promote a mod in development to load it in every session.",
+      text: "Mods change the tool itself (panes, status line, slash commands, hooks on tool calls) instead of adding skills. Turn a mod off here without moving anything, and make a mod you keep Global or link it into a workspace. Promote a mod in development to load it in every session.",
       cls: "skillmanager-subtitle",
     });
     const toolbar = content.createDiv({ cls: "skillmanager-toolbar" });
@@ -3820,7 +3820,11 @@ export class LibraryView extends ItemView {
     });
     setTooltip(dot, dotLabel, { placement: "top" });
     head.createSpan({ text: mod.name, cls: `skillmanager-card-name${mod.version ? " skillmanager-card-name-fit" : ""}` });
-    if (mod.version) head.createSpan({ text: `v${mod.version}`, cls: "skillmanager-card-meta skillmanager-card-version" });
+    if (mod.version) {
+      // Clipped first when the name needs the room, so the full version is a hover away.
+      const version = head.createSpan({ text: `v${mod.version}`, cls: "skillmanager-card-meta skillmanager-card-version" });
+      setTooltip(version, `Version ${mod.version}`, { placement: "top" });
+    }
     head.createSpan({ text: "Mod", cls: "skillmanager-card-type skillmanager-card-type-sm" });
     if (modSource) {
       const syncBtn = head.createEl("button", {
@@ -3841,11 +3845,12 @@ export class LibraryView extends ItemView {
         label: `${mod.name} mod enabled`,
         onClick: () => this.explainPluginBundleToggle(plugin),
       });
-    } else if (mod.origin === "plugin-dir" && tool?.pluginsSettingsPath) {
+    } else if (mod.enabledKey && tool?.pluginsSettingsPath) {
+      const key = mod.enabledKey;
       createSwitch(head, {
         on: mod.enabled,
         label: `${mod.name} mod enabled`,
-        onClick: () => this.confirmPluginDirModToggle(mod),
+        onClick: () => this.confirmModToggle(mod, tool, key),
       });
     }
     if (tool) {
@@ -3884,20 +3889,21 @@ export class LibraryView extends ItemView {
   private modLoadNote(mod: ModEntry): string {
     if (mod.origin === "installed") return "Loads in every session while its plugin is enabled. Running sessions pick up a change after /reload-plugins.";
     if (mod.origin === "dev") return "Loads only in the Claude Code session that created it. Promote it to load it in every new session.";
+    if (!mod.enabled && mod.enabledKey) return `Turned off: "${mod.enabledKey}" is false under enabledPlugins, so new sessions skip it. Nothing was moved or unlisted.`;
     if (mod.origin === "plugin-dir") {
       return mod.enabled
         ? "Loads in every new session through CLAUDE_CODE_PLUGIN_DIRS."
-        : "Turned off: taken out of CLAUDE_CODE_PLUGIN_DIRS, so new sessions don't load it. The folder stays where it is.";
+        : "Taken out of CLAUDE_CODE_PLUGIN_DIRS, so new sessions don't load it. Check Global in its link picker to list it again.";
     }
     if (mod.origin === "repo") {
       const project = this.getAllProjects().find((p) => p.id === mod.projectId);
-      return `Kept in ${project?.name ?? "a source repo"}, which the tool doesn't load mods from. Link it Global or into a project to load it.`;
+      return `Kept in ${project?.name ?? "a source repo"}, which the tool doesn't load mods from. Make it Global or link it into a workspace to load it.`;
     }
     if (mod.projectId) {
       const project = this.getAllProjects().find((p) => p.id === mod.projectId);
-      return `Loads only in ${project?.name ?? "its project"}, with the skills folder it sits in. Move the folder out to turn it off.`;
+      return `Loads only in ${project?.name ?? "its project"}, from the skills folder it sits in.`;
     }
-    return "Loads with the skills folder it sits in, in every session. Move the folder out to turn it off.";
+    return "Loads in every session, from the skills folder it sits in.";
   }
 
   /** Short form of modLoadNote, for the properties panel under it. */
@@ -3983,11 +3989,10 @@ export class LibraryView extends ItemView {
   /** Same control as an item card's (see renderProjectLinkButton): one link icon that's tinted
    *  once the mod is a link itself or linked somewhere, always opening the picker. */
   private renderModLinkButton(container: HTMLElement, mod: ModEntry, tool: ToolConfig) {
-    const linkedSomewhere =
-      mod.realPath !== mod.path || this.modLinkedProjects(mod, tool).length > 0 || (!!mod.projectId && !!modProjectLink(mod, tool, null));
+    const linkedSomewhere = mod.realPath !== mod.path || this.modLinkedProjects(mod, tool).length > 0 || isModGlobal(mod, tool);
     const btn = container.createEl("button", {
       cls: `skillmanager-icon-btn${linkedSomewhere ? " is-present" : ""}`,
-      attr: { "aria-label": linkedSomewhere ? "Manage project links" : "Link into a workspace" },
+      attr: { "aria-label": linkedSomewhere ? "Manage workspace links" : "Link into a workspace" },
     });
     setIcon(btn, "link");
     btn.addEventListener("click", (evt) => {
@@ -3999,22 +4004,23 @@ export class LibraryView extends ItemView {
   private openModProjectPresence(mod: ModEntry, tool: ToolConfig) {
     const keptIn = this.modKeptIn(mod, tool);
     const present = new Set(this.modLinkedProjects(mod, tool).map((p) => p.id));
-    // Only a mod kept in a project or repo gets a Global row: a CLAUDE_CODE_PLUGIN_DIRS mod is made
-    // global by its switch, and a second, linked copy would load it twice.
     // Found only through its link in the global skills folder, from a folder no workspace covers.
     const unscannedSource = !keptIn && mod.origin === "skill" && !mod.projectId && this.isSymlinkPath(mod.path);
-    const offerGlobal = (!!keptIn && mod.origin !== "plugin-dir") || unscannedSource;
-    const globalLink = offerGlobal ? modProjectLink(mod, tool, null) : null;
-    // Re-linking after Global was unchecked has to start from the real folder: the link is gone.
-    const realMod = { ...mod, path: mod.realPath };
-    const loadsEverywhere = mod.enabled && !mod.projectId;
-    const notes = [
-      loadsEverywhere
-        ? `"${mod.name}" already loads in every session, so a project you link it into would load it twice.${globalLink ? "" : " Turn it off first to load it only in the projects you check."}`
-        : null,
-      offerGlobal && keptIn?.loadsThere ? `Linked as Global, it also loads twice in ${keptIn.project.name}, where it's kept.` : null,
-      unscannedSource ? `Unchecking Global removes the only link the library finds "${mod.name}" through, so it drops off this list until you link it again.` : null,
-    ].filter(Boolean);
+    // A real folder in the global skills folder already loads everywhere from there: no Global row.
+    const keptInGlobal = !keptIn && mod.origin === "skill" && !mod.projectId && !unscannedSource;
+    const offerGlobal = !!tool.pluginsSettingsPath && !keptInGlobal;
+    const note = (globalOn: boolean) => {
+      // The tool loads one copy per name, preferring the global one, so a workspace's is skipped.
+      const loadsEverywhere = (offerGlobal ? globalOn : !mod.projectId) && mod.enabled;
+      return [
+        loadsEverywhere
+          ? `"${mod.name}" already loads in every session, so a copy linked into a workspace is skipped there.${offerGlobal ? " Uncheck Global to load it only in the workspaces you check." : ""}`
+          : null,
+        globalOn && unscannedSource ? `Unchecking Global removes the only link the library finds "${mod.name}" through, so it drops off this list until you check Global again.` : null,
+      ]
+        .filter(Boolean)
+        .join(" ") || undefined;
+    };
     new ProjectPresenceModal(
       this.app,
       mod.name,
@@ -4029,21 +4035,25 @@ export class LibraryView extends ItemView {
         await this.rescan();
       },
       {
-        note: notes.length > 0 ? notes.join(" ") : undefined,
+        note,
         keptIn: keptIn
           ? { kind: "project", id: keptIn.project.id }
-          : mod.origin === "skill" && !mod.projectId && !unscannedSource
+          : keptInGlobal
             ? { kind: "global" }
             : { kind: "folder", path: dirname(mod.realPath) },
         userScope: offerGlobal
           ? {
-              present: !!globalLink,
+              present: isModGlobal(mod, tool),
+              action: `list "${mod.name}" in CLAUDE_CODE_PLUGIN_DIRS (through a link in ${FINISHED_MODS_DIR} if it's kept elsewhere)`,
               onAdd: async () => {
-                addModToProject(unscannedSource ? realMod : mod, tool, null);
+                setModGlobal(mod, tool, true);
+                await this.rememberUnlistedMod(mod, tool, false);
                 await this.rescan();
               },
               onRemove: async () => {
-                removeModFromProject(mod, tool, null);
+                setModGlobal(mod, tool, false);
+                // Listed only there and kept in no workspace, it would drop off the Mods page.
+                if (mod.origin === "plugin-dir" && !keptIn) await this.rememberUnlistedMod(mod, tool, true);
                 await this.rescan();
               },
             }
@@ -4088,8 +4098,8 @@ export class LibraryView extends ItemView {
     prop("Loads", this.modScopeLabel(mod));
     if (tool && canLinkModToProjects(mod, tool)) {
       const linked = this.modLinkedProjects(mod, tool).map((p) => p.name);
-      if (mod.projectId && modProjectLink(mod, tool, null)) linked.unshift("Global");
-      prop("Linked into", linked.length > 0 ? linked.join(", ") : "Nowhere", "Where a symlink to this mod sits: the global skills folder or a project's. Manage them from the link icon on its card.");
+      if (isModGlobal(mod, tool)) linked.unshift("Global");
+      prop("Linked into", linked.length > 0 ? linked.join(", ") : "Nowhere", "Global: listed in CLAUDE_CODE_PLUGIN_DIRS. A workspace: a symlink in its .claude/skills. Manage them from the link icon on its card.");
     }
     const modules = readModModules(mod.path);
     if (modules.length > 0) prop(modules.length === 1 ? "Hooks module" : "Hooks modules", modules.join(", "), "Named in hooks/hooks.json. The tool runs these when it loads the mod.", "is-mono");
@@ -4227,37 +4237,45 @@ export class LibraryView extends ItemView {
     this.render();
   }
 
-  private confirmPluginDirModToggle(mod: ModEntry) {
-    const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
-    if (!tool?.pluginsSettingsPath) return;
+  /** Keeps a mod taken out of CLAUDE_CODE_PLUGIN_DIRS on the Mods page (see scanMods'
+   *  disabledModDirs), by its real folder, since a ~/mods link it was listed through is gone. */
+  private async rememberUnlistedMod(mod: ModEntry, tool: ToolConfig, remember: boolean) {
+    const settings = this.getSettings();
+    const recorded = settings.disabledModDirs[tool.id] ?? [];
+    const others = recorded.filter((dir) => dir !== mod.path && dir !== mod.realPath);
+    if (!remember && others.length === recorded.length) return;
+    settings.disabledModDirs = { ...settings.disabledModDirs, [tool.id]: remember ? [...others, mod.realPath] : others };
+    await this.saveSettings();
+  }
+
+  /** Turns a plugin-dir or skills-folder mod on or off by its enabledPlugins entry (see
+   *  ModEntry.enabledKey), the tool's own switch for it: nothing is moved, unlinked or unlisted.
+   *  Behind the same confirmation as an item's switch unless confirmBeforeToggle is off. */
+  private confirmModToggle(mod: ModEntry, tool: ToolConfig, key: string) {
+    const on = !mod.enabled;
     const perform = async () => {
       try {
-        setPluginDirListed(tool, mod.path, !mod.enabled);
+        setPluginEnabled(tool, key, on);
       } catch (e) {
-        new Notice(`Couldn't ${mod.enabled ? "turn off" : "turn on"} ${mod.name}: ${errorMessage(e)}`);
+        new Notice(`Couldn't ${on ? "turn on" : "turn off"} ${mod.name}: ${errorMessage(e)}`);
         return;
       }
-      const settings = this.getSettings();
-      const others = (settings.disabledModDirs[tool.id] ?? []).filter((dir) => dir !== mod.path);
-      settings.disabledModDirs = { ...settings.disabledModDirs, [tool.id]: mod.enabled ? [...others, mod.path] : others };
-      await this.saveSettings();
       await this.rescan();
-      this.render();
     };
     if (!this.getSettings().confirmBeforeToggle) {
       void perform();
       return;
     }
-    const settingsPath = expandHome(tool.pluginsSettingsPath);
+    const settingsPath = expandHome(tool.pluginsSettingsPath ?? "");
     new ConfirmModal(
       this.app,
-      mod.enabled ? `Turn off "${mod.name}"?` : `Turn on "${mod.name}"?`,
-      mod.enabled
-        ? `This takes ${mod.path} out of CLAUDE_CODE_PLUGIN_DIRS in ${settingsPath}. The folder stays where it is. New sessions stop loading it; running ones keep it until they restart.`
-        : `This adds ${mod.path} back to CLAUDE_CODE_PLUGIN_DIRS in ${settingsPath}. New sessions load it.`,
-      mod.enabled ? "Turn off" : "Turn on",
+      on ? `Turn on "${mod.name}"?` : `Turn off "${mod.name}"?`,
+      `This sets "${key}" to ${on} under enabledPlugins in ${settingsPath}. Nothing is moved, unlinked or unlisted. ${
+        on ? "New sessions load it." : "New sessions skip it; running ones keep it until they restart."
+      }`,
+      on ? "Turn on" : "Turn off",
       perform,
-      mod.enabled ? "warning" : "cta"
+      on ? "cta" : "warning"
     ).open();
   }
 
@@ -4349,7 +4367,8 @@ export class LibraryView extends ItemView {
   private confirmDeleteMod(mod: ModEntry) {
     const tool = this.getSettings().tools.find((t) => t.id === mod.toolId);
     const isSymlink = this.isSymlinkPath(mod.path);
-    const listed = mod.origin === "plugin-dir" && mod.enabled && tool?.pluginsSettingsPath;
+    // Listed whether it's on or off: off is its enabledPlugins entry, which leaves the listing be.
+    const listed = mod.origin === "plugin-dir" && !!mod.enabledKey && tool?.pluginsSettingsPath;
     const envNote = listed ? " It's also taken out of CLAUDE_CODE_PLUGIN_DIRS." : "";
     new ConfirmModal(
       this.app,
@@ -6405,7 +6424,7 @@ export class LibraryView extends ItemView {
    *  already checks): a raw copy of something with no known origin can never be checked for
    *  updates or reconciled with where it came from, so there's no safe fallback for that case —
    *  see the plan notes for the reasoning. Landing at global (not a project) keeps the new copy
-   *  linkable afterward through the existing "Manage project links" picker, rather than creating
+   *  linkable afterward through the existing "Manage workspace links" picker, rather than creating
    *  a project-scoped duplicate that can't later become a link. */
   private addItemToAnotherTool(item: ItemMetadata) {
     if (!item.sourceRepo) return;

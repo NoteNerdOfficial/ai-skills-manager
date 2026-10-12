@@ -1,8 +1,9 @@
-import { realpathSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { realpathSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { delimiter, join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DISABLED_DIRNAME, DISABLED_SUFFIX, installModFolder, promoteDevMod, setPluginDirListed, toggleItemEnabled } from "./itemToggle";
+import { DISABLED_DIRNAME, DISABLED_SUFFIX, installModFolder, promoteDevMod, setPluginDirListed, setPluginEnabled, toggleItemEnabled } from "./itemToggle";
+import { isModGlobal, setModGlobal } from "./projectLink";
 import { addRepoLinkTargets, makeEntryId, scanAllPlugins, scanMods, scanAllTools, scanBrokenSymlinks, scanProject, scanTool, stableEntryPath } from "./scanners";
 import { PluginSource, ProjectWorkspace, ToolConfig, DEFAULT_TOOLS } from "./types";
 
@@ -598,6 +599,56 @@ describe("scanMods", () => {
       setPluginDirListed(tool, a, true);
       expect(readSettings().env?.CLAUDE_CODE_PLUGIN_DIRS).toBe(a);
       expect(scanMods([tool], [], [], { "claude-code": [a] })).toMatchObject([{ name: "a", enabled: true }]);
+    });
+
+    it("reads a mod's on/off from its enabledPlugins key, and switches it without unlisting", () => {
+      const a = join(root, "mods", "a");
+      const b = join(root, "skills", "b");
+      writePlugin(a, "a", { modules: ["./register.tsx"] });
+      writePlugin(b, "b", { modules: ["./register.tsx"] });
+      writeFileSync(settingsPath, JSON.stringify({ env: { CLAUDE_CODE_PLUGIN_DIRS: a }, enabledPlugins: { "a@inline": false } }));
+      const withSkills: ToolConfig = { ...tool, paths: { skill: join(root, "skills") } };
+      expect(scanMods([withSkills], [])).toMatchObject([
+        { name: "a", origin: "plugin-dir", enabledKey: "a@inline", enabled: false },
+        { name: "b", origin: "skill", enabledKey: "b@skills-dir", enabled: true },
+      ]);
+
+      setPluginEnabled(withSkills, "b@skills-dir", false);
+      setPluginEnabled(withSkills, "a@inline", true);
+      expect(readSettings().env).toEqual({ CLAUDE_CODE_PLUGIN_DIRS: a });
+      expect(scanMods([withSkills], [])).toMatchObject([
+        { name: "a", enabled: true },
+        { name: "b", enabled: false },
+      ]);
+    });
+
+    it("makes a mod Global through ~/mods: listed as is from inside it, through a new link from elsewhere", () => {
+      const home = join(root, "home");
+      const repo = realpathSync(root);
+      // ~/mods is a link to a repo, like ~/mods -> ~/Documents/Repos/mods.
+      const inside = join(repo, "Repos", "mods", "inside");
+      const elsewhere = join(repo, "Repos", "other", "pane");
+      writePlugin(inside, "inside", { modules: ["./register.tsx"] });
+      writePlugin(elsewhere, "pane", { modules: ["./register.tsx"] });
+      mkdirSync(home, { recursive: true });
+      symlinkSync(join(repo, "Repos", "mods"), join(home, "mods"));
+      const asMod = (path: string, name: string) => ({ id: path, name, path, realPath: path, toolId: "claude-code", origin: "repo" as const, enabled: false });
+
+      setModGlobal(asMod(inside, "inside"), tool, true);
+      expect(readSettings().env?.CLAUDE_CODE_PLUGIN_DIRS).toBe("~/mods/inside");
+      setModGlobal(asMod(elsewhere, "pane"), tool, true);
+      const link = join(home, "mods", "pane");
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(readSettings().env?.CLAUDE_CODE_PLUGIN_DIRS).toBe(["~/mods/inside", "~/mods/pane"].join(delimiter));
+      expect(isModGlobal(asMod(elsewhere, "pane"), tool)).toBe(true);
+      expect(scanMods([tool], []).map((m) => [m.name, m.origin])).toEqual([["inside", "plugin-dir"], ["pane", "plugin-dir"]]);
+
+      setModGlobal(asMod(elsewhere, "pane"), tool, false);
+      setModGlobal(asMod(inside, "inside"), tool, false);
+      expect(readSettings().env).toEqual({});
+      expect(existsSync(link)).toBe(false);
+      expect(existsSync(elsewhere)).toBe(true);
+      expect(existsSync(inside)).toBe(true);
     });
 
     it("refuses to remove a folder listed only in the shell environment", () => {

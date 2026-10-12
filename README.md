@@ -144,7 +144,13 @@ Open **Extensions → Mods** to see them all. Each card shows the mod's name and
 A mod installed from GitHub through Discover is a plugin folder mod whose card shows its repo (`owner/repo`) in place of "Plugin folder".
 
 **Turn mods on and off**
-The switch on a plugin folder mod takes its folder out of `CLAUDE_CODE_PLUGIN_DIRS` (and puts it back when you turn it on). The folder stays where it is and the card stays in the list, marked Disabled. Installed mods switch through Claude Code's own plugin setting. New sessions pick up the change; a session already running keeps the mod until it restarts. A backup of `settings.json` is made before each change.
+The switch on a mod turns it on or off and does nothing else. For a plugin folder or skills folder mod it sets the mod's entry under `enabledPlugins` in `~/.claude/settings.json` (`<name>@inline` or `<name>@skills-dir`), the same setting Claude Code's own `/plugin` screen uses, so nothing is moved, unlinked, or taken out of `CLAUDE_CODE_PLUGIN_DIRS`. Installed mods switch through their plugin's entry. A backup of `settings.json` is made before each change. New sessions pick up the change; a session already running keeps the mod until it restarts.
+
+**Make a mod Global or link it into a workspace**
+The link icon on a mod card opens the same picker as a skill's. **Global** lists the mod in `CLAUDE_CODE_PLUGIN_DIRS`, so every session loads it. A mod already in `~/mods` is listed from there; one kept anywhere else, such as another repo, is symlinked into `~/mods` first and listed through that link. Checking a workspace symlinks the mod into that project's `.claude/skills/`, so it loads only there. Unchecking removes just that listing or link; the mod's own folder is never moved or deleted. When a mod is Global, a copy in a workspace is skipped, since Claude Code loads one copy per name.
+
+**Source repo workspaces**
+A workspace can be a source repo: a folder that keeps skills, agents, commands, or mods at its top level instead of in a tool's project folders. Its page lists everything inside, with its mods under their own heading. Nothing there loads until you link it somewhere. When a symlinked item points into a repo that isn't a workspace yet, its preview offers to add it.
 
 **Finish a mod you're building**
 A mod you build with Claude Code starts in its session's dev folder, so only that session loads it. When it's ready, choose **Promote to finished mod** from its card menu or detail panel. The mod moves to `~/mods/<name>` and is added to `CLAUDE_CODE_PLUGIN_DIRS`, so every new session loads it.

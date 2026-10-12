@@ -5,11 +5,19 @@ import { errorMessage } from "../errors";
 import { projectIcon } from "../rescan";
 
 export interface ProjectPresenceOptions {
-  /** Shown under the description, for a caveat that only applies to this item. */
-  note?: string;
+  /** Shown under the description, for a caveat that only applies to this item. A function is
+   *  given whether Global is checked, and re-run each time it changes, so the caveat stays true. */
+  note?: string | ((globalOn: boolean) => string | undefined);
   /** Offers a "Global" row, for an item kept outside the tool's user folder, that symlinks it
-   *  there so every session sees it; checked when that link already exists. */
-  userScope?: { present: boolean; onAdd: () => Promise<void>; onRemove: () => Promise<void> };
+   *  there so every session sees it; checked when that link already exists. `action` replaces
+   *  "symlink ... into your user folder" in the description, for a mod, whose Global is a listing
+   *  in CLAUDE_CODE_PLUGIN_DIRS. */
+  userScope?: {
+    present: boolean;
+    action?: string;
+    onAdd: () => Promise<void>;
+    onRemove: () => Promise<void>;
+  };
   /** Where the item really sits: a workspace, the tool's user folder itself, or a folder that's
    *  neither. Shown apart from the checkboxes, locked, since it isn't a link and can't be unlinked. */
   keptIn?: { kind: "project"; id: string } | { kind: "global" } | { kind: "folder"; path: string };
@@ -34,13 +42,20 @@ export class ProjectPresenceModal extends Modal {
     const sourceProjectId = keptIn?.kind === "project" ? keptIn.id : undefined;
     contentEl.addClass("skillmanager-modal");
     this.setTitle("Workspaces");
+    const globalAction = userScope?.action ?? `symlink "${this.itemName}" into your user folder`;
     contentEl.createEl("p", {
       text: userScope
-        ? `Check Global to symlink "${this.itemName}" into your user folder so every session loads it, or a project to symlink it into that project's local folder. The original is never copied, so it can't drift out of sync. Uncheck one to remove just that symlink; nothing is deleted.`
-        : `Check a project to symlink "${this.itemName}" into its local folder. The original is never copied, so it can't drift out of sync. Uncheck it to remove just that symlink; nothing is deleted.`,
+        ? `Check Global to ${globalAction} so every session loads it, or a workspace to symlink it into that workspace's local folder. The original is never copied, so it can't drift out of sync. Uncheck one to ${userScope.action ? "undo just that one" : "remove just that symlink"}; nothing is deleted.`
+        : `Check a workspace to symlink "${this.itemName}" into its local folder. The original is never copied, so it can't drift out of sync. Uncheck it to remove just that symlink; nothing is deleted.`,
       cls: "setting-item-description",
     });
-    if (note) contentEl.createEl("p", { text: note, cls: "setting-item-description mod-warning" });
+    const noteEl = contentEl.createEl("p", { cls: "setting-item-description mod-warning" });
+    const showNote = (globalOn: boolean) => {
+      const text = typeof note === "function" ? note(globalOn) : note;
+      noteEl.setText(text ?? "");
+      noteEl.toggle(!!text);
+    };
+    showNote(!!userScope?.present);
 
     // Where the item really sits: not a link, so it's stated rather than offered as a checkbox.
     const project = sourceProjectId ? this.projects.find((p) => p.id === sourceProjectId) : undefined;
@@ -66,7 +81,7 @@ export class ProjectPresenceModal extends Modal {
       contentEl.createDiv({ cls: "skillmanager-picker-section", text: "Linked into" });
     }
 
-    if (userScope) this.renderRow("globe", "Global", userScope.present, userScope.onAdd, userScope.onRemove);
+    if (userScope) this.renderRow("globe", "Global", userScope.present, userScope.onAdd, userScope.onRemove, showNote);
 
     const targets = this.projects.filter((p) => p.id !== sourceProjectId);
     if (targets.length === 0 && !userScope) {
@@ -85,7 +100,14 @@ export class ProjectPresenceModal extends Modal {
     }
   }
 
-  private renderRow(icon: string, label: string, checked: boolean, onAdd: () => Promise<void>, onRemove: () => Promise<void>) {
+  private renderRow(
+    icon: string,
+    label: string,
+    checked: boolean,
+    onAdd: () => Promise<void>,
+    onRemove: () => Promise<void>,
+    onChanged?: (checked: boolean) => void
+  ) {
     const row = this.contentEl.createDiv({ cls: "skillmanager-collection-picker-row" });
     const checkbox = row.createEl("input", { type: "checkbox" });
     checkbox.checked = checked;
@@ -95,6 +117,7 @@ export class ProjectPresenceModal extends Modal {
         try {
           if (wantAdd) await onAdd();
           else await onRemove();
+          onChanged?.(wantAdd);
         } catch (e) {
           checkbox.checked = !wantAdd;
           new Notice("Failed: " + errorMessage(e));

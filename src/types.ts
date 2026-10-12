@@ -233,6 +233,10 @@ export interface ModEntry {
   origin: "installed" | "dev" | "plugin-dir" | "skill" | "repo";
   /** Set for an installed mod: the PluginSource it was found as, for its enable/disable state. */
   pluginId?: string;
+  /** The `enabledPlugins` id that turns a plugin-dir or skills-folder mod on or off without moving
+   *  anything: `<name>@inline` for one loaded through CLAUDE_CODE_PLUGIN_DIRS, `<name>@skills-dir`
+   *  for one loaded from a skills folder. */
+  enabledKey?: string;
   enabled: boolean;
 }
 
@@ -444,8 +448,9 @@ export interface SkillManagerPluginSettings {
    *  Turning this off skips straight to the move, for anyone who finds the prompt gets in the
    *  way of a workflow that toggles items often. */
   confirmBeforeToggle: boolean;
-  /** Tool id -> CLAUDE_CODE_PLUGIN_DIRS folders turned off from a mod card. Taking a folder out of
-   *  the env var is what turns it off, so this is the only record left that it exists. */
+  /** Tool id -> mod folders taken out of CLAUDE_CODE_PLUGIN_DIRS (Global unchecked, or turned off
+   *  by an earlier version) that no workspace holds, so this is the only record left that they
+   *  exist. Keeps them on the Mods page, off, until Global lists them again. */
   disabledModDirs: Record<string, string[]>;
   /** Mod folder path -> the GitHub source it was installed from through Discover. Lets Discover
    *  hide a mod that's already installed and a mod card say where it came from. */

@@ -540,16 +540,17 @@ function readPluginEnabledMap(settingsPath: string | undefined): Record<string, 
  *  real installs here), so a miss is the common case, not an error — an install-from-URL escape
  *  hatch (see LibraryView's explainPluginToggle) is a bonus when it's there, never assumed. Only
  *  a github.com URL is any use to us, since InstallFromGitHubModal only understands that host. */
-function readPluginManifest(installPath: string): { name?: string; repository?: string; version?: string } {
+function readPluginManifest(installPath: string): { name?: string; repository?: string; version?: string; defaultEnabled?: boolean } {
   for (const folder of [".claude-plugin", ".codex-plugin"]) {
     const manifestPath = join(installPath, folder, "plugin.json");
     if (!existsSync(manifestPath)) continue;
     try {
-      const raw = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: unknown; repository?: unknown; version?: unknown };
+      const raw = JSON.parse(readFileSync(manifestPath, "utf-8")) as { name?: unknown; repository?: unknown; version?: unknown; defaultEnabled?: unknown };
       return {
         name: typeof raw.name === "string" ? raw.name : undefined,
         repository: typeof raw.repository === "string" ? raw.repository : undefined,
         version: typeof raw.version === "string" ? raw.version : undefined,
+        defaultEnabled: typeof raw.defaultEnabled === "boolean" ? raw.defaultEnabled : undefined,
       };
     } catch {
       return {};
@@ -765,8 +766,10 @@ export function readPluginDirsEnv(settingsPath: string | undefined): string[] {
 /** Installed mods (any already-discovered plugin that is one), mods under development in each
  *  tool's devModsPath/<session>/<mod>/, folders named in CLAUDE_CODE_PLUGIN_DIRS, and plugins the
  *  tool auto-loads from a skills folder (global or a project's). Installed mods carry their
- *  plugin's enabled state; a plugin-dir mod turned off here (taken out of the env var) is listed
- *  from `disabledModDirs` as off; the rest load whenever the tool sees them, so they count as on.
+ *  plugin's enabled state; plugin-dir and skills-folder mods theirs from `enabledPlugins`
+ *  (`<name>@inline` / `<name>@skills-dir`, else the manifest's defaultEnabled), the same keys the
+ *  tool reads. A folder taken out of the env var by an earlier version is listed from
+ *  `disabledModDirs` as off; dev mods load whenever the tool sees them, so they count as on.
  *  The same folder reached two ways (a symlinked skill, a dev mod also named in the env var) is
  *  listed once, first source wins. */
 export function scanMods(
@@ -777,15 +780,20 @@ export function scanMods(
 ): ModEntry[] {
   const mods: ModEntry[] = [];
   const seen = new Set<string>();
-  const addFolder = (modPath: string, tool: ToolConfig, origin: ModEntry["origin"], enabled = true, projectId?: string) => {
+  let enabledMap: Record<string, boolean> = {};
+  /** `keyed` for a folder the tool loads as `@inline` or `@skills-dir`, whose on/off is its
+   *  enabledPlugins entry; otherwise `enabled` stands as given. */
+  const addFolder = (modPath: string, tool: ToolConfig, origin: ModEntry["origin"], enabled = true, projectId?: string, keyed = false) => {
     if (!isModFolder(modPath)) return;
     const real = resolveRealPath(modPath);
     if (seen.has(real)) return;
     seen.add(real);
     const manifest = readPluginManifest(modPath);
+    const name = manifest.name || basename(modPath);
+    const enabledKey = keyed ? `${name}@${origin === "skill" ? "skills-dir" : "inline"}` : undefined;
     mods.push({
       id: modPath,
-      name: manifest.name || basename(modPath),
+      name,
       description: readModDescription(modPath),
       version: manifest.version,
       path: modPath,
@@ -793,7 +801,8 @@ export function scanMods(
       toolId: tool.id,
       ...(projectId ? { projectId } : {}),
       origin,
-      enabled,
+      ...(enabledKey ? { enabledKey } : {}),
+      enabled: enabledKey ? (enabledMap[enabledKey] ?? manifest.defaultEnabled ?? true) : enabled,
     });
   };
   const childDirs = (dir: string): string[] => {
@@ -822,10 +831,11 @@ export function scanMods(
   }
   for (const tool of tools) {
     if (!tool.devModsPath) continue;
+    enabledMap = readPluginEnabledMap(tool.pluginsSettingsPath ? expandHome(tool.pluginsSettingsPath) : undefined);
     for (const session of childDirs(expandHome(tool.devModsPath))) {
       for (const modPath of childDirs(session)) addFolder(modPath, tool, "dev");
     }
-    for (const dir of readPluginDirsEnv(tool.pluginsSettingsPath)) addFolder(dir, tool, "plugin-dir");
+    for (const dir of readPluginDirsEnv(tool.pluginsSettingsPath)) addFolder(dir, tool, "plugin-dir", true, undefined, true);
     // Turned off here: no longer in the env var, so only this record still knows the folder. One
     // listed there again by hand was already added above as on.
     for (const dir of disabledModDirs[tool.id] ?? []) addFolder(dir, tool, "plugin-dir", false);
@@ -833,7 +843,7 @@ export function scanMods(
       const skillsDir = resolveToolDir(tool, "skill", project);
       if (!skillsDir) continue;
       for (const folder of childDirs(skillsDir)) {
-        if (existsSync(join(folder, ".claude-plugin", "plugin.json"))) addFolder(folder, tool, "skill", true, project?.id);
+        if (existsSync(join(folder, ".claude-plugin", "plugin.json"))) addFolder(folder, tool, "skill", true, project?.id, true);
       }
     }
     // Last, so a repo's mod that also loads some other way is listed as that.

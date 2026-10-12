@@ -1,7 +1,8 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, symlinkSync, unlinkSync } from "fs";
-import { basename, dirname, join } from "path";
+import { basename, dirname, join, relative, sep } from "path";
 import { linkableUnit } from "./fsUnit";
-import { expandHome, resolveToolDir } from "./scanners";
+import { FINISHED_MODS_DIR, setPluginDirListed } from "./itemToggle";
+import { expandHome, readPluginDirsEnv, resolveToolDir } from "./scanners";
 import { ItemMetadata, ModEntry, ProjectWorkspace, ToolConfig } from "./types";
 
 /** Symlinks an item into a project's local tool folder, or with `project` null into the tool's
@@ -108,4 +109,53 @@ function isLink(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+const realOrNull = (path: string): string | null => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+};
+
+/** The CLAUDE_CODE_PLUGIN_DIRS entries that load this mod's real folder, as written there. */
+export function modGlobalEntries(mod: ModEntry, tool: ToolConfig): string[] {
+  return readPluginDirsEnv(tool.pluginsSettingsPath).filter((dir) => realOrNull(dir) === mod.realPath);
+}
+
+/** Global for a mod: listed in CLAUDE_CODE_PLUGIN_DIRS, how the tool loads a mod you keep in every
+ *  session. A legacy symlink in the global skills folder counts too, so unchecking clears it. */
+export function isModGlobal(mod: ModEntry, tool: ToolConfig): boolean {
+  return modGlobalEntries(mod, tool).length > 0 || !!modProjectLink(mod, tool, null);
+}
+
+/** Lists a mod in CLAUDE_CODE_PLUGIN_DIRS, through FINISHED_MODS_DIR (~/mods) like Promote and
+ *  Install: a folder already inside it is listed as is, and one kept anywhere else gets a symlink
+ *  there first, so every global mod is reachable from one folder. Unlisting removes every entry
+ *  for the mod, the ~/mods symlink if that's what it was listed through, and any legacy symlink
+ *  in the global skills folder. The mod's own folder is never moved or deleted. */
+export function setModGlobal(mod: ModEntry, tool: ToolConfig, on: boolean): void {
+  const modsDir = expandHome(FINISHED_MODS_DIR);
+  if (on) {
+    const realModsDir = realOrNull(modsDir);
+    let dir: string;
+    if (realModsDir && mod.realPath.startsWith(realModsDir + sep)) {
+      dir = join(modsDir, relative(realModsDir, mod.realPath));
+    } else {
+      dir = join(modsDir, basename(mod.realPath));
+      if (realOrNull(dir) !== mod.realPath) {
+        if (existsSync(dir) || isLink(dir)) throw new Error(`${dir} already exists.`);
+        mkdirSync(modsDir, { recursive: true });
+        symlinkSync(mod.realPath, dir, "dir");
+      }
+    }
+    setPluginDirListed(tool, dir, true);
+    return;
+  }
+  for (const entry of modGlobalEntries(mod, tool)) {
+    setPluginDirListed(tool, entry, false);
+    if (dirname(entry) === modsDir && isLink(entry)) unlinkSync(entry);
+  }
+  removeModFromProject(mod, tool, null);
 }
