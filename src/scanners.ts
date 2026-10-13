@@ -108,7 +108,9 @@ export function makeEntryId(
 }
 
 const MAX_SCAN_DEPTH = 4;
-const SKIP_DIRNAMES = new Set([DISABLED_DIRNAME, "node_modules", ".git"]);
+// ".trash" holds removed skills that tools park inside their own skills folder (e.g.
+// ~/.claude/skills/.trash/<id>/name/SKILL.md); compared lowercased to also catch ".Trash"/".Trashes".
+const SKIP_DIRNAMES = new Set([DISABLED_DIRNAME, "node_modules", ".git", ".trash", ".trashes"]);
 
 /** A flat .md file whose basename is an index/readme convention rather than an actual
  *  skill/agent/command a user wrote — e.g. a loose ~/.claude/skills/skills_index.md previously
@@ -143,7 +145,7 @@ function scanEntries(
 
   const items: DiscoveredItem[] = [];
   for (const entry of entries) {
-    if (SKIP_DIRNAMES.has(entry)) continue; // .skillmanager-disabled is scanned separately below
+    if (SKIP_DIRNAMES.has(entry.toLowerCase())) continue; // .skillmanager-disabled is scanned separately below
     const entryPath = join(dir, entry);
 
     let stat: Stats;
@@ -392,7 +394,10 @@ function collectBrokenSymlinks(
   } catch {
     return;
   }
-  for (const entry of entries) collectBrokenSymlinks(join(root, entry), tool, type, projectId, output, seen);
+  for (const entry of entries) {
+    if (SKIP_DIRNAMES.has(entry.toLowerCase())) continue;
+    collectBrokenSymlinks(join(root, entry), tool, type, projectId, output, seen);
+  }
 }
 
 function collectBrokenForGlobalTool(tool: ToolConfig, roots: BrokenSymlink[], seen: Set<string>): void {
@@ -635,7 +640,8 @@ function readCachedPlugins(cachePaths: string[], toolId: string, states: Map<str
     if (!existsSync(cachePath)) continue;
     let marketplaces: string[];
     try {
-      marketplaces = readdirSync(cachePath);
+      // Dot-folders (e.g. a ".trash" of removed plugins) are never a marketplace, plugin or version.
+      marketplaces = readdirSync(cachePath).filter((name) => !name.startsWith("."));
     } catch {
       continue;
     }
@@ -643,7 +649,7 @@ function readCachedPlugins(cachePaths: string[], toolId: string, states: Map<str
       const marketplacePath = join(cachePath, marketplace);
       let pluginNames: string[];
       try {
-        pluginNames = readdirSync(marketplacePath);
+        pluginNames = readdirSync(marketplacePath).filter((name) => !name.startsWith("."));
       } catch {
         continue;
       }
@@ -651,7 +657,7 @@ function readCachedPlugins(cachePaths: string[], toolId: string, states: Map<str
         const pluginPath = join(marketplacePath, pluginName);
         let versions: string[];
         try {
-          versions = readdirSync(pluginPath);
+          versions = readdirSync(pluginPath).filter((name) => !name.startsWith("."));
         } catch {
           continue;
         }

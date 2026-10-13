@@ -124,6 +124,20 @@ describe("broken symlink scanning", () => {
     }
   });
 
+  it("ignores dangling links inside a .trash folder", () => {
+    const root = mkdtempSync(join(tmpdir(), "skillmanager-trash-link-"));
+    try {
+      const skills = join(root, "skills");
+      mkdirSync(join(skills, ".trash", "1791247866746-1961-PSyo88"), { recursive: true });
+      symlinkSync(join(root, "missing-skill"), join(skills, ".trash", "1791247866746-1961-PSyo88", "missing-skill"), "dir");
+      const tool: ToolConfig = { id: "test", name: "Test", icon: "box", paths: { skill: skills } };
+
+      expect(scanBrokenSymlinks([tool], [])).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps two discovered paths to one real file as separate entries", () => {
     const root = mkdtempSync(join(tmpdir(), "skillmanager-shared-link-"));
     try {
@@ -242,6 +256,19 @@ describe("index/readme-like flat files are excluded from skill/agent/command, ke
 
     expect(items).toHaveLength(1);
     expect(items[0].name).toBe("demo-skill");
+  });
+
+  it("a skills folder skips removed skills parked in a .trash folder", () => {
+    const skillsDir = join(root, "skills");
+    mkdirSync(join(skillsDir, "demo-skill"), { recursive: true });
+    writeFileSync(join(skillsDir, "demo-skill", "SKILL.md"), "---\nname: demo-skill\n---\n");
+    for (const trash of [".trash", ".Trash"]) {
+      mkdirSync(join(skillsDir, trash, "1791247866746-1961-PSyo88", "old-skill"), { recursive: true });
+      writeFileSync(join(skillsDir, trash, "1791247866746-1961-PSyo88", "old-skill", "SKILL.md"), "---\nname: old-skill\n---\n");
+    }
+
+    const tool: ToolConfig = { id: "test", name: "Test", icon: "box", paths: { skill: skillsDir } };
+    expect(scanTool(tool).map((item) => item.name)).toEqual(["demo-skill"]);
   });
 
   it("a commands folder keeps a real command and drops README.md", () => {

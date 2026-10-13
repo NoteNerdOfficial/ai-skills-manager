@@ -794,7 +794,7 @@ function makeEntryId(toolId, type, projectId, pluginId, name, identityPath) {
   return slug(`${toolId}-${type}-${projectId != null ? projectId : "global"}-${pluginId != null ? pluginId : "none"}-${name}-${identityPath != null ? identityPath : name}`);
 }
 var MAX_SCAN_DEPTH = 4;
-var SKIP_DIRNAMES = /* @__PURE__ */ new Set([DISABLED_DIRNAME, "node_modules", ".git"]);
+var SKIP_DIRNAMES = /* @__PURE__ */ new Set([DISABLED_DIRNAME, "node_modules", ".git", ".trash", ".trashes"]);
 function isIndexLikeFileName(fileName) {
   const lower = fileName.toLowerCase();
   const base = lower.replace(/\.md$/, "");
@@ -811,7 +811,7 @@ function scanEntries(dir, tool, type, projectId, pluginId, enabled, depth = 0) {
   }
   const items = [];
   for (const entry of entries) {
-    if (SKIP_DIRNAMES.has(entry))
+    if (SKIP_DIRNAMES.has(entry.toLowerCase()))
       continue;
     const entryPath = (0, import_path3.join)(dir, entry);
     let stat;
@@ -980,8 +980,11 @@ function collectBrokenSymlinks(root, tool, type, projectId, output, seen) {
   } catch (e) {
     return;
   }
-  for (const entry of entries)
+  for (const entry of entries) {
+    if (SKIP_DIRNAMES.has(entry.toLowerCase()))
+      continue;
     collectBrokenSymlinks((0, import_path3.join)(root, entry), tool, type, projectId, output, seen);
+  }
 }
 function collectBrokenForGlobalTool(tool, roots, seen) {
   var _a;
@@ -1195,7 +1198,7 @@ function readCachedPlugins(cachePaths, toolId, states) {
       continue;
     let marketplaces;
     try {
-      marketplaces = (0, import_fs2.readdirSync)(cachePath);
+      marketplaces = (0, import_fs2.readdirSync)(cachePath).filter((name) => !name.startsWith("."));
     } catch (e) {
       continue;
     }
@@ -1203,7 +1206,7 @@ function readCachedPlugins(cachePaths, toolId, states) {
       const marketplacePath = (0, import_path3.join)(cachePath, marketplace);
       let pluginNames;
       try {
-        pluginNames = (0, import_fs2.readdirSync)(marketplacePath);
+        pluginNames = (0, import_fs2.readdirSync)(marketplacePath).filter((name) => !name.startsWith("."));
       } catch (e) {
         continue;
       }
@@ -1211,7 +1214,7 @@ function readCachedPlugins(cachePaths, toolId, states) {
         const pluginPath = (0, import_path3.join)(marketplacePath, pluginName);
         let versions;
         try {
-          versions = (0, import_fs2.readdirSync)(pluginPath);
+          versions = (0, import_fs2.readdirSync)(pluginPath).filter((name) => !name.startsWith("."));
         } catch (e) {
           continue;
         }
