@@ -2220,6 +2220,10 @@ input.skillmanager-tag-add-input {
   overflow-wrap: anywhere;
 }
 
+.skillmanager-modal-meta.skillmanager-modal-meta-error {
+  color: var(--text-error);
+}
+
 .skillmanager-modal-body {
   max-height: 50vh;
   overflow-y: auto;

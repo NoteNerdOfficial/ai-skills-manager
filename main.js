@@ -2777,13 +2777,8 @@ function retryPendingCloneRemovals(limit = Infinity) {
     }
   }
 }
-function removeGitDir(clone) {
-  try {
-    removeClonePath((0, import_path10.join)(clone.dir, ".git"));
-  } catch (e) {
-    cleanupClone(clone.dir, 0);
-    throw e;
-  }
+function skipGitDir(src) {
+  return (0, import_path10.basename)(src) !== ".git";
 }
 function shallowCloneRepo(repoUrl, ref) {
   const dir = (0, import_fs8.mkdtempSync)((0, import_path10.join)((0, import_os5.tmpdir)(), "skillmanager-clone-"));
@@ -2866,6 +2861,7 @@ var InstallFromGitHubModal = class extends import_obsidian9.Modal {
     this.subpathTouched = false;
     this.installScope = GLOBAL_SCOPE;
     this.statusEl = null;
+    this.installBtn = null;
     this.installing = false;
     const preferredTool = preferredToolId ? settings.tools.find((t) => t.id === preferredToolId && candidateTypesForTool(t).length > 0) : void 0;
     const firstTool = (_a = preferredTool != null ? preferredTool : settings.tools.find((t) => candidateTypesForTool(t).length > 0)) != null ? _a : settings.tools[0];
@@ -2972,15 +2968,16 @@ var InstallFromGitHubModal = class extends import_obsidian9.Modal {
     }
     this.statusEl = contentEl.createDiv({ cls: "skillmanager-modal-meta" });
     new import_obsidian9.Setting(contentEl).addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close())).addButton(
-      (btn) => btn.setButtonText("Install").setCta().onClick(() => void this.install())
+      (btn) => (this.installBtn = btn).setButtonText("Install").setCta().onClick(() => void this.install())
     );
   }
-  setStatus(text) {
-    var _a;
+  setStatus(text, isError = false) {
+    var _a, _b;
     (_a = this.statusEl) == null ? void 0 : _a.setText(text);
+    (_b = this.statusEl) == null ? void 0 : _b.toggleClass("skillmanager-modal-meta-error", isError);
   }
   async install() {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f, _g;
     if (this.installing)
       return;
     if (!this.repoUrlInput.trim()) {
@@ -3002,12 +2999,13 @@ var InstallFromGitHubModal = class extends import_obsidian9.Modal {
     let ref = this.ref.trim();
     let subpath = this.subpath.trim().replace(/^\/|\/$/g, "");
     this.installing = true;
+    (_d = this.installBtn) == null ? void 0 : _d.setDisabled(true);
     this.setStatus("Cloning repository\u2026");
+    await new Promise((resolve6) => window.setTimeout(resolve6, 50));
     let clone = null;
     try {
       ({ ref, subpath } = resolveTreeRef(repoUrl, ref, subpath));
       clone = shallowCloneRepo(repoUrl, ref || void 0);
-      removeGitDir(clone);
       const sourceRoot = subpath ? (0, import_path11.join)(clone.dir, subpath) : clone.dir;
       if (!(0, import_fs9.existsSync)(sourceRoot)) {
         throw new Error(`"${subpath}" doesn't exist in this repo${ref ? ` at ${ref}` : ""}.`);
@@ -3021,7 +3019,7 @@ var InstallFromGitHubModal = class extends import_obsidian9.Modal {
       }
       (0, import_fs9.mkdirSync)(destDir, { recursive: true });
       if (isDirectory) {
-        (0, import_fs9.cpSync)(sourceRoot, destPath, { recursive: true });
+        (0, import_fs9.cpSync)(sourceRoot, destPath, { recursive: true, filter: skipGitDir });
       } else {
         (0, import_fs9.copyFileSync)(sourceRoot, destPath);
       }
@@ -3029,7 +3027,7 @@ var InstallFromGitHubModal = class extends import_obsidian9.Modal {
       const meta = (0, import_fs9.existsSync)(primaryFile) ? parseSourceMeta((0, import_fs9.readFileSync)(primaryFile, "utf-8").slice(0, 4e3)) : { name: "", description: "" };
       const baseName = isDirectory ? unitName : unitName.replace(/\.(?:instructions|prompt)\.md$|\.md$/, "");
       const name = meta.name || baseName;
-      const entryId = makeEntryId(tool.id, this.type, (_d = project == null ? void 0 : project.id) != null ? _d : null, null, baseName, stableEntryPath(primaryFile));
+      const entryId = makeEntryId(tool.id, this.type, (_e = project == null ? void 0 : project.id) != null ? _e : null, null, baseName, stableEntryPath(primaryFile));
       this.setStatus("Scanning\u2026");
       await this.rescan();
       await this.store.update(entryId, {
@@ -3040,14 +3038,15 @@ var InstallFromGitHubModal = class extends import_obsidian9.Modal {
       });
       await this.rescan();
       new import_obsidian9.Notice(`Installed "${name}" into ${tool.name}.`);
-      (_e = this.onInstalled) == null ? void 0 : _e.call(this);
+      (_f = this.onInstalled) == null ? void 0 : _f.call(this);
       this.close();
     } catch (e) {
-      new import_obsidian9.Notice(`Install failed: ${errorMessage(e)}`);
-      this.setStatus("");
+      new import_obsidian9.Notice(`Install failed: ${errorMessage(e)}`, 1e4);
+      this.setStatus(`Install failed: ${errorMessage(e)}`, true);
     } finally {
       clone == null ? void 0 : clone.cleanup();
       this.installing = false;
+      (_g = this.installBtn) == null ? void 0 : _g.setDisabled(false);
     }
   }
   onClose() {
@@ -9214,7 +9213,6 @@ var LibraryView = class extends import_obsidian16.ItemView {
     try {
       if (mode === "restore") {
         clone = shallowCloneAtCommit(source.repoUrl, source.commit);
-        removeGitDir(clone);
       } else {
         clone = this.latestRepoClone(source.repoUrl, source.ref, latest);
       }
@@ -9658,7 +9656,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
         await this.trashPath(target);
       }
     }
-    (0, import_fs20.cpSync)(source, target, isDirectory ? { recursive: true } : void 0);
+    (0, import_fs20.cpSync)(source, target, isDirectory ? { recursive: true, filter: skipGitDir } : void 0);
   }
   fileManagerLabel() {
     if (process.platform === "darwin")
@@ -13125,7 +13123,6 @@ ${item.description}`.length),
     try {
       if (mode === "restore") {
         clone = shallowCloneAtCommit(sourceRepo, item.sourceCommit);
-        removeGitDir(clone);
       } else {
         clone = this.latestClone(item, latest);
       }
@@ -13284,7 +13281,6 @@ ${item.description}`.length),
       clone == null ? void 0 : clone.cleanup();
       this.checkClones.delete(key);
       clone = shallowCloneRepo(repoUrl, ref || void 0);
-      removeGitDir(clone);
       this.checkClones.set(key, clone);
     }
     return { ...clone, cleanup: () => {

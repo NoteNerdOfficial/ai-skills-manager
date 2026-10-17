@@ -1,7 +1,7 @@
 import { execFileSync } from "child_process";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 import { errorMessage } from "./errors";
 
 /** Env vars that tell git (via libcurl) how to reach the network: proxies and extra CA bundles.
@@ -269,18 +269,12 @@ export function pendingCloneRemovals(): string[] {
   return [...pendingRemovals];
 }
 
-/** Removes a clone's .git folder so its contents can be copied as-is. If that still fails after
- *  retries, the whole clone is removed, or queued for retry if that also fails, before rethrowing,
- *  so a caller that hasn't stored the clone anywhere yet doesn't drop it untracked. The retry
- *  budget is already spent on the same lock by then, so the whole-clone removal makes one quick
- *  attempt rather than waiting a second time. */
-export function removeGitDir(clone: ClonedRepo): void {
-  try {
-    removeClonePath(join(clone.dir, ".git"));
-  } catch (e) {
-    cleanupClone(clone.dir, 0);
-    throw e;
-  }
+/** Filter for cpSync when copying out of a clone: leaves git's own folder behind. Deleting .git
+ *  first doesn't work on Windows, where antivirus and the search indexer hold its pack files open
+ *  and the delete fails, so the copy skips it instead and the folder goes with the clone's
+ *  best-effort cleanup. */
+export function skipGitDir(src: string): boolean {
+  return basename(src) !== ".git";
 }
 
 export interface ClonedRepo {

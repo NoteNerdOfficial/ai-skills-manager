@@ -1,9 +1,9 @@
-import { App, Modal, Notice, Setting } from "obsidian";
+import { App, ButtonComponent, Modal, Notice, Setting } from "obsidian";
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, statSync } from "fs";
 import { basename, join } from "path";
 import { ItemType, ProjectWorkspace, SkillManagerPluginSettings, TYPE_LABELS } from "../types";
 import { candidateTypesForTool, makeEntryId, parseSourceMeta, resolveToolDir, stableEntryPath } from "../scanners";
-import { removeGitDir, resolveTreeRef, shallowCloneRepo } from "../git";
+import { resolveTreeRef, shallowCloneRepo, skipGitDir } from "../git";
 import { ShadowNoteStore } from "../store";
 import { errorMessage } from "../errors";
 import { RescanResult } from "../rescan";
@@ -66,6 +66,7 @@ export class InstallFromGitHubModal extends Modal {
   private type: ItemType;
   private installScope: string = GLOBAL_SCOPE;
   private statusEl: HTMLElement | null = null;
+  private installBtn: ButtonComponent | null = null;
   private installing = false;
 
   constructor(
@@ -226,15 +227,16 @@ export class InstallFromGitHubModal extends Modal {
     new Setting(contentEl)
       .addButton((btn) => btn.setButtonText("Cancel").onClick(() => this.close()))
       .addButton((btn) =>
-        btn
+        (this.installBtn = btn)
           .setButtonText("Install")
           .setCta()
           .onClick(() => void this.install())
       );
   }
 
-  private setStatus(text: string) {
+  private setStatus(text: string, isError = false) {
     this.statusEl?.setText(text);
+    this.statusEl?.toggleClass("skillmanager-modal-meta-error", isError);
   }
 
   private async install() {
@@ -260,12 +262,14 @@ export class InstallFromGitHubModal extends Modal {
     let subpath = this.subpath.trim().replace(/^\/|\/$/g, "");
 
     this.installing = true;
+    this.installBtn?.setDisabled(true);
     this.setStatus("Cloning repository…");
+    // The git calls below block this thread, so hand the browser a frame to paint the status first.
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
     let clone: ReturnType<typeof shallowCloneRepo> | null = null;
     try {
       ({ ref, subpath } = resolveTreeRef(repoUrl, ref, subpath));
       clone = shallowCloneRepo(repoUrl, ref || undefined);
-      removeGitDir(clone);
 
       const sourceRoot = subpath ? join(clone.dir, subpath) : clone.dir;
       if (!existsSync(sourceRoot)) {
@@ -282,7 +286,7 @@ export class InstallFromGitHubModal extends Modal {
 
       mkdirSync(destDir, { recursive: true });
       if (isDirectory) {
-        cpSync(sourceRoot, destPath, { recursive: true });
+        cpSync(sourceRoot, destPath, { recursive: true, filter: skipGitDir });
       } else {
         copyFileSync(sourceRoot, destPath);
       }
@@ -316,11 +320,14 @@ export class InstallFromGitHubModal extends Modal {
       this.onInstalled?.();
       this.close();
     } catch (e) {
-      new Notice(`Install failed: ${errorMessage(e)}`);
-      this.setStatus("");
+      // Stays in the dialog (a notice alone disappears before a long error can be read), and the
+      // notice lingers longer than the default.
+      new Notice(`Install failed: ${errorMessage(e)}`, 10_000);
+      this.setStatus(`Install failed: ${errorMessage(e)}`, true);
     } finally {
       clone?.cleanup();
       this.installing = false;
+      this.installBtn?.setDisabled(false);
     }
   }
 

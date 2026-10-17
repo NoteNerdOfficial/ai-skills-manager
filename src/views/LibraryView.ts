@@ -93,7 +93,7 @@ import { formatBytes, formatDate, formatRelativeDay, formatTokens, stripFrontmat
 import { buildFileTree, buildModFileTree, countFiles, isFolderItem, TreeNode } from "../fileTree";
 import { getAllProjects as computeAllProjects, performRescan, projectIcon, RescanResult, VAULT_PROJECT_ID } from "../rescan";
 import { originLabel as resolveOriginLabel, sourceLabel as resolveSourceLabel, toolLabel as resolveToolLabel } from "../sourceLabel";
-import { ClonedRepo, remoteHeadCommit, removeGitDir, shallowCloneAtCommit, shallowCloneRepo } from "../git";
+import { ClonedRepo, remoteHeadCommit, shallowCloneAtCommit, shallowCloneRepo, skipGitDir } from "../git";
 import { changedModFiles, changedUnitFiles, TabsDiffFile } from "../diff/companions";
 import { newTabsDiffState, renderTabsDiff, TabsDiffState } from "../diff/tabsDiff";
 import { UnchangedUpdateModal } from "../modals/UnchangedUpdateModal";
@@ -4470,7 +4470,6 @@ export class LibraryView extends ItemView {
     try {
       if (mode === "restore") {
         clone = shallowCloneAtCommit(source.repoUrl, source.commit);
-        removeGitDir(clone);
       } else {
         clone = this.latestRepoClone(source.repoUrl, source.ref, latest);
       }
@@ -4946,7 +4945,7 @@ export class LibraryView extends ItemView {
         await this.trashPath(target);
       }
     }
-    cpSync(source, target, isDirectory ? { recursive: true } : undefined);
+    cpSync(source, target, isDirectory ? { recursive: true, filter: skipGitDir } : undefined);
   }
 
   private fileManagerLabel(): string {
@@ -8711,7 +8710,6 @@ export class LibraryView extends ItemView {
     try {
       if (mode === "restore") {
         clone = shallowCloneAtCommit(sourceRepo, item.sourceCommit as string);
-        removeGitDir(clone);
       } else {
         clone = this.latestClone(item, latest);
       }
@@ -8889,7 +8887,6 @@ export class LibraryView extends ItemView {
       clone?.cleanup();
       this.checkClones.delete(key);
       clone = shallowCloneRepo(repoUrl, ref || undefined);
-      removeGitDir(clone);
       this.checkClones.set(key, clone);
     }
     return { ...clone, cleanup: () => {} };

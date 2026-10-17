@@ -1,5 +1,5 @@
 import { ChildProcess, execFileSync, spawn } from "child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { pathToFileURL } from "url";
@@ -168,35 +168,22 @@ describe("shallowCloneRepo temp-clone cleanup", { timeout: 60_000 }, () => {
     }
   });
 
-  it("after the .git removal has used its retries, the whole-clone removal makes one quick attempt", () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("copying a clone with skipGitDir leaves .git behind, so locked pack files can't fail an install", () => {
     const clone = git.shallowCloneRepo(repoUrl);
+    const dest = mkdtempSync(join(tmpdir(), "skillmanager-copy-test-"));
     rmSyncControl.failCode = "EPERM";
-    rmSyncControl.calls = [];
+    rmSyncControl.failOnlyGitDir = true;
     try {
-      expect(() => git.removeGitDir(clone)).toThrow();
-      const gitDirCalls = rmSyncControl.calls.filter((c) => c.path === join(clone.dir, ".git"));
-      const cloneCalls = rmSyncControl.calls.filter((c) => c.path === clone.dir);
-      expect(gitDirCalls.map((c) => c.options?.maxRetries)).toEqual([5]);
-      expect(cloneCalls).toHaveLength(1);
-      expect(cloneCalls[0].options?.maxRetries ?? 0).toBe(0);
+      cpSync(clone.dir, dest, { recursive: true, filter: git.skipGitDir });
+      expect(existsSync(join(dest, ".git"))).toBe(false);
+      expect(readdirSync(dest).length).toBeGreaterThan(0);
+      // The still-locked .git only costs a queued retry; cleanup never throws.
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      expect(() => clone.cleanup()).not.toThrow();
     } finally {
       resetControl();
       rmSync(clone.dir, { recursive: true, force: true });
-    }
-  });
-
-  it("removeGitDir() queues the clone when both the .git removal and the clone removal fail", () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const clone = git.shallowCloneRepo(repoUrl);
-    rmSyncControl.failCode = "EPERM";
-    try {
-      expect(() => git.removeGitDir(clone)).toThrow(/EPERM, Permission denied: '.*[\\/]\.git'/);
-      expect(existsSync(clone.dir)).toBe(true);
-      expect(git.pendingCloneRemovals()).toEqual([clone.dir]);
-    } finally {
-      resetControl();
-      rmSync(clone.dir, { recursive: true, force: true });
+      rmSync(dest, { recursive: true, force: true });
     }
   });
 
@@ -258,19 +245,6 @@ describe("shallowCloneRepo temp-clone cleanup", { timeout: 60_000 }, () => {
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as NodeJS.ErrnoException).code).not.toBe("EPERM");
     expect((thrown as Error).message).not.toMatch(/Permission denied/);
-  });
-
-  it("removeGitDir() deletes the whole clone before rethrowing when .git can't be removed", () => {
-    const clone = git.shallowCloneRepo(repoUrl);
-    rmSyncControl.failCode = "EPERM";
-    rmSyncControl.failOnlyGitDir = true;
-    try {
-      expect(() => git.removeGitDir(clone)).toThrow(/EPERM/);
-      expect(existsSync(clone.dir)).toBe(false);
-    } finally {
-      resetControl();
-      rmSync(clone.dir, { recursive: true, force: true });
-    }
   });
 
   // The real-world trigger, issue #2: another process briefly holds a file open inside the fresh
