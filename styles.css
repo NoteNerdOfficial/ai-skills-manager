@@ -452,6 +452,78 @@
   margin-left: auto;
 }
 
+/* Multi-select bar for bulk enable/disable, shown under the toolbar while "Select" is on. */
+.skillmanager-bulkbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 20px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-small);
+}
+
+.skillmanager-bulkbar-all {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.skillmanager-bulkbar-count {
+  color: var(--text-muted);
+}
+
+.skillmanager-bulkbar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.skillmanager-bulkbar-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Obsidian's checkbox styling only draws :checked, so give "some but not all" its own dash. */
+.skillmanager-bulkbar-all input[type="checkbox"]:indeterminate {
+  position: relative;
+  background-color: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+}
+
+.skillmanager-bulkbar-all input[type="checkbox"]:indeterminate::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 1px;
+  background: var(--text-on-accent);
+  -webkit-mask-image: none;
+}
+
+.skillmanager-bulk-check {
+  flex-shrink: 0;
+  margin: 0;
+  pointer-events: none;
+}
+
+.skillmanager-card.is-bulk-selected,
+.skillmanager-list-row.is-bulk-selected {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.skillmanager-card.is-bulk-ineligible,
+.skillmanager-list-row.is-bulk-ineligible {
+  cursor: default;
+}
+
 /* Shared control height for the toolbar row — the search field and the segmented filter need to
    match exactly, not just look close, so both are pinned to this and use border-box sizing. */
 .skillmanager-search-wrap,

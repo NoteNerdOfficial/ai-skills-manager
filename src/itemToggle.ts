@@ -108,6 +108,33 @@ export function toggleItemEnabled(item: ItemMetadata): void {
   moveEntry(fromPath, toPath, linkableUnit(item.sourcePath).isDirectory);
 }
 
+export interface BulkTogglePlan<T> {
+  /** Items whose state actually changes. */
+  toMove: T[];
+  /** Already in the requested state: nothing to do. */
+  unchanged: T[];
+  /** Can't be toggled one by one (plugin-bundled, or rejected by `canToggle`). */
+  skipped: T[];
+}
+
+/** Splits a multi-selection for a bulk enable/disable: only items not already in the requested
+ *  state get moved, and plugin-bundled items are set aside, since toggleItemEnabled refuses them
+ *  anyway (the tool only knows whole-plugin on/off). `canToggle` lets the caller exclude anything
+ *  else it has no switch for. */
+export function planBulkToggle<T extends Pick<ItemMetadata, "enabled" | "pluginId">>(
+  items: T[],
+  enable: boolean,
+  canToggle: (item: T) => boolean = () => true
+): BulkTogglePlan<T> {
+  const plan: BulkTogglePlan<T> = { toMove: [], unchanged: [], skipped: [] };
+  for (const item of items) {
+    if (item.pluginId !== null || !canToggle(item)) plan.skipped.push(item);
+    else if (item.enabled === enable) plan.unchanged.push(item);
+    else plan.toMove.push(item);
+  }
+  return plan;
+}
+
 export interface ToggleMovePreview {
   /** True when this call would DISABLE the item (moving it in under DISABLED_DIRNAME); false
    *  when it would RE-ENABLE it (moving it back out) — mirrors the branch toggleItemEnabled

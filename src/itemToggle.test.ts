@@ -3,7 +3,7 @@ import { ChildProcess, spawn } from "child_process";
 import { tmpdir } from "os";
 import { dirname, join, sep } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DISABLED_DIRNAME, DISABLED_SUFFIX, TrashFn, deleteItem, previewToggle, toggleItemEnabled, togglePluginEnabled, upgradeLegacyDisabledFile } from "./itemToggle";
+import { DISABLED_DIRNAME, DISABLED_SUFFIX, TrashFn, deleteItem, planBulkToggle, previewToggle, toggleItemEnabled, togglePluginEnabled, upgradeLegacyDisabledFile } from "./itemToggle";
 import { ItemMetadata, ToolConfig } from "./types";
 
 // vi.spyOn can't redefine a property on Node's own "fs" ESM namespace object ("Module namespace
@@ -571,5 +571,22 @@ describe("togglePluginEnabled", () => {
     } finally {
       copyFileSyncControl.shouldFail = false;
     }
+  });
+});
+
+describe("planBulkToggle", () => {
+  const item = (name: string, enabled: boolean, pluginId: string | null = null) => ({ name, enabled, pluginId });
+
+  it("moves only items not already in the requested state", () => {
+    const plan = planBulkToggle([item("a", true), item("b", false), item("c", true)], false);
+    expect(plan.toMove.map((i) => i.name)).toEqual(["a", "c"]);
+    expect(plan.unchanged.map((i) => i.name)).toEqual(["b"]);
+    expect(plan.skipped).toEqual([]);
+  });
+
+  it("sets aside plugin-bundled items and anything canToggle rejects", () => {
+    const plan = planBulkToggle([item("a", false), item("p", false, "plug@x"), item("root", false)], true, (i) => i.name !== "root");
+    expect(plan.toMove.map((i) => i.name)).toEqual(["a"]);
+    expect(plan.skipped.map((i) => i.name)).toEqual(["p", "root"]);
   });
 });

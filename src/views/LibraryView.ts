@@ -33,7 +33,7 @@ import {
 } from "../types";
 import { parseFrontmatter, parseSourceMeta, FrontmatterField, isBuiltInPath, isModFolder, expandHome, readModModules, resolveToolDir, toProjectRelative } from "../scanners";
 import { addModToProject, addToProject, canLinkModToProjects, isModGlobal, modProjectLink, modSourceProject, removeFromProject, removeModFromProject, setModGlobal } from "../projectLink";
-import { FINISHED_MODS_DIR, deleteItem, tildify, installModFolder, disabledLocation, previewToggle, promoteDevMod, setPluginDirListed, setPluginEnabled, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
+import { DISABLED_DIRNAME, FINISHED_MODS_DIR, deleteItem, tildify, installModFolder, disabledLocation, planBulkToggle, previewToggle, promoteDevMod, setPluginDirListed, setPluginEnabled, toggleItemEnabled, togglePluginEnabled } from "../itemToggle";
 import { linkableUnit } from "../fsUnit";
 import { samePathKey, unregisteredRepoFor } from "../sourceRepo";
 import { HISTORY_KEPT, HistoryEntry, ItemHistory } from "../history";
@@ -331,6 +331,14 @@ export class LibraryView extends ItemView {
   private projectFilter: string | null = null;
   private pluginFilter: string | null = null;
   private favoritesOnly = false;
+  /** Multi-select for bulk enable/disable: a "Select" toolbar button swaps each card's click
+   *  from opening it to ticking it, and a bar above the grid acts on everything ticked. Session
+   *  only, and dropped whenever the sidebar scope changes (see clearScopeFilters). */
+  private selectMode = false;
+  private bulkSelected = new Set<string>();
+  /** The live bulk bar, so ticking a card or typing in search can refresh its counts without a
+   *  full render (which would reset the grid's scroll). */
+  private bulkBarEl: HTMLElement | null = null;
   /** Not one of the scope filters below (isScoped/clearScopeFilters) — like tagFilter, it's a
    *  compounding filter that stays put across sidebar navigation and ANDs with whatever scope
    *  you're already in, rather than being a scope of its own. Lives in the tagbar row (see
@@ -1146,6 +1154,8 @@ export class LibraryView extends ItemView {
     this.selectedFilePath = null;
     this.detailLoadedFor = null;
     this.addingTagFor = null;
+    this.selectMode = false;
+    this.bulkSelected = new Set();
   }
 
   private isScoped(): boolean {
@@ -2340,6 +2350,13 @@ export class LibraryView extends ItemView {
       this.render();
     });
 
+    const selectBtn = toolbar.createEl("button", {
+      text: this.selectMode ? "Done" : "Select",
+      cls: this.selectMode ? "mod-cta" : "",
+      attr: { "aria-label": this.selectMode ? "Leave selection mode" : "Select several items to enable or disable at once" },
+    });
+    selectBtn.addEventListener("click", () => this.setSelectMode(!this.selectMode));
+
     // Bulk sync actions only make sense against the whole library, so only the true unscoped
     // "All" page offers them — a filtered/scoped view (a type, a tool, a project, …) doesn't.
     if (!this.isScoped()) {
@@ -2374,6 +2391,12 @@ export class LibraryView extends ItemView {
     }
 
     this.renderTagBar(content.createDiv({ cls: "skillmanager-tagbar" }));
+
+    this.bulkBarEl = null;
+    if (this.selectMode) {
+      this.bulkBarEl = content.createDiv({ cls: "skillmanager-bulkbar", attr: { role: "toolbar", "aria-label": "Bulk actions" } });
+      this.renderBulkBar(this.bulkBarEl);
+    }
 
     const body = content.createDiv({ cls: "skillmanager-body" });
 
@@ -2445,6 +2468,7 @@ export class LibraryView extends ItemView {
       updateClearBtn();
       header.querySelector(".skillmanager-count-pill")?.setText(countText());
       if (itemsEl) renderList(itemsEl, this.filteredItems());
+      this.refreshBulkBar();
     });
 
     clearBtn.addEventListener("click", () => {
@@ -2453,8 +2477,161 @@ export class LibraryView extends ItemView {
       updateClearBtn();
       header.querySelector(".skillmanager-count-pill")?.setText(countText());
       if (itemsEl) renderList(itemsEl, this.filteredItems());
+      this.refreshBulkBar();
       searchInput.focus();
     });
+  }
+
+  // ---------- multi-select: bulk enable/disable ----------
+
+  private setSelectMode(on: boolean) {
+    this.selectMode = on;
+    this.bulkSelected = new Set();
+    // A docked detail rail would fight the selection for the grid's clicks, so close it.
+    if (on && this.selectedItem) {
+      this.cleanupReview();
+      this.selectedItem = null;
+      this.selectedFilePath = null;
+      this.detailLoadedFor = null;
+      this.addingTagFor = null;
+    }
+    this.render();
+  }
+
+  /** Whether a row can be ticked: the same items that have their own switch on a card. */
+  private canBulkToggle(item: ItemMetadata): boolean {
+    return item.pluginId === null && !this.isRepoRootItem(item);
+  }
+
+  /** Rows currently on screen. Bulk actions only ever touch these, so a selection hidden by a
+   *  later search or filter is never acted on unseen. */
+  private visibleBulkRows(): ItemMetadata[] {
+    return this.groupedRows(this.filteredItems());
+  }
+
+  private selectedVisibleItems(): ItemMetadata[] {
+    return this.visibleBulkRows().filter((i) => this.bulkSelected.has(i.entryId) && this.canBulkToggle(i));
+  }
+
+  private refreshBulkBar() {
+    if (this.bulkBarEl) this.renderBulkBar(this.bulkBarEl);
+  }
+
+  private renderBulkBar(bar: HTMLElement) {
+    bar.empty();
+    const eligible = this.visibleBulkRows().filter((i) => this.canBulkToggle(i));
+    const selected = this.selectedVisibleItems();
+    const allOn = eligible.length > 0 && selected.length === eligible.length;
+
+    const selectAll = bar.createEl("label", { cls: "skillmanager-bulkbar-all" });
+    const box = selectAll.createEl("input", { type: "checkbox" });
+    box.checked = allOn;
+    box.indeterminate = selected.length > 0 && !allOn;
+    box.disabled = eligible.length === 0;
+    selectAll.createSpan({ text: `Select all (${eligible.length})` });
+    box.addEventListener("change", () => {
+      for (const item of eligible) {
+        if (allOn) this.bulkSelected.delete(item.entryId);
+        else this.bulkSelected.add(item.entryId);
+      }
+      this.render();
+    });
+
+    bar.createSpan({ cls: "skillmanager-bulkbar-count", text: `${selected.length} selected` });
+
+    const actions = bar.createDiv({ cls: "skillmanager-bulkbar-actions" });
+    const enableBtn = actions.createEl("button", { text: "Enable" });
+    const disableBtn = actions.createEl("button", { text: "Disable", cls: "mod-warning" });
+    const nothingToEnable = planBulkToggle(selected, true).toMove.length === 0;
+    const nothingToDisable = planBulkToggle(selected, false).toMove.length === 0;
+    enableBtn.disabled = nothingToEnable;
+    disableBtn.disabled = nothingToDisable;
+    enableBtn.addEventListener("click", () => this.confirmBulkToggle(selected, true));
+    disableBtn.addEventListener("click", () => this.confirmBulkToggle(selected, false));
+  }
+
+  private toggleBulkSelected(item: ItemMetadata, el: HTMLElement) {
+    if (!this.canBulkToggle(item)) return;
+    const on = !this.bulkSelected.has(item.entryId);
+    if (on) this.bulkSelected.add(item.entryId);
+    else this.bulkSelected.delete(item.entryId);
+    el.toggleClass("is-bulk-selected", on);
+    const box = el.querySelector<HTMLInputElement>(".skillmanager-bulk-check");
+    if (box) box.checked = on;
+    this.refreshBulkBar();
+  }
+
+  /** Checkbox shown at the start of a card or row while selecting. Items without their own
+   *  switch (plugin-bundled, a source repo's own copy) get a disabled box explaining why. */
+  private renderBulkCheck(parent: HTMLElement, item: ItemMetadata, rowEl: HTMLElement) {
+    const eligible = this.canBulkToggle(item);
+    const box = parent.createEl("input", {
+      type: "checkbox",
+      cls: "skillmanager-bulk-check",
+      attr: {
+        // The row itself is the focusable, clickable target (makeActivatable); the box is a visual.
+        tabindex: "-1",
+        "aria-label": eligible
+          ? `Select ${item.name}`
+          : item.pluginId !== null
+            ? `${item.name} is part of a plugin: enable or disable the whole plugin instead`
+            : `${item.name} sits in a source repo and has no on/off of its own`,
+      },
+    });
+    box.checked = eligible && this.bulkSelected.has(item.entryId);
+    box.disabled = !eligible;
+    if (box.checked) rowEl.addClass("is-bulk-selected");
+    if (!eligible) rowEl.addClass("is-bulk-ineligible");
+  }
+
+  /** One confirmation and one rescan for the whole batch, rather than one per item. Same gate as
+   *  confirmToggle: skipped when confirmBeforeToggle is off. */
+  private confirmBulkToggle(selected: ItemMetadata[], enable: boolean) {
+    const plan = planBulkToggle(selected, enable, (i) => this.canBulkToggle(i));
+    if (plan.toMove.length === 0) return;
+    const run = () => this.bulkToggle(plan.toMove, enable);
+    if (!this.getSettings().confirmBeforeToggle) {
+      void run();
+      return;
+    }
+    const n = plan.toMove.length;
+    const noun = n === 1 ? "item" : "items";
+    const already = plan.unchanged.length > 0 ? ` ${plan.unchanged.length} already ${enable ? "enabled" : "disabled"} will be left as is.` : "";
+    const memoryNote = plan.toMove.some((i) => this.isMemory(i) && !isMemoryIndex(i))
+      ? ` Memories also have their line in ${MEMORY_INDEX_FILENAME} ${enable ? "restored" : "removed"}.`
+      : "";
+    new ConfirmModal(
+      this.app,
+      enable ? `Enable ${n} ${noun}?` : `Disable ${n} ${noun}?`,
+      enable
+        ? `This moves ${n === 1 ? "it" : "each one"} back out of its ${DISABLED_DIRNAME} folder, so its tool can see ${n === 1 ? "it" : "them"} again.${already}${memoryNote}`
+        : `This moves ${n === 1 ? "it" : "each one"} into a ${DISABLED_DIRNAME} folder next to it, so its tool stops seeing ${n === 1 ? "it" : "them"}.${already}${memoryNote}`,
+      enable ? "Enable" : "Disable",
+      async () => {
+        await run();
+      },
+      enable ? "cta" : "warning"
+    ).open();
+  }
+
+  private async bulkToggle(items: ItemMetadata[], enable: boolean) {
+    const failures: string[] = [];
+    let moved = 0;
+    for (const item of items) {
+      try {
+        if (this.isMemory(item)) toggleMemoryEnabled(item);
+        else toggleItemEnabled(item);
+        moved++;
+      } catch (e) {
+        failures.push(`"${item.name}": ${errorMessage(e)}`);
+      }
+    }
+    // Paths change on a move, so the old entryIds no longer match anything.
+    this.bulkSelected = new Set();
+    const verb = enable ? "Enabled" : "Disabled";
+    if (failures.length === 0) new Notice(`${verb} ${moved} ${moved === 1 ? "item" : "items"}.`);
+    else new Notice(`${verb} ${moved} of ${items.length}. Couldn't move:\n${failures.join("\n")}`, 10000);
+    await this.rescan();
   }
 
   private renderSegment(container: HTMLElement, label: string, active: boolean, onClick: () => void) {
@@ -6128,6 +6305,7 @@ export class LibraryView extends ItemView {
     if (this.selectedItem?.entryId === item.entryId) row.addClass("is-selected");
 
     const name = row.createDiv({ cls: "skillmanager-list-cell col-name" });
+    if (this.selectMode) this.renderBulkCheck(name, item, row);
     name.createSpan({ text: item.name, cls: "skillmanager-list-name", attr: { title: item.name } });
     if (item.favorite) setIcon(name.createSpan({ cls: "skillmanager-list-icon skillmanager-list-star" }), "star");
 
@@ -6195,7 +6373,7 @@ export class LibraryView extends ItemView {
     });
 
     makeActivatable(row);
-    row.addEventListener("click", () => this.selectItem(item));
+    row.addEventListener("click", () => (this.selectMode ? this.toggleBulkSelected(item, row) : this.selectItem(item)));
   }
 
   private renderCard(container: HTMLElement, item: ItemMetadata) {
@@ -6204,6 +6382,7 @@ export class LibraryView extends ItemView {
     if (this.selectedItem?.entryId === item.entryId) card.addClass("is-selected");
 
     const head = card.createDiv({ cls: "skillmanager-card-head" });
+    if (this.selectMode) this.renderBulkCheck(head, item, card);
     const syncStatus = this.syncStatusFor(item);
     const dotLabel =
       syncStatus === "current"
@@ -6336,7 +6515,7 @@ export class LibraryView extends ItemView {
     });
 
     makeActivatable(card);
-    card.addEventListener("click", () => this.selectItem(item));
+    card.addEventListener("click", () => (this.selectMode ? this.toggleBulkSelected(item, card) : this.selectItem(item)));
   }
 
   /** Fast path for a git-tracked card's sync icon: check inline and, if there's something new,

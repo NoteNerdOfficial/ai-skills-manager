@@ -595,6 +595,18 @@ function toggleItemEnabled(item) {
     (0, import_fs.mkdirSync)((0, import_path2.dirname)(toPath), { recursive: true });
   moveEntry(fromPath, toPath, linkableUnit(item.sourcePath).isDirectory);
 }
+function planBulkToggle(items, enable, canToggle = () => true) {
+  const plan = { toMove: [], unchanged: [], skipped: [] };
+  for (const item of items) {
+    if (item.pluginId !== null || !canToggle(item))
+      plan.skipped.push(item);
+    else if (item.enabled === enable)
+      plan.unchanged.push(item);
+    else
+      plan.toMove.push(item);
+  }
+  return plan;
+}
 function previewToggle(item) {
   const unit = linkableUnit(item.sourcePath);
   if ((0, import_path2.basename)((0, import_path2.dirname)(unit.path)) === DISABLED_DIRNAME) {
@@ -5365,6 +5377,14 @@ var LibraryView = class extends import_obsidian16.ItemView {
     this.projectFilter = null;
     this.pluginFilter = null;
     this.favoritesOnly = false;
+    /** Multi-select for bulk enable/disable: a "Select" toolbar button swaps each card's click
+     *  from opening it to ticking it, and a bar above the grid acts on everything ticked. Session
+     *  only, and dropped whenever the sidebar scope changes (see clearScopeFilters). */
+    this.selectMode = false;
+    this.bulkSelected = /* @__PURE__ */ new Set();
+    /** The live bulk bar, so ticking a card or typing in search can refresh its counts without a
+     *  full render (which would reset the grid's scroll). */
+    this.bulkBarEl = null;
     /** Not one of the scope filters below (isScoped/clearScopeFilters) — like tagFilter, it's a
      *  compounding filter that stays put across sidebar navigation and ANDs with whatever scope
      *  you're already in, rather than being a scope of its own. Lives in the tagbar row (see
@@ -6095,6 +6115,8 @@ var LibraryView = class extends import_obsidian16.ItemView {
     this.selectedFilePath = null;
     this.detailLoadedFor = null;
     this.addingTagFor = null;
+    this.selectMode = false;
+    this.bulkSelected = /* @__PURE__ */ new Set();
   }
   isScoped() {
     return !!(this.typeFilter || this.toolFilter || this.collectionFilter || this.projectFilter || this.pluginFilter || this.favoritesOnly || this.discoverMode || this.toolsMode || this.dashboardMode || this.mcpMode || this.modsMode || this.pluginBundlesMode);
@@ -7223,6 +7245,12 @@ var LibraryView = class extends import_obsidian16.ItemView {
       this.enabledFilter = "disabled";
       this.render();
     });
+    const selectBtn = toolbar.createEl("button", {
+      text: this.selectMode ? "Done" : "Select",
+      cls: this.selectMode ? "mod-cta" : "",
+      attr: { "aria-label": this.selectMode ? "Leave selection mode" : "Select several items to enable or disable at once" }
+    });
+    selectBtn.addEventListener("click", () => this.setSelectMode(!this.selectMode));
     if (!this.isScoped()) {
       const syncActions = toolbar.createDiv({ cls: "skillmanager-toolbar-actions" });
       const staleCount = [...this.syncStatus.values()].filter((s) => s === "stale").length;
@@ -7247,6 +7275,11 @@ var LibraryView = class extends import_obsidian16.ItemView {
       }
     }
     this.renderTagBar(content.createDiv({ cls: "skillmanager-tagbar" }));
+    this.bulkBarEl = null;
+    if (this.selectMode) {
+      this.bulkBarEl = content.createDiv({ cls: "skillmanager-bulkbar", attr: { role: "toolbar", "aria-label": "Bulk actions" } });
+      this.renderBulkBar(this.bulkBarEl);
+    }
     const body = content.createDiv({ cls: "skillmanager-body" });
     const animation = this.pendingDetailAnimation;
     this.pendingDetailAnimation = null;
@@ -7297,6 +7330,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
       (_a2 = header.querySelector(".skillmanager-count-pill")) == null ? void 0 : _a2.setText(countText());
       if (itemsEl)
         renderList(itemsEl, this.filteredItems());
+      this.refreshBulkBar();
     });
     clearBtn.addEventListener("click", () => {
       var _a2;
@@ -7306,8 +7340,152 @@ var LibraryView = class extends import_obsidian16.ItemView {
       (_a2 = header.querySelector(".skillmanager-count-pill")) == null ? void 0 : _a2.setText(countText());
       if (itemsEl)
         renderList(itemsEl, this.filteredItems());
+      this.refreshBulkBar();
       searchInput.focus();
     });
+  }
+  // ---------- multi-select: bulk enable/disable ----------
+  setSelectMode(on) {
+    this.selectMode = on;
+    this.bulkSelected = /* @__PURE__ */ new Set();
+    if (on && this.selectedItem) {
+      this.cleanupReview();
+      this.selectedItem = null;
+      this.selectedFilePath = null;
+      this.detailLoadedFor = null;
+      this.addingTagFor = null;
+    }
+    this.render();
+  }
+  /** Whether a row can be ticked: the same items that have their own switch on a card. */
+  canBulkToggle(item) {
+    return item.pluginId === null && !this.isRepoRootItem(item);
+  }
+  /** Rows currently on screen. Bulk actions only ever touch these, so a selection hidden by a
+   *  later search or filter is never acted on unseen. */
+  visibleBulkRows() {
+    return this.groupedRows(this.filteredItems());
+  }
+  selectedVisibleItems() {
+    return this.visibleBulkRows().filter((i) => this.bulkSelected.has(i.entryId) && this.canBulkToggle(i));
+  }
+  refreshBulkBar() {
+    if (this.bulkBarEl)
+      this.renderBulkBar(this.bulkBarEl);
+  }
+  renderBulkBar(bar) {
+    bar.empty();
+    const eligible = this.visibleBulkRows().filter((i) => this.canBulkToggle(i));
+    const selected = this.selectedVisibleItems();
+    const allOn = eligible.length > 0 && selected.length === eligible.length;
+    const selectAll = bar.createEl("label", { cls: "skillmanager-bulkbar-all" });
+    const box = selectAll.createEl("input", { type: "checkbox" });
+    box.checked = allOn;
+    box.indeterminate = selected.length > 0 && !allOn;
+    box.disabled = eligible.length === 0;
+    selectAll.createSpan({ text: `Select all (${eligible.length})` });
+    box.addEventListener("change", () => {
+      for (const item of eligible) {
+        if (allOn)
+          this.bulkSelected.delete(item.entryId);
+        else
+          this.bulkSelected.add(item.entryId);
+      }
+      this.render();
+    });
+    bar.createSpan({ cls: "skillmanager-bulkbar-count", text: `${selected.length} selected` });
+    const actions = bar.createDiv({ cls: "skillmanager-bulkbar-actions" });
+    const enableBtn = actions.createEl("button", { text: "Enable" });
+    const disableBtn = actions.createEl("button", { text: "Disable", cls: "mod-warning" });
+    const nothingToEnable = planBulkToggle(selected, true).toMove.length === 0;
+    const nothingToDisable = planBulkToggle(selected, false).toMove.length === 0;
+    enableBtn.disabled = nothingToEnable;
+    disableBtn.disabled = nothingToDisable;
+    enableBtn.addEventListener("click", () => this.confirmBulkToggle(selected, true));
+    disableBtn.addEventListener("click", () => this.confirmBulkToggle(selected, false));
+  }
+  toggleBulkSelected(item, el) {
+    if (!this.canBulkToggle(item))
+      return;
+    const on = !this.bulkSelected.has(item.entryId);
+    if (on)
+      this.bulkSelected.add(item.entryId);
+    else
+      this.bulkSelected.delete(item.entryId);
+    el.toggleClass("is-bulk-selected", on);
+    const box = el.querySelector(".skillmanager-bulk-check");
+    if (box)
+      box.checked = on;
+    this.refreshBulkBar();
+  }
+  /** Checkbox shown at the start of a card or row while selecting. Items without their own
+   *  switch (plugin-bundled, a source repo's own copy) get a disabled box explaining why. */
+  renderBulkCheck(parent, item, rowEl) {
+    const eligible = this.canBulkToggle(item);
+    const box = parent.createEl("input", {
+      type: "checkbox",
+      cls: "skillmanager-bulk-check",
+      attr: {
+        // The row itself is the focusable, clickable target (makeActivatable); the box is a visual.
+        tabindex: "-1",
+        "aria-label": eligible ? `Select ${item.name}` : item.pluginId !== null ? `${item.name} is part of a plugin: enable or disable the whole plugin instead` : `${item.name} sits in a source repo and has no on/off of its own`
+      }
+    });
+    box.checked = eligible && this.bulkSelected.has(item.entryId);
+    box.disabled = !eligible;
+    if (box.checked)
+      rowEl.addClass("is-bulk-selected");
+    if (!eligible)
+      rowEl.addClass("is-bulk-ineligible");
+  }
+  /** One confirmation and one rescan for the whole batch, rather than one per item. Same gate as
+   *  confirmToggle: skipped when confirmBeforeToggle is off. */
+  confirmBulkToggle(selected, enable) {
+    const plan = planBulkToggle(selected, enable, (i) => this.canBulkToggle(i));
+    if (plan.toMove.length === 0)
+      return;
+    const run = () => this.bulkToggle(plan.toMove, enable);
+    if (!this.getSettings().confirmBeforeToggle) {
+      void run();
+      return;
+    }
+    const n = plan.toMove.length;
+    const noun = n === 1 ? "item" : "items";
+    const already = plan.unchanged.length > 0 ? ` ${plan.unchanged.length} already ${enable ? "enabled" : "disabled"} will be left as is.` : "";
+    const memoryNote = plan.toMove.some((i) => this.isMemory(i) && !isMemoryIndex(i)) ? ` Memories also have their line in ${MEMORY_INDEX_FILENAME} ${enable ? "restored" : "removed"}.` : "";
+    new ConfirmModal(
+      this.app,
+      enable ? `Enable ${n} ${noun}?` : `Disable ${n} ${noun}?`,
+      enable ? `This moves ${n === 1 ? "it" : "each one"} back out of its ${DISABLED_DIRNAME} folder, so its tool can see ${n === 1 ? "it" : "them"} again.${already}${memoryNote}` : `This moves ${n === 1 ? "it" : "each one"} into a ${DISABLED_DIRNAME} folder next to it, so its tool stops seeing ${n === 1 ? "it" : "them"}.${already}${memoryNote}`,
+      enable ? "Enable" : "Disable",
+      async () => {
+        await run();
+      },
+      enable ? "cta" : "warning"
+    ).open();
+  }
+  async bulkToggle(items, enable) {
+    const failures = [];
+    let moved = 0;
+    for (const item of items) {
+      try {
+        if (this.isMemory(item))
+          toggleMemoryEnabled(item);
+        else
+          toggleItemEnabled(item);
+        moved++;
+      } catch (e) {
+        failures.push(`"${item.name}": ${errorMessage(e)}`);
+      }
+    }
+    this.bulkSelected = /* @__PURE__ */ new Set();
+    const verb = enable ? "Enabled" : "Disabled";
+    if (failures.length === 0)
+      new import_obsidian16.Notice(`${verb} ${moved} ${moved === 1 ? "item" : "items"}.`);
+    else
+      new import_obsidian16.Notice(`${verb} ${moved} of ${items.length}. Couldn't move:
+${failures.join("\n")}`, 1e4);
+    await this.rescan();
   }
   renderSegment(container, label, active, onClick) {
     const btn = container.createEl("button", { text: label, cls: "skillmanager-segment" });
@@ -10768,6 +10946,8 @@ var LibraryView = class extends import_obsidian16.ItemView {
     if (((_a = this.selectedItem) == null ? void 0 : _a.entryId) === item.entryId)
       row.addClass("is-selected");
     const name = row.createDiv({ cls: "skillmanager-list-cell col-name" });
+    if (this.selectMode)
+      this.renderBulkCheck(name, item, row);
     name.createSpan({ text: item.name, cls: "skillmanager-list-name", attr: { title: item.name } });
     if (item.favorite)
       (0, import_obsidian16.setIcon)(name.createSpan({ cls: "skillmanager-list-icon skillmanager-list-star" }), "star");
@@ -10830,7 +11010,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
       this.openCardMenu(evt, item);
     });
     makeActivatable(row);
-    row.addEventListener("click", () => this.selectItem(item));
+    row.addEventListener("click", () => this.selectMode ? this.toggleBulkSelected(item, row) : this.selectItem(item));
   }
   renderCard(container, item) {
     var _a;
@@ -10840,6 +11020,8 @@ var LibraryView = class extends import_obsidian16.ItemView {
     if (((_a = this.selectedItem) == null ? void 0 : _a.entryId) === item.entryId)
       card.addClass("is-selected");
     const head = card.createDiv({ cls: "skillmanager-card-head" });
+    if (this.selectMode)
+      this.renderBulkCheck(head, item, card);
     const syncStatus = this.syncStatusFor(item);
     const dotLabel = syncStatus === "current" ? `Up to date with ${item.sourceRepo}` : syncStatus === "stale" ? "Update available: click the sync icon to review" : item.sourceRepo ? 'Not checked yet this session: click "Check for updates"' : "Not tracked from GitHub: install via Discover to enable update checks";
     const dot = head.createSpan({
@@ -10940,7 +11122,7 @@ var LibraryView = class extends import_obsidian16.ItemView {
       this.openCardMenu(evt, item);
     });
     makeActivatable(card);
-    card.addEventListener("click", () => this.selectItem(item));
+    card.addEventListener("click", () => this.selectMode ? this.toggleBulkSelected(item, card) : this.selectItem(item));
   }
   /** Fast path for a git-tracked card's sync icon: check inline and, if there's something new,
    *  jump straight into the diff instead of the detail rail's staged "badge, then review" flow —
